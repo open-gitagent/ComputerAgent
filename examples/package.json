@@ -1,0 +1,15 @@
+{
+  "name": "@computeragent/examples",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "wedge1": "bun run wedge1-server.ts"
+  },
+  "dependencies": {
+    "@computeragent/engine-claude-agent-sdk": "workspace:*",
+    "@computeragent/engine-gitagent": "workspace:*",
+    "@computeragent/harness-server": "workspace:*",
+    "@computeragent/identity-gitagentprotocol": "workspace:*"
+  }
+}
