@@ -5,6 +5,10 @@ import { healthRoute } from "./routes/health.js";
 import { sessionsRoute } from "./routes/sessions.js";
 import { eventsRoute } from "./routes/events.js";
 import { chatRoute } from "./routes/chat.js";
+import { messagesRoute } from "./routes/messages.js";
+import { cancelRoute } from "./routes/cancel.js";
+import { fsRoute } from "./routes/fs.js";
+import { permissionRoute } from "./routes/permission.js";
 import { SessionRegistry } from "./registry.js";
 
 /** Public configuration passed by the host application. */
@@ -52,5 +56,9 @@ export function createHarnessServer(opts: CreateHarnessServerOptions): Hono {
   app.route("/v1", sessionsRoute(ctx));
   app.route("/v1", eventsRoute(ctx));
   app.route("/v1", chatRoute(ctx));
+  app.route("/v1", messagesRoute(ctx));
+  app.route("/v1", cancelRoute(ctx));
+  app.route("/v1", fsRoute(ctx));
+  app.route("/v1", permissionRoute(ctx));
   return app;
 }

@@ -46,7 +46,7 @@ export async function createSession(
     body.engine,
     body.identity.loader,
     workdir,
-    result.options,
+    mergeEngineOptions(result.options, body.options),
     body.envs ?? {},
     engine.capabilities,
     result.metadata,
@@ -67,4 +67,18 @@ async function makeWorkdir(sessionId: string): Promise<string> {
   const base = join(tmpdir(), "computeragent-sessions");
   await mkdir(base, { recursive: true });
   return mkdtemp(join(base, `${sessionId}-`));
+}
+
+/**
+ * Merge caller-supplied options (from the request body) onto the loader's options.
+ * Caller wins on conflicts — that's the contract: identity loader produces a base,
+ * caller refines per-call (e.g. overriding model, maxTurns, permissionMode).
+ *
+ * Both inputs are `unknown` because EngineDriver<TOptions> is generic; if either
+ * isn't a plain object we just take the more specific one.
+ */
+function mergeEngineOptions(loaderOpts: unknown, bodyOpts: Record<string, unknown> | undefined): unknown {
+  if (!bodyOpts) return loaderOpts;
+  if (!loaderOpts || typeof loaderOpts !== "object" || Array.isArray(loaderOpts)) return bodyOpts;
+  return { ...(loaderOpts as Record<string, unknown>), ...bodyOpts };
 }

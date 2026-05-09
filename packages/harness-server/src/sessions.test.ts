@@ -156,6 +156,56 @@ describe("POST /v1/chat", () => {
   });
 });
 
+describe("body.options merging", () => {
+  it("body.options override loader options on conflict; loader options preserved on non-conflict", async () => {
+    const loader = new MockLoader({ options: { model: "from-loader", maxTurns: 5 } });
+    const engine = new MockEngine([{ kind: "emit", payload: {} }]);
+    const app = createHarnessServer({
+      engines: { mock: engine },
+      identityLoaders: { mock: loader },
+    });
+
+    // Capture engine ctx via a wrapper
+    let seenOptions: unknown;
+    const wrappedEngine = {
+      name: engine.name,
+      capabilities: engine.capabilities,
+      async *startSession(ctx: import("@computeragent/protocol").EngineContext<unknown>) {
+        seenOptions = ctx.options;
+        for await (const ev of engine.startSession(ctx)) yield ev;
+      },
+    };
+    const app2 = createHarnessServer({
+      engines: { mock: wrappedEngine },
+      identityLoaders: { mock: loader },
+    });
+
+    const created = await app2.request("/v1/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...baseBody, options: { model: "from-body", permissionMode: "bypassPermissions" } }),
+    });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+    const eventsRes = await app2.request(`/v1/sessions/${sessionId}/events`);
+    // Drain until the engine has started (we'll see at least one sdk_message).
+    const reader = eventsRes.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      if (buf.includes("sdk_message") || buf.includes("ca_session_ended")) break;
+    }
+    await reader.cancel();
+    expect(seenOptions).toEqual({
+      model: "from-body",
+      maxTurns: 5,
+      permissionMode: "bypassPermissions",
+    });
+  });
+});
+
 describe("DELETE /v1/sessions/:id", () => {
   it("cancels a running session and removes it", async () => {
     const app = makeApp();

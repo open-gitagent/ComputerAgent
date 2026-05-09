@@ -34,4 +34,7 @@ console.log(`  engines:           claude-agent-sdk, gitagent`);
 console.log(`  identity loaders:  gitagentprotocol`);
 console.log(`  endpoints:         POST /v1/chat   GET /v1/sessions/:id/events   GET /v1/health`);
 
-export default { port: PORT, fetch: app.fetch };
+// Bun's default per-request idleTimeout is 10s, which truncates long-running SSE
+// streams (e.g. agent loops with tool use). 255 is the max; effectively "no
+// timeout" for our use case. Wedge 1.5 will move this into a shared bootstrap.
+export default { port: PORT, fetch: app.fetch, idleTimeout: 255 };
