@@ -45,7 +45,7 @@ describe("POST /v1/sessions/:id/messages", () => {
     const created = await app.request("/v1/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(baseBody),
+      body: JSON.stringify({ ...baseBody, streamingInput: true }),
     });
     const { sessionId } = (await created.json()) as { sessionId: string };
 
@@ -60,6 +60,9 @@ describe("POST /v1/sessions/:id/messages", () => {
     });
     expect(sent.status).toBe(200);
     expect(await sent.json()).toEqual({ ok: true });
+
+    // Streaming-input: client must close the queue when done sending.
+    await app.request(`/v1/sessions/${sessionId}/end-input`, { method: "POST" });
 
     const events = await readSseEvents(await eventsP);
     const kinds = events.map((e) => e.kind);

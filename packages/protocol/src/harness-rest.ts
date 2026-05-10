@@ -36,6 +36,13 @@ export const CreateSessionBody = z.object({
   messages: z.array(UserMessage).optional(),
   sessionId: z.string().optional(),
   options: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * If false (default), the server closes the user-message queue after enqueueing
+   * `messages`, so the engine ends naturally after handling them. Set true for
+   * long-lived sessions where the client will POST follow-up messages over time
+   * (and call `POST /sessions/:id/end-input` to close the queue itself).
+   */
+  streamingInput: z.boolean().optional(),
 });
 export type CreateSessionBody = z.infer<typeof CreateSessionBody>;
 

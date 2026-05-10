@@ -10,6 +10,7 @@
     "@computeragent/engine-claude-agent-sdk": "workspace:*",
     "@computeragent/engine-gitagent": "workspace:*",
     "@computeragent/harness-server": "workspace:*",
-    "@computeragent/identity-gitagentprotocol": "workspace:*"
+    "@computeragent/identity-gitagentprotocol": "workspace:*",
+    "@computeragent/sdk": "workspace:*"
   }
 }

@@ -1,0 +1,10 @@
+export { ComputerAgent } from "./computer-agent.js";
+export { ChatHandle } from "./chat-handle.js";
+export type {
+  ChatInput,
+  ChatResult,
+  ComputerAgentOptions,
+  PermissionDecision,
+  ToolCallContext,
+} from "./types.js";
+export type { HarnessEvent, IdentitySource, UserMessage } from "@computeragent/protocol";

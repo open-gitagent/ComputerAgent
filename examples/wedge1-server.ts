@@ -21,13 +21,21 @@ import { GitAgentProtocolLoader } from "@computeragent/identity-gitagentprotocol
 
 const PORT = Number(process.env.PORT ?? 7700);
 
-const app = createHarnessServer({
+const baseApp = createHarnessServer({
   engines: {
     "claude-agent-sdk": new ClaudeAgentEngine(),
     "gitagent": new GitAgentEngine(),
   },
   identityLoaders: { gitagentprotocol: new GitAgentProtocolLoader() },
 });
+
+// One-line access log so we can see how many requests the client actually sends.
+const app = {
+  fetch(req: Request) {
+    process.stderr.write(`${new Date().toISOString()} ${req.method} ${new URL(req.url).pathname}\n`);
+    return baseApp.fetch(req);
+  },
+};
 
 console.log(`harness-server listening on http://127.0.0.1:${PORT}`);
 console.log(`  engines:           claude-agent-sdk, gitagent`);

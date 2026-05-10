@@ -9,6 +9,7 @@ import { messagesRoute } from "./routes/messages.js";
 import { cancelRoute } from "./routes/cancel.js";
 import { fsRoute } from "./routes/fs.js";
 import { permissionRoute } from "./routes/permission.js";
+import { endInputRoute } from "./routes/end-input.js";
 import { SessionRegistry } from "./registry.js";
 
 /** Public configuration passed by the host application. */
@@ -60,5 +61,6 @@ export function createHarnessServer(opts: CreateHarnessServerOptions): Hono {
   app.route("/v1", cancelRoute(ctx));
   app.route("/v1", fsRoute(ctx));
   app.route("/v1", permissionRoute(ctx));
+  app.route("/v1", endInputRoute(ctx));
   return app;
 }

@@ -38,6 +38,9 @@ importers:
       '@computeragent/identity-gitagentprotocol':
         specifier: workspace:*
         version: link:../packages/identity-gitagentprotocol
+      '@computeragent/sdk':
+        specifier: workspace:*
+        version: link:../packages/sdk
 
   packages/engine-claude-agent-sdk:
     dependencies:
@@ -124,6 +127,28 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.19.18)
+
+  packages/sdk:
+    dependencies:
+      '@computeragent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      '@computeragent/harness-server':
+        specifier: workspace:*
+        version: link:../harness-server
+      '@computeragent/testing':
+        specifier: workspace:*
+        version: link:../testing
+      '@hono/node-server':
+        specifier: ^1.13.0
+        version: 1.19.14(hono@4.12.18)
       typescript:
         specifier: ^5.5.0
         version: 5.9.3

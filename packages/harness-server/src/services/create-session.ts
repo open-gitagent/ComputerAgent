@@ -59,6 +59,13 @@ export async function createSession(
     for (const m of body.messages) session.pushUserMessage(m);
   }
 
+  // Default: one-shot. Close the user-input queue so the engine ends naturally
+  // after handling the initial messages. Long-lived sessions opt in via
+  // `streamingInput: true` and must call `POST /end-input` themselves.
+  if (!body.streamingInput) {
+    session.endUserMessages();
+  }
+
   registry.add(session);
   return session;
 }
