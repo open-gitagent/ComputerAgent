@@ -36,6 +36,10 @@ export function eventsRoute(ctx: ServerContext): Hono {
             data: JSON.stringify(event),
           });
         }
+        // Give Bun's HTTP layer a tick to flush the chunked-encoding terminator
+        // before stream.close() tears down the socket. Without this, curl can
+        // exit with code 18 ("partial file") even on a clean run.
+        await stream.sleep(50);
       } finally {
         session.detachSubscriber();
       }

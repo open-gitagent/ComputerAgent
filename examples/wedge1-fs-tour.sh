@@ -89,9 +89,7 @@ curl -s -X POST "${HOST}/v1/sessions/${SESSION_ID}/messages" \
 echo
 
 echo "3) GET /v1/sessions/${SESSION_ID}/events   (stream until done)"
-# Tolerate curl exit codes (Bun's SSE close currently doesn't send a clean
-# chunked terminator, which makes curl exit 18 even on a normal completion).
-{ curl -sN "${HOST}/v1/sessions/${SESSION_ID}/events" || true; } | while IFS= read -r line; do
+curl -sN "${HOST}/v1/sessions/${SESSION_ID}/events" | while IFS= read -r line; do
   if [[ "$line" == data:* ]]; then
     json="${line#data: }"
     kind=$(echo "$json" | jq -r .kind 2>/dev/null || echo "")
@@ -109,7 +107,7 @@ echo "3) GET /v1/sessions/${SESSION_ID}/events   (stream until done)"
         ;;
     esac
   fi
-done || true
+done
 echo
 
 echo "4) GET /v1/sessions/${SESSION_ID}/fs/tree   (what did the agent leave behind?)"

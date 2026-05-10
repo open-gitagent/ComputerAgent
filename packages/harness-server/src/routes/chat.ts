@@ -41,6 +41,8 @@ export function chatRoute(ctx: ServerContext): Hono {
             data: JSON.stringify(event),
           });
         }
+        // Flush before close — see events.ts for the rationale.
+        await stream.sleep(50);
       } finally {
         session.detachSubscriber();
         await ctx.registry.delete(session.sessionId);
