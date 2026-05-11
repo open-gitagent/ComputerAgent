@@ -5,10 +5,15 @@ import type {
 } from "@computeragent/protocol";
 import { ChatHandle } from "./chat-handle.js";
 import { consumeSseEvents } from "./sse-client.js";
+import type { Substrate, BootedHarness } from "./substrate.js";
 import type { ChatInput, ComputerAgentOptions, PermissionDecision, ToolCallContext } from "./types.js";
 
 const DEFAULT_HARNESS_URL = "http://127.0.0.1:7700";
 const DEFAULT_LOADER = "gitagentprotocol";
+
+function isSubstrate(r: unknown): r is Substrate {
+  return typeof r === "object" && r !== null && typeof (r as Substrate).bootHarness === "function";
+}
 
 /**
  * The user-facing client for the Harness Protocol.
@@ -21,13 +26,17 @@ const DEFAULT_LOADER = "gitagentprotocol";
  */
 export class ComputerAgent {
   private readonly source: IdentitySource;
-  private readonly harnessUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly substrate: Substrate | null;
+  private readonly staticHarnessUrl: string;
+  private booted: BootedHarness | null = null;
+  private bootingPromise: Promise<string> | null = null;
   private existingSessionId: string | undefined;
 
   constructor(private readonly opts: ComputerAgentOptions) {
     this.source = normalizeSource(opts.source);
-    this.harnessUrl = opts.harnessUrl ?? DEFAULT_HARNESS_URL;
+    this.staticHarnessUrl = opts.harnessUrl ?? DEFAULT_HARNESS_URL;
+    this.substrate = isSubstrate(opts.runtime) ? opts.runtime : null;
     this.fetchImpl = opts.fetch ?? fetch;
     if (opts.sessionId) this.existingSessionId = opts.sessionId;
   }
@@ -37,31 +46,49 @@ export class ComputerAgent {
     return this.existingSessionId;
   }
 
-  /** Run a turn. See README and ChatHandle for usage shapes. */
+  /** Tear down any substrate this agent booted. Idempotent. */
+  async dispose(): Promise<void> {
+    if (this.booted) {
+      const b = this.booted;
+      this.booted = null;
+      this.bootingPromise = null;
+      await b.shutdown();
+    }
+  }
+
+  /**
+   * Resolve the harness URL the agent talks to. Triggers substrate boot if
+   * needed (lazy + memoized). Mainly useful for callers that want to call
+   * `/v1/sessions/:id/fs/*` directly through the same URL.
+   */
+  harnessUrl(): Promise<string> {
+    return this.resolveHarnessUrl();
+  }
+
+  /** Run a turn. See ChatHandle for usage shapes. */
   chat(input: ChatInput): ChatHandle {
     const isFirst = this.existingSessionId === undefined;
     const isStreamingInput = isAsyncIterableInput(input);
+    const harnessUrlPromise = this.resolveHarnessUrl();
 
     const sessionIdPromise = isFirst
-      ? this.createSession(toMessageArray(input), isStreamingInput)
+      ? this.createSession(toMessageArray(input), isStreamingInput, harnessUrlPromise)
       : Promise.resolve(this.existingSessionId!);
 
     if (!isFirst || isStreamingInput) {
-      // Push messages over time (and call /end-input when the iterator finishes
-      // for streaming-input). For subsequent turns we always push regardless.
       void sessionIdPromise.then(async (sid) => {
-        await this.pushMessages(sid, input);
-        if (isStreamingInput) await this.postEndInput(sid);
+        await this.pushMessages(sid, input, harnessUrlPromise);
+        if (isStreamingInput) await this.postEndInput(sid, harnessUrlPromise);
       });
     }
 
-    const events = this.openEventStream(sessionIdPromise);
+    const events = this.openEventStream(sessionIdPromise, harnessUrlPromise);
     const onPerm = this.opts.onToolCall ? this.wrapOnToolCall(this.opts.onToolCall) : undefined;
 
     return new ChatHandle({
       sessionIdPromise,
       events,
-      harnessUrl: this.harnessUrl,
+      harnessUrlPromise,
       fetchImpl: this.fetchImpl,
       onPermissionRequest: onPerm,
     });
@@ -69,7 +96,27 @@ export class ComputerAgent {
 
   // ── private ─────────────────────────────────────────────────────────────
 
-  private async createSession(initialMessages: UserMessage[], streamingInput: boolean): Promise<string> {
+  /** Resolve the harness URL — boots the substrate on first call (lazy + memoized). */
+  private resolveHarnessUrl(): Promise<string> {
+    if (!this.substrate) return Promise.resolve(this.staticHarnessUrl);
+    if (this.booted) return Promise.resolve(this.booted.baseUrl);
+    if (!this.bootingPromise) {
+      this.bootingPromise = this.substrate
+        .bootHarness({ envs: this.opts.envs ?? {} })
+        .then((b) => {
+          this.booted = b;
+          return b.baseUrl;
+        });
+    }
+    return this.bootingPromise;
+  }
+
+  private async createSession(
+    initialMessages: UserMessage[],
+    streamingInput: boolean,
+    harnessUrlPromise: Promise<string>,
+  ): Promise<string> {
+    const harnessUrl = await harnessUrlPromise;
     const body: Record<string, unknown> = {
       engine: this.opts.harness,
       identity: {
@@ -83,7 +130,7 @@ export class ComputerAgent {
     if (this.opts.sessionId) body.sessionId = this.opts.sessionId;
     if (streamingInput) body.streamingInput = true;
 
-    const res = await this.fetchImpl(`${this.harnessUrl}/v1/sessions`, {
+    const res = await this.fetchImpl(`${harnessUrl}/v1/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -94,25 +141,27 @@ export class ComputerAgent {
     return created.sessionId;
   }
 
-  private async postEndInput(sessionId: string): Promise<void> {
-    await this.fetchImpl(`${this.harnessUrl}/v1/sessions/${sessionId}/end-input`, {
+  private async postEndInput(sessionId: string, harnessUrlPromise: Promise<string>): Promise<void> {
+    const harnessUrl = await harnessUrlPromise;
+    await this.fetchImpl(`${harnessUrl}/v1/sessions/${sessionId}/end-input`, {
       method: "POST",
     });
   }
 
-  private async pushMessages(sessionId: string, input: ChatInput): Promise<void> {
-    const messages = toMessageArray(input);
-    if (typeof input === "object" && Symbol.asyncIterator in input) {
-      for await (const m of input as AsyncIterable<UserMessage>) {
-        await this.postOneMessage(sessionId, m);
+  private async pushMessages(sessionId: string, input: ChatInput, harnessUrlPromise: Promise<string>): Promise<void> {
+    const harnessUrl = await harnessUrlPromise;
+    if (isAsyncIterableInput(input)) {
+      for await (const m of input) {
+        await this.postOneMessage(sessionId, m, harnessUrl);
       }
       return;
     }
-    for (const m of messages) await this.postOneMessage(sessionId, m);
+    const messages = toMessageArray(input);
+    for (const m of messages) await this.postOneMessage(sessionId, m, harnessUrl);
   }
 
-  private async postOneMessage(sessionId: string, message: UserMessage): Promise<void> {
-    const res = await this.fetchImpl(`${this.harnessUrl}/v1/sessions/${sessionId}/messages`, {
+  private async postOneMessage(sessionId: string, message: UserMessage, harnessUrl: string): Promise<void> {
+    const res = await this.fetchImpl(`${harnessUrl}/v1/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message }),
@@ -122,11 +171,10 @@ export class ComputerAgent {
     }
   }
 
-  private openEventStream(sessionPromise: Promise<string>) {
+  private openEventStream(sessionPromise: Promise<string>, harnessUrlPromise: Promise<string>) {
     const fetchImpl = this.fetchImpl;
-    const harnessUrl = this.harnessUrl;
     return (async function* () {
-      const sid = await sessionPromise;
+      const [sid, harnessUrl] = await Promise.all([sessionPromise, harnessUrlPromise]);
       const res = await fetchImpl(`${harnessUrl}/v1/sessions/${sid}/events`, {
         headers: { Accept: "text/event-stream" },
       });

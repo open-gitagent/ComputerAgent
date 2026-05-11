@@ -6,7 +6,8 @@ interface ChatHandleDeps {
   /** Resolves to the real sessionId once `POST /v1/sessions` returns. */
   readonly sessionIdPromise: Promise<string>;
   readonly events: AsyncIterable<HarnessEvent>;
-  readonly harnessUrl: string;
+  /** Harness URL — async because substrates may boot lazily. */
+  readonly harnessUrlPromise: Promise<string>;
   readonly fetchImpl: typeof fetch;
   /** Hook fired by the handle for each ca_permission_request, before it auto-decides. */
   readonly onPermissionRequest?: (callId: string, toolName: string, input: unknown) =>
@@ -66,16 +67,16 @@ export class ChatHandle implements AsyncIterable<HarnessEvent>, PromiseLike<Chat
 
   /** Cancel the in-flight session via the harness server. */
   async cancel(): Promise<void> {
-    const sid = await this.deps.sessionIdPromise;
-    await this.deps.fetchImpl(`${this.deps.harnessUrl}/v1/sessions/${sid}/cancel`, {
+    const [sid, harnessUrl] = await Promise.all([this.deps.sessionIdPromise, this.deps.harnessUrlPromise]);
+    await this.deps.fetchImpl(`${harnessUrl}/v1/sessions/${sid}/cancel`, {
       method: "POST",
     });
   }
 
   /** Manually answer a permission request — mainly for callers iterating events directly. */
   async respondToPermission(callId: string, decision: PermissionDecision): Promise<void> {
-    const sid = await this.deps.sessionIdPromise;
-    await postPermission(this.deps.fetchImpl, this.deps.harnessUrl, sid, callId, decision);
+    const [sid, harnessUrl] = await Promise.all([this.deps.sessionIdPromise, this.deps.harnessUrlPromise]);
+    await postPermission(this.deps.fetchImpl, harnessUrl, sid, callId, decision);
   }
 
   private async drain(): Promise<ChatResult> {
@@ -97,8 +98,8 @@ export class ChatHandle implements AsyncIterable<HarnessEvent>, PromiseLike<Chat
     const decision = this.deps.onPermissionRequest
       ? await this.deps.onPermissionRequest(callId, toolName, input)
       : { decision: "allow" as const };
-    const sid = await this.deps.sessionIdPromise;
-    await postPermission(this.deps.fetchImpl, this.deps.harnessUrl, sid, callId, decision);
+    const [sid, harnessUrl] = await Promise.all([this.deps.sessionIdPromise, this.deps.harnessUrlPromise]);
+    await postPermission(this.deps.fetchImpl, harnessUrl, sid, callId, decision);
   }
 }
 

@@ -4,6 +4,7 @@ import type {
   PermissionResult,
   UserMessage,
 } from "@computeragent/protocol";
+import type { Substrate } from "./substrate.js";
 
 /** Convenience: any input shape accepted by `agent.chat()`. */
 export type ChatInput =
@@ -34,8 +35,13 @@ export interface ComputerAgentOptions {
   readonly harness: string;
   /** Identity loader name (defaults to "gitagentprotocol"). */
   readonly identityLoader?: string;
-  /** Substrate label — currently only "local" is shipped; future: e2b, lyzrcompute. */
-  readonly runtime?: "local" | (string & {});
+  /**
+   * WHERE the harness server runs. Three forms:
+   *   - omitted / "local" → `harnessUrl` (default localhost:7700)
+   *   - a Substrate object → SDK calls `bootHarness()` on first chat()
+   *   - any other string → opaque label for future built-in substrates
+   */
+  readonly runtime?: "local" | Substrate | (string & {});
   /** Override the harness server URL. Defaults to `http://127.0.0.1:7700`. */
   readonly harnessUrl?: string;
   /** Env vars passed to the engine (e.g. ANTHROPIC_API_KEY). */

@@ -158,3 +158,43 @@ describe("ComputerAgent — multi-turn", () => {
     expect(agent.sessionId).toBe(first.sessionId);
   });
 });
+
+describe("ComputerAgent — Substrate runtime", () => {
+  it("calls bootHarness lazily on first chat, reuses URL across calls, and dispose() shuts down", async () => {
+    const engine = new MockEngine([{ kind: "emit", payload: { type: "result", text: "ok" } }]);
+    serverHandle = await bootServer(engine);
+
+    let bootCalls = 0;
+    let shutdownCalls = 0;
+    const fakeSubstrate = {
+      async bootHarness() {
+        bootCalls += 1;
+        return {
+          baseUrl: serverHandle!.url,
+          shutdown: async () => {
+            shutdownCalls += 1;
+          },
+        };
+      },
+    };
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      runtime: fakeSubstrate,
+    });
+
+    expect(bootCalls).toBe(0);
+    const r1 = await agent.chat("first");
+    expect(bootCalls).toBe(1);
+    expect(r1.ended.reason).toBe("complete");
+
+    // dispose shuts down once
+    await agent.dispose();
+    expect(shutdownCalls).toBe(1);
+    // dispose is idempotent
+    await agent.dispose();
+    expect(shutdownCalls).toBe(1);
+  });
+});

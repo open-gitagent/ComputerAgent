@@ -7,4 +7,5 @@ export type {
   PermissionDecision,
   ToolCallContext,
 } from "./types.js";
+export type { Substrate, BootHarnessOptions, BootedHarness } from "./substrate.js";
 export type { HarnessEvent, IdentitySource, UserMessage } from "@computeragent/protocol";

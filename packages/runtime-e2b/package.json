@@ -1,0 +1,36 @@
+{
+  "name": "@computeragent/runtime-e2b",
+  "version": "0.1.0",
+  "description": "ComputerAgent substrate that boots the harness server inside an E2B sandbox.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "assets", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && pnpm run build:bundle",
+    "build:bundle": "bun build src/sandbox-boot.ts --target=node --outfile=assets/harness-bundle.cjs --format=cjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo assets/harness-bundle.cjs"
+  },
+  "dependencies": {
+    "@computeragent/sdk": "workspace:*",
+    "e2b": "^2.19.5"
+  },
+  "devDependencies": {
+    "@computeragent/engine-claude-agent-sdk": "workspace:*",
+    "@computeragent/engine-gitagent": "workspace:*",
+    "@computeragent/harness-server": "workspace:*",
+    "@computeragent/identity-gitagentprotocol": "workspace:*",
+    "@hono/node-server": "^1.13.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
