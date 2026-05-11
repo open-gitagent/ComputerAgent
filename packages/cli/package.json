@@ -1,0 +1,27 @@
+{
+  "name": "@computeragent/cli",
+  "version": "0.1.0",
+  "description": "computeragent — CLI for the Harness Protocol. Run any GAP agent, anywhere, with any loop.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "computeragent": "./dist/cli.js"
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js 2>/dev/null || true",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@computeragent/sdk": "workspace:*",
+    "citty": "^0.1.6"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
