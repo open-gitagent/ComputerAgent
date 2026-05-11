@@ -60,6 +60,11 @@ const agent = new ComputerAgent({
   options: {
     permissionMode: "bypassPermissions",
     settingSources: ["project"],
+    // The Claude SDK ships per-platform native binaries as optional deps and
+    // sometimes picks musl when the sandbox is glibc. Point it at the glibc
+    // binary explicitly. (E2B's default template is Ubuntu / glibc.)
+    pathToClaudeCodeExecutable:
+      "/home/user/harness/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude",
   },
 });
 
@@ -81,7 +86,7 @@ try {
         console.log(`   [result] ${p.result.slice(0, 80)}`);
       }
     } else if (ev.kind === "ca_session_ended") {
-      console.log(`   [end] reason=${ev.reason}`);
+      console.log(`   [end] reason=${ev.reason}${ev.errorMessage ? `  error=${ev.errorMessage}` : ""}`);
     }
   }
 

@@ -8,7 +8,12 @@ import type { BootHarnessOptions, BootedHarness, Substrate } from "@computeragen
 const HARNESS_PORT = 7700;
 
 /** Where the harness bundle lives relative to dist/ after `pnpm build`. */
-const BUNDLE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../assets/harness-bundle.cjs");
+const BUNDLE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../assets/harness-bundle.mjs");
+/** Tiny package.json with `@anthropic-ai/claude-agent-sdk` declared as a dep. */
+const SANDBOX_PKG_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../assets/sandbox-package.json");
+
+/** Where everything lands inside the sandbox. User-writable in E2B's default. */
+const SANDBOX_DIR = "/home/user/harness";
 
 export interface E2BSubstrateOptions {
   /** E2B API key. Defaults to `process.env.E2B_API_KEY`. */
@@ -32,10 +37,17 @@ export interface E2BSubstrateOptions {
  *
  * Pipeline (per `bootHarness` call):
  *   1. Create an E2B sandbox.
- *   2. Upload the pre-built harness bundle (single .cjs file) to /tmp/harness.cjs.
- *   3. Spawn `node /tmp/harness.cjs` with the caller's envs (e.g. ANTHROPIC_API_KEY).
- *   4. Poll the public port-forwarded URL for `/v1/health` until it's ready.
- *   5. Return `{ baseUrl, shutdown }`. SDK uses baseUrl just like localhost.
+ *   2. Upload the harness bundle + a tiny package.json to /opt/harness/.
+ *   3. `npm install` inside /opt/harness — pulls @anthropic-ai/claude-agent-sdk
+ *      with its platform-specific native binary (linux-x64). We mark the SDK
+ *      `external` in the bundle so the bundled .cjs `require()`s the freshly
+ *      installed module from /opt/harness/node_modules.
+ *   4. Spawn `node /opt/harness/harness.mjs` with the caller's envs.
+ *   5. Poll the public port-forwarded URL for `/v1/health` until ready.
+ *   6. Return `{ baseUrl, shutdown }`. SDK uses baseUrl just like localhost.
+ *
+ * Wedge 3b.5 will replace step 3 with a pre-built E2B template that has the
+ * SDK installed at template-build time (saving ~10–30s per boot).
  */
 export class E2BSubstrate implements Substrate {
   constructor(private readonly opts: E2BSubstrateOptions = {}) {}
@@ -53,23 +65,36 @@ export class E2BSubstrate implements Substrate {
     });
 
     try {
-      log(`uploading harness bundle`);
+      log(`uploading harness bundle + package.json`);
       const bundlePath = this.opts.bundlePath ?? BUNDLE_PATH;
       const bundle = await readFile(bundlePath);
-      // E2B's `files.write` accepts string | ArrayBuffer | Blob | ReadableStream.
-      // Convert Buffer → ArrayBuffer (slice to detach from the underlying SharedArrayBuffer).
+      const pkgJson = await readFile(SANDBOX_PKG_PATH, "utf8");
+      // Buffer → ArrayBuffer (slice detaches from the underlying memory).
       const ab = bundle.buffer.slice(bundle.byteOffset, bundle.byteOffset + bundle.byteLength) as ArrayBuffer;
-      await sandbox.files.write("/tmp/harness.cjs", ab);
 
-      log(`spawning node /tmp/harness.cjs`);
-      // Run in background; capture stdout/stderr to logs.
+      await sandbox.commands.run(`mkdir -p ${SANDBOX_DIR}`);
+      await sandbox.files.write(`${SANDBOX_DIR}/harness.mjs`, ab);
+      await sandbox.files.write(`${SANDBOX_DIR}/package.json`, pkgJson);
+
+      log(`npm install (Claude Agent SDK + native binary)`);
+      const install = await sandbox.commands.run(
+        // --include=optional so the platform-specific native CLI binary lands.
+        `cd ${SANDBOX_DIR} && npm install --include=optional --no-fund --no-audit`,
+        { timeoutMs: 180_000 },
+      );
+      if (install.exitCode !== 0) {
+        throw new Error(`npm install failed (exit ${install.exitCode}): ${install.stderr.slice(0, 1000)}`);
+      }
+      log(`npm install complete`);
+
+      log(`spawning node harness.mjs`);
       void sandbox.commands.run(
-        `node /tmp/harness.cjs`,
+        `cd ${SANDBOX_DIR} && node harness.mjs`,
         {
           envs: { ...opts.envs, PORT: String(HARNESS_PORT) },
           background: true,
-          onStdout: (data) => log(`[harness:stdout] ${data}`),
-          onStderr: (data) => log(`[harness:stderr] ${data}`),
+          onStdout: (data) => log(`[harness:stdout] ${data.trimEnd()}`),
+          onStderr: (data) => log(`[harness:stderr] ${data.trimEnd()}`),
         },
       );
 
@@ -95,7 +120,6 @@ export class E2BSubstrate implements Substrate {
         },
       };
     } catch (err) {
-      // Best-effort cleanup if anything past sandbox creation failed.
       try {
         await sandbox.kill();
       } catch {

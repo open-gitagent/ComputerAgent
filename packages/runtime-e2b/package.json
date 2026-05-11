@@ -15,10 +15,10 @@
   "files": ["dist", "assets", "src"],
   "scripts": {
     "build": "tsc -p tsconfig.json && pnpm run build:bundle",
-    "build:bundle": "bun build src/sandbox-boot.ts --target=node --outfile=assets/harness-bundle.cjs --format=cjs",
+    "build:bundle": "bun build src/sandbox-boot.ts --target=node --outfile=assets/harness-bundle.mjs --format=esm --external @anthropic-ai/claude-agent-sdk --external @anthropic-ai/claude-code",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
-    "clean": "rm -rf dist .turbo *.tsbuildinfo assets/harness-bundle.cjs"
+    "clean": "rm -rf dist .turbo *.tsbuildinfo assets/harness-bundle.mjs"
   },
   "dependencies": {
     "@computeragent/sdk": "workspace:*",
