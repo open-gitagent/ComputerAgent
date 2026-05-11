@@ -31,7 +31,10 @@ export class Session {
   status: SessionStatus = "pending";
   private readonly userQueue: UserQueueItem[] = [];
   private readonly userResolvers: ((item: UserQueueItem) => void)[] = [];
-  private readonly permissionMap = new Map<string, (r: PermissionResult) => void>();
+  private readonly permissionMap = new Map<
+    string,
+    { resolve: (r: PermissionResult) => void; originalInput: unknown }
+  >();
   private subscribed = false;
   readonly abortController = new AbortController();
 
@@ -78,16 +81,28 @@ export class Session {
   /** Engine asks for permission; framework holds the promise until /permission POST resolves it. */
   awaitPermission(req: PermissionRequest): Promise<PermissionResult> {
     return new Promise<PermissionResult>((resolve) => {
-      this.permissionMap.set(req.callId, resolve);
+      this.permissionMap.set(req.callId, { resolve, originalInput: req.input });
     });
   }
 
-  /** Resolve a pending permission with the client's decision. Returns false if unknown. */
-  resolvePermission(callId: string, result: PermissionResult): boolean {
-    const r = this.permissionMap.get(callId);
-    if (!r) return false;
+  /**
+   * Resolve a pending permission with the client's decision.
+   *
+   * The wire-level `allow` without explicit `input` must preserve the original
+   * tool args — otherwise the engine sees an empty object and tools crash. The
+   * caller passes the original-input-aware translator here so the session can
+   * use the input it captured at awaitPermission time.
+   *
+   * Returns false if the callId is unknown.
+   */
+  resolvePermission(
+    callId: string,
+    translate: (originalInput: unknown) => PermissionResult,
+  ): boolean {
+    const entry = this.permissionMap.get(callId);
+    if (!entry) return false;
     this.permissionMap.delete(callId);
-    r(result);
+    entry.resolve(translate(entry.originalInput));
     return true;
   }
 
@@ -108,8 +123,8 @@ export class Session {
     this.status = "cancelled";
     this.abortController.abort();
     // Unblock any pending permission decisions so the engine can exit.
-    for (const [, resolver] of this.permissionMap) {
-      resolver({ behavior: "deny", message: "session cancelled" });
+    for (const [, entry] of this.permissionMap) {
+      entry.resolve({ behavior: "deny", message: "session cancelled" });
     }
     this.permissionMap.clear();
     // Unblock any user-message consumers.

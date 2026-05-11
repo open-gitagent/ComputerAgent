@@ -38,10 +38,9 @@ async function collect(root: string, dir: string, remaining: number): Promise<Fs
       mode: s.mode,
     });
     if (entry.isDirectory() && remaining > 0) {
+      // Recursive call already produces paths relative to `root`; no re-prefixing.
       const nested = await collect(root, abs, remaining - 1);
-      for (const n of nested) {
-        out.push({ ...n, path: join(relative(root, abs), n.path) });
-      }
+      for (const n of nested) out.push(n);
     }
   }
   return out;

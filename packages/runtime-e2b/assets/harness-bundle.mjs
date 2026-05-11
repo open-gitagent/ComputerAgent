@@ -24516,15 +24516,15 @@ class Session {
   }
   awaitPermission(req) {
     return new Promise((resolve) => {
-      this.permissionMap.set(req.callId, resolve);
+      this.permissionMap.set(req.callId, { resolve, originalInput: req.input });
     });
   }
-  resolvePermission(callId, result) {
-    const r = this.permissionMap.get(callId);
-    if (!r)
+  resolvePermission(callId, translate) {
+    const entry = this.permissionMap.get(callId);
+    if (!entry)
       return false;
     this.permissionMap.delete(callId);
-    r(result);
+    entry.resolve(translate(entry.originalInput));
     return true;
   }
   attachSubscriber() {
@@ -24541,8 +24541,8 @@ class Session {
       return;
     this.status = "cancelled";
     this.abortController.abort();
-    for (const [, resolver] of this.permissionMap) {
-      resolver({ behavior: "deny", message: "session cancelled" });
+    for (const [, entry] of this.permissionMap) {
+      entry.resolve({ behavior: "deny", message: "session cancelled" });
     }
     this.permissionMap.clear();
     this.enqueue({ value: "end" });
@@ -25088,9 +25088,8 @@ async function collect(root, dir, remaining) {
     });
     if (entry.isDirectory() && remaining > 0) {
       const nested = await collect(root, abs, remaining - 1);
-      for (const n of nested) {
-        out.push({ ...n, path: join2(relative(root, abs), n.path) });
-      }
+      for (const n of nested)
+        out.push(n);
     }
   }
   return out;
@@ -25247,8 +25246,7 @@ function permissionRoute(ctx) {
     if (!session)
       throw NotFound("session", id);
     const body = PermissionDecisionBody.parse(await c.req.json());
-    const result = toPermissionResult(body);
-    const ok = session.resolvePermission(callId, result);
+    const ok = session.resolvePermission(callId, (originalInput) => bodyToResult(body, originalInput));
     if (!ok) {
       throw BadRequest("UNKNOWN_CALL_ID", `no pending permission request for callId '${callId}' on session '${id}'`);
     }
@@ -25256,7 +25254,7 @@ function permissionRoute(ctx) {
   });
   return app;
 }
-function toPermissionResult(body) {
+function bodyToResult(body, originalInput) {
   if (body.decision === "deny") {
     return {
       behavior: "deny",
@@ -25264,10 +25262,10 @@ function toPermissionResult(body) {
       interrupt: false
     };
   }
-  const updatedInput = body.decision === "modify" ? body.input : body.input;
+  const inputToUse = body.input !== undefined ? body.input : originalInput;
   return {
     behavior: "allow",
-    updatedInput: updatedInput ?? {},
+    updatedInput: inputToUse ?? {},
     updatedPermissions: []
   };
 }
@@ -25414,6 +25412,91 @@ async function* adaptUserMessages(queue, sessionId = "computeragent-session") {
   }
 }
 function signalToController(signal) {
+  const ctrl = new AbortController;
+  if (signal.aborted)
+    ctrl.abort();
+  else
+    signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+  return ctrl;
+}
+// ../engine-gitagent/dist/engine.js
+import { query as query2 } from "gitclaw";
+
+// ../engine-gitagent/dist/permission-bridge.js
+function buildPreToolUse(onPermissionRequest) {
+  return async (ctx) => {
+    const result = await onPermissionRequest({
+      callId: `${ctx.sessionId}:${ctx.toolName}:${nonce()}`,
+      toolName: ctx.toolName,
+      input: ctx.args
+    });
+    return toGCHookResult(result, ctx.args);
+  };
+}
+function toGCHookResult(result, originalArgs) {
+  if (result.behavior === "allow") {
+    const updated = result.updatedInput;
+    if (updated && updated !== originalArgs) {
+      return { action: "modify", args: updated };
+    }
+    return { action: "allow" };
+  }
+  const message = result.message ?? "denied";
+  return { action: "block", reason: message };
+}
+function nonce() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+// ../engine-gitagent/dist/engine.js
+var CAPABILITIES2 = {
+  streamingInput: true,
+  partialMessages: true,
+  permissionCallback: true,
+  sessions: true,
+  budget: false
+};
+
+class GitAgentEngine {
+  name = "gitagent";
+  capabilities = CAPABILITIES2;
+  async* startSession(ctx) {
+    const prompt = adaptUserMessages2(ctx.userMessageQueue);
+    const abortController = signalToController2(ctx.abortSignal);
+    const options = {
+      prompt,
+      dir: ctx.options.dir ?? ctx.workdir,
+      sessionId: ctx.sessionId,
+      abortController,
+      hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
+      ...stripDir(ctx.options)
+    };
+    for await (const message of query2(options)) {
+      if (ctx.abortSignal.aborted)
+        break;
+      yield { kind: "sdk_message", payload: message };
+    }
+  }
+}
+function stripDir(opts) {
+  const { dir: _dir, ...rest } = opts;
+  return rest;
+}
+async function* adaptUserMessages2(queue) {
+  for await (const m of queue) {
+    yield { type: "user", content: flattenContent(m.content) };
+  }
+}
+function flattenContent(content) {
+  if (typeof content === "string")
+    return content;
+  return content.map((block) => {
+    const b = block;
+    return b.type === "text" && typeof b.text === "string" ? b.text : "";
+  }).filter(Boolean).join(`
+`);
+}
+function signalToController2(signal) {
   const ctrl = new AbortController;
   if (signal.aborted)
     ctrl.abort();
@@ -26905,8 +26988,8 @@ var init_grep = __esm({
         this[_a3] = [];
       }
       *[(_a3 = Query, Symbol.iterator)]() {
-        for (const query2 of this[Query]) {
-          yield query2;
+        for (const query3 of this[Query]) {
+          yield query3;
         }
       }
       and(...and) {
@@ -30073,7 +30156,8 @@ class GitAgentProtocolLoader {
 var PORT = Number(process.env.PORT ?? 7700);
 var app = createHarnessServer({
   engines: {
-    "claude-agent-sdk": new ClaudeAgentEngine
+    "claude-agent-sdk": new ClaudeAgentEngine,
+    gitagent: new GitAgentEngine
   },
   identityLoaders: { gitagentprotocol: new GitAgentProtocolLoader }
 });

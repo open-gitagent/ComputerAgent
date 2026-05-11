@@ -10,6 +10,12 @@ import { BadRequest, NotFound } from "../error-mapper.js";
  * The engine called `onPermissionRequest`; the framework holds the resolver
  * promise open. This route resolves it. The Claude Agent SDK / gitclaw
  * `PermissionResult` shape is what we hand back to the engine.
+ *
+ * The wire-level body is small ({decision, input?, reason?}). The translation
+ * happens INSIDE `session.resolvePermission` so it can substitute the original
+ * tool input when the client just says `{ decision: "allow" }` (no explicit
+ * input). Otherwise the engine sees `updatedInput: {}` and tools crash with
+ * missing-arg errors.
  */
 export function permissionRoute(ctx: ServerContext): Hono {
   const app = new Hono();
@@ -21,9 +27,8 @@ export function permissionRoute(ctx: ServerContext): Hono {
     if (!session) throw NotFound("session", id);
 
     const body = PermissionDecisionBody.parse(await c.req.json());
-    const result = toPermissionResult(body);
 
-    const ok = session.resolvePermission(callId, result);
+    const ok = session.resolvePermission(callId, (originalInput) => bodyToResult(body, originalInput));
     if (!ok) {
       throw BadRequest(
         "UNKNOWN_CALL_ID",
@@ -36,11 +41,10 @@ export function permissionRoute(ctx: ServerContext): Hono {
   return app;
 }
 
-function toPermissionResult(body: {
-  decision: "allow" | "deny" | "modify";
-  input?: unknown;
-  reason?: string;
-}): PermissionResult {
+function bodyToResult(
+  body: { decision: "allow" | "deny" | "modify"; input?: unknown; reason?: string },
+  originalInput: unknown,
+): PermissionResult {
   if (body.decision === "deny") {
     return {
       behavior: "deny",
@@ -48,11 +52,13 @@ function toPermissionResult(body: {
       interrupt: false,
     };
   }
-  // allow + modify both produce SDK's "allow" shape; modify carries updatedInput.
-  const updatedInput = (body.decision === "modify" ? body.input : body.input) as Record<string, unknown> | undefined;
+  // allow / modify both map to SDK's "allow" with updatedInput. The body's
+  // explicit input wins; if absent, we preserve the engine's original args so
+  // tools receive what the LLM actually asked for.
+  const inputToUse = body.input !== undefined ? body.input : originalInput;
   return {
     behavior: "allow",
-    updatedInput: updatedInput ?? {},
+    updatedInput: (inputToUse as Record<string, unknown> | null) ?? {},
     updatedPermissions: [],
   };
 }

@@ -2,8 +2,9 @@
   "name": "computeragent-harness-sandbox",
   "version": "0.1.0",
   "private": true,
-  "description": "Tiny package.json uploaded into the E2B sandbox so npm can install the Claude Agent SDK with its platform-specific native binary.",
+  "description": "Tiny package.json uploaded into the E2B sandbox so npm can install runtime deps (Claude Agent SDK native binary, gitclaw's own package.json reads).",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.132"
+    "@anthropic-ai/claude-agent-sdk": "^0.2.132",
+    "gitclaw": "^1.4.1"
   }
 }
