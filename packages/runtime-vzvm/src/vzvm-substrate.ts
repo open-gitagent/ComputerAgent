@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -60,7 +59,7 @@ export class VZVMSubstrate implements Substrate {
   async bootHarness(opts: BootHarnessOptions): Promise<BootedHarness> {
     const log = this.opts.onLog ?? (() => {});
     const sshUser = this.opts.sshUser ?? "admin";
-    const remoteWorkdir = this.opts.remoteWorkdir ?? "/home/admin/harness";
+    const remoteWorkdir = this.opts.remoteWorkdir ?? `/home/${sshUser}/harness`;
     const tartBin = { tartBin: this.opts.tartBin };
     const name = `ca-${randomBytes(4).toString("hex")}`;
 
@@ -101,14 +100,10 @@ export class VZVMSubstrate implements Substrate {
       const bundlePath = this.opts.bundlePath ?? BUNDLE_PATH;
       log(`mkdir + scp bundle + package.json → ${remoteWorkdir}`);
       await ssh.execCommand(`mkdir -p ${shellEscape(remoteWorkdir)}`);
-      const bundle = await readFile(bundlePath);
-      const pkg = await readFile(SANDBOX_PKG_PATH);
       await ssh.putFiles([
         { local: bundlePath, remote: `${remoteWorkdir}/harness.mjs` },
         { local: SANDBOX_PKG_PATH, remote: `${remoteWorkdir}/package.json` },
       ]);
-      // Touch the files to mark them as fresh (and verify connectivity).
-      void bundle; void pkg;
 
       log(`npm install (Claude Agent SDK + native binary)`);
       const install = await ssh.execCommand(
@@ -121,7 +116,11 @@ export class VZVMSubstrate implements Substrate {
 
       log(`spawning node harness.mjs`);
       const envExports = renderEnvExports(opts.envs);
-      const startCmd = `cd ${shellEscape(remoteWorkdir)} && ${envExports} PORT=${HARNESS_PORT} nohup node harness.mjs > /tmp/harness.log 2>&1 &`;
+      const startCmd =
+        `cd ${shellEscape(remoteWorkdir)} && ` +
+        `${envExports} PORT=${HARNESS_PORT} ` +
+        `nohup node harness.mjs </dev/null >/tmp/harness.log 2>&1 & ` +
+        `disown && echo $!`;
       await ssh.execCommand(startCmd);
 
       const baseUrl = `http://${ip}:${HARNESS_PORT}`;
