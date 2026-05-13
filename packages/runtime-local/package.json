@@ -1,0 +1,37 @@
+{
+  "name": "@computeragent/runtime-local",
+  "version": "0.1.0",
+  "description": "ComputerAgent substrate that boots the harness server in a managed local Node subprocess.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "assets", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && pnpm run build:bundle",
+    "build:bundle": "bun build src/sandbox-boot.ts --target=node --outfile=assets/harness-bundle.mjs --format=esm --external @anthropic-ai/claude-agent-sdk --external @anthropic-ai/claude-code --external gitclaw",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo assets/harness-bundle.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.132",
+    "@computeragent/sdk": "workspace:*",
+    "gitclaw": "^1.4.1"
+  },
+  "devDependencies": {
+    "@computeragent/engine-claude-agent-sdk": "workspace:*",
+    "@computeragent/engine-gitagent": "workspace:*",
+    "@computeragent/harness-server": "workspace:*",
+    "@computeragent/identity-gitagentprotocol": "workspace:*",
+    "@hono/node-server": "^1.13.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

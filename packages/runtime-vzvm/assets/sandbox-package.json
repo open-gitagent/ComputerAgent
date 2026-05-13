@@ -1,0 +1,10 @@
+{
+  "name": "computeragent-harness-vm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Installed inside the VZ VM so npm pulls runtime deps (Claude SDK + native binary, gitclaw).",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.132",
+    "gitclaw": "^1.4.1"
+  }
+}

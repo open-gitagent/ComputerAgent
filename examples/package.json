@@ -12,6 +12,7 @@
     "@computeragent/harness-server": "workspace:*",
     "@computeragent/identity-gitagentprotocol": "workspace:*",
     "@computeragent/runtime-e2b": "workspace:*",
+    "@computeragent/runtime-local": "workspace:*",
     "@computeragent/sdk": "workspace:*"
   }
 }
