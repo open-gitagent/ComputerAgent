@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { EngineDriver, IdentityLoader } from "@computeragent/protocol";
-import { onError } from "./error-mapper.js";
+import type { AuditSink } from "./audit.js";
+import type { AuthHandler } from "./auth.js";
+import { onError, ProtocolError } from "./error-mapper.js";
 import { healthRoute } from "./routes/health.js";
 import { sessionsRoute } from "./routes/sessions.js";
 import { eventsRoute } from "./routes/events.js";
@@ -18,12 +20,19 @@ export interface CreateHarnessServerOptions {
   readonly identityLoaders: Readonly<Record<string, IdentityLoader>>;
   /** Optional override for session TTL in milliseconds. */
   readonly sessionTtlMs?: number;
+  /** Optional audit sink — every emitted event is teed to it. Errors are swallowed. */
+  readonly auditSink?: AuditSink;
+  /** Optional auth handler. Default: no-auth (appropriate only for loopback). */
+  readonly authHandler?: AuthHandler;
+  /** Paths excluded from auth even when an authHandler is set. Default: ["/v1/health"]. */
+  readonly authPublicPaths?: readonly string[];
 }
 
 /** Plug-in references — handed to route modules that need engines/loaders. */
 export interface ServerDeps {
   readonly engines: Readonly<Record<string, EngineDriver>>;
   readonly identityLoaders: Readonly<Record<string, IdentityLoader>>;
+  readonly auditSink?: AuditSink;
 }
 
 /** Full per-server context — deps plus the (mutable) session registry. */
@@ -47,12 +56,37 @@ export function createHarnessServer(opts: CreateHarnessServerOptions): Hono {
   }
 
   const ctx: ServerContext = {
-    deps: { engines: opts.engines, identityLoaders: opts.identityLoaders },
+    deps: {
+      engines: opts.engines,
+      identityLoaders: opts.identityLoaders,
+      ...(opts.auditSink ? { auditSink: opts.auditSink } : {}),
+    },
     registry: new SessionRegistry(opts.sessionTtlMs),
   };
 
   const app = new Hono();
   app.onError(onError);
+
+  if (opts.authHandler) {
+    const handler = opts.authHandler;
+    const publicPaths = new Set(opts.authPublicPaths ?? ["/v1/health"]);
+    app.use("/v1/*", async (c, next) => {
+      if (publicPaths.has(c.req.path)) return next();
+      const result = await handler.authenticate({
+        method: c.req.method,
+        path: c.req.path,
+        headers: new Headers(c.req.raw.headers),
+      });
+      if (!result) {
+        throw new ProtocolError(401, "UNAUTHORIZED", "authentication required");
+      }
+      // AuthContext is available to handlers via c.req.raw.headers if they
+      // need it; we don't attach it to c.var to avoid coupling every route
+      // to a typed Hono Variables map.
+      return next();
+    });
+  }
+
   app.route("/v1", healthRoute(ctx));
   app.route("/v1", sessionsRoute(ctx));
   app.route("/v1", eventsRoute(ctx));

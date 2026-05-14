@@ -6,6 +6,7 @@ import type {
   UserMessage,
 } from "@computeragent/protocol";
 import { ReplayBuffer, type BufferedEvent } from "./replay-buffer.js";
+import type { AuditSink } from "./audit.js";
 
 /** Status a session can hold. Pure state machine, no side effects. */
 export type SessionStatus =
@@ -53,6 +54,7 @@ export class Session {
     readonly identity: { name: string; version: string; sha?: string },
     readonly cleanup?: () => Promise<void>,
     replayBufferSize: number = 1000,
+    private readonly auditSink?: AuditSink,
   ) {
     this.events = new ReplayBuffer<HarnessEvent>(replayBufferSize);
   }
@@ -70,7 +72,22 @@ export class Session {
 
   /** Emit an event into the replay buffer. Returns the wire envelope (id + event). */
   emit(event: HarnessEvent): BufferedEvent<HarnessEvent> {
-    return this.events.push(event);
+    const wrapped = this.events.push(event);
+    if (this.auditSink) {
+      try {
+        const r = this.auditSink.onEvent({
+          sessionId: this.sessionId,
+          eventId: wrapped.id,
+          event,
+          timestamp: Date.now(),
+        });
+        // If the sink returned a promise, swallow its rejection — audit is best-effort.
+        if (r instanceof Promise) r.catch(() => {});
+      } catch {
+        // Sink threw synchronously; ignore.
+      }
+    }
+    return wrapped;
   }
 
   /** Push a user message. The engine's iterator will yield it next. */

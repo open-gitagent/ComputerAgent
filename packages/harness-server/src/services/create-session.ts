@@ -51,6 +51,8 @@ export async function createSession(
     engine.capabilities,
     result.metadata,
     result.cleanup,
+    1000,
+    deps.auditSink,
   );
 
   // Initial messages from the body get enqueued immediately. The engine sees them
