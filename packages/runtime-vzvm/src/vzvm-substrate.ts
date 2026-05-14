@@ -105,6 +105,9 @@ export class VZVMSubstrate implements Substrate {
         { local: SANDBOX_PKG_PATH, remote: `${remoteWorkdir}/package.json` },
       ]);
 
+      log(`ensure node 20 is installed`);
+      await ensureNode(ssh, log);
+
       log(`npm install (Claude Agent SDK + native binary)`);
       const install = await ssh.execCommand(
         `cd ${shellEscape(remoteWorkdir)} && npm install --include=optional --no-fund --no-audit`,
@@ -116,11 +119,16 @@ export class VZVMSubstrate implements Substrate {
 
       log(`spawning node harness.mjs`);
       const envExports = renderEnvExports(opts.envs);
+      // `setsid -f` forks before calling setsid(2): the parent (visible to
+      // ssh.execCommand) returns immediately, while the child becomes a new
+      // session leader fully detached from the SSH channel. `&` + `disown`
+      // and bare `( cmd & )` both leave the top-level bash blocking the
+      // exec channel from closing; setsid -f is the only idiom that
+      // reliably releases it on Ubuntu without sudo.
       const startCmd =
         `cd ${shellEscape(remoteWorkdir)} && ` +
         `${envExports} PORT=${HARNESS_PORT} ` +
-        `nohup node harness.mjs </dev/null >/tmp/harness.log 2>&1 & ` +
-        `disown && echo $!`;
+        `setsid -f node harness.mjs </dev/null >/tmp/harness.log 2>&1`;
       await ssh.execCommand(startCmd);
 
       const baseUrl = `http://${ip}:${HARNESS_PORT}`;
@@ -210,6 +218,26 @@ async function waitForHealth(
     await sleep(pollMs);
   }
   throw new Error(`VZVMSubstrate: harness did not become healthy within ${timeoutMs}ms`);
+}
+
+async function ensureNode(ssh: NodeSSH, log: (s: string) => void): Promise<void> {
+  const check = await ssh.execCommand("command -v node >/dev/null && node -v || true");
+  const installed = check.stdout.trim();
+  if (installed.startsWith("v20.") || installed.startsWith("v22.")) {
+    log(`node already present: ${installed}`);
+    return;
+  }
+  log(`installing Node 20 via NodeSource (one-time per VM, ~30s)`);
+  const setup = await ssh.execCommand(
+    "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && " +
+      "sudo apt-get install -y nodejs",
+    { execOptions: { pty: false } },
+  );
+  if (setup.code !== 0) {
+    throw new Error(`node install failed (code ${setup.code}): ${setup.stderr.slice(0, 800)}`);
+  }
+  const verify = await ssh.execCommand("node -v && npm -v");
+  log(`node installed: ${verify.stdout.trim().replace(/\n/g, " / npm ")}`);
 }
 
 function shellEscape(s: string): string {

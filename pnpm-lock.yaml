@@ -44,6 +44,9 @@ importers:
       '@computeragent/runtime-local':
         specifier: workspace:*
         version: link:../packages/runtime-local
+      '@computeragent/runtime-vzvm':
+        specifier: workspace:*
+        version: link:../packages/runtime-vzvm
       '@computeragent/sdk':
         specifier: workspace:*
         version: link:../packages/sdk

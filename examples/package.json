@@ -13,6 +13,7 @@
     "@computeragent/identity-gitagentprotocol": "workspace:*",
     "@computeragent/runtime-e2b": "workspace:*",
     "@computeragent/runtime-local": "workspace:*",
+    "@computeragent/runtime-vzvm": "workspace:*",
     "@computeragent/sdk": "workspace:*"
   }
 }
