@@ -1,0 +1,30 @@
+{
+  "name": "@computeragent/session-store-mongo",
+  "version": "0.1.0",
+  "description": "MongoDB-backed SessionStore for the ComputerAgent harness — plug-in implementation of the Claude Agent SDK's SessionStore contract.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@computeragent/protocol": "workspace:*",
+    "mongodb": "^6.10.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

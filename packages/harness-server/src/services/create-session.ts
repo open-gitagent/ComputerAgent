@@ -34,7 +34,7 @@ export async function createSession(
   }
 
   const sessionId = body.sessionId ?? `sess_${randomUUID().slice(0, 12)}`;
-  const workdir = await makeWorkdir(sessionId);
+  const workdir = await makeWorkdir(sessionId, Boolean(body.sessionStore));
 
   const result = await loader.load({
     source: body.identity.source,
@@ -81,9 +81,19 @@ export async function createSession(
   return session;
 }
 
-async function makeWorkdir(sessionId: string): Promise<string> {
+async function makeWorkdir(sessionId: string, stable: boolean): Promise<string> {
   const base = join(tmpdir(), "computeragent-sessions");
   await mkdir(base, { recursive: true });
+  if (stable) {
+    // Stable per-sessionId workdir. Required when a sessionStore is in play
+    // because the Claude Agent SDK derives its internal `projectKey` from
+    // the cwd path — for cross-process resume to align, two invocations
+    // under the same sessionId must use the same cwd. Random mkdtemp
+    // suffixes break that alignment.
+    const dir = join(base, sessionId);
+    await mkdir(dir, { recursive: true });
+    return dir;
+  }
   return mkdtemp(join(base, `${sessionId}-`));
 }
 
