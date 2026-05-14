@@ -108,6 +108,9 @@ async function catchEscape<T>(fn: () => Promise<T>): Promise<T> {
     if (err instanceof PathEscapeError) {
       throw BadRequest("PATH_ESCAPE", err.message, { attempted: err.attempted });
     }
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+      throw NotFound("file", (err as NodeJS.ErrnoException).path ?? "?");
+    }
     throw err;
   }
 }

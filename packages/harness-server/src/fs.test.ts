@@ -112,7 +112,7 @@ describe("FS routes — happy path", () => {
     const del = await app.request(`/v1/sessions/${id}/fs/file?path=victim.txt`, { method: "DELETE" });
     expect(del.status).toBe(200);
     const get = await app.request(`/v1/sessions/${id}/fs/file?path=victim.txt`);
-    expect(get.status).toBe(500); // ENOENT bubbles up; not bad-request, not not-found
+    expect(get.status).toBe(404);
   });
 });
 
