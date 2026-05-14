@@ -1,5 +1,7 @@
 export { ComputerAgent } from "./computer-agent.js";
 export { ChatHandle } from "./chat-handle.js";
+export { runTask } from "./run-task.js";
+export type { RunTaskOptions } from "./run-task.js";
 export type {
   ChatInput,
   ChatResult,

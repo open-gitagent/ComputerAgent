@@ -24261,7 +24261,6 @@ class ProtocolError extends Error {
 }
 var NotFound = (resource, id) => new ProtocolError(404, "NOT_FOUND", `${resource} ${id} not found`);
 var BadRequest = (code, message, details) => new ProtocolError(400, code, message, details);
-var Conflict = (code, message) => new ProtocolError(409, code, message);
 var onError = (err, c) => formatError2(c, err);
 function formatError2(c, err) {
   if (err instanceof ProtocolError) {
@@ -24462,6 +24461,77 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
+// ../harness-server/dist/replay-buffer.js
+class ReplayBuffer {
+  maxSize;
+  buffer = [];
+  waiters = [];
+  nextId = 0;
+  closedFlag = false;
+  constructor(maxSize = 1000) {
+    this.maxSize = maxSize;
+  }
+  push(event) {
+    const wrapped = { id: this.nextId++, event };
+    if (this.closedFlag)
+      return wrapped;
+    this.buffer.push(wrapped);
+    if (this.buffer.length > this.maxSize)
+      this.buffer.shift();
+    this.wakeAll();
+    return wrapped;
+  }
+  close() {
+    if (this.closedFlag)
+      return;
+    this.closedFlag = true;
+    this.wakeAll();
+  }
+  get isClosed() {
+    return this.closedFlag;
+  }
+  get lastEventId() {
+    return this.nextId - 1;
+  }
+  get firstRetainedId() {
+    return this.buffer[0]?.id ?? -1;
+  }
+  iterate(opts = {}) {
+    const start = opts.since ?? -1;
+    let cursor = start;
+    const buf = this;
+    return {
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => {
+            for (;; ) {
+              const next = buf.findAfter(cursor);
+              if (next) {
+                cursor = next.id;
+                return { value: next, done: false };
+              }
+              if (buf.closedFlag)
+                return { value: undefined, done: true };
+              await new Promise((resolve) => buf.waiters.push(resolve));
+            }
+          }
+        };
+      }
+    };
+  }
+  findAfter(cursor) {
+    for (const e of this.buffer)
+      if (e.id > cursor)
+        return e;
+    return;
+  }
+  wakeAll() {
+    const pending = this.waiters.splice(0);
+    for (const w of pending)
+      w();
+  }
+}
+
 // ../harness-server/dist/session.js
 class Session {
   sessionId;
@@ -24473,13 +24543,16 @@ class Session {
   capabilities;
   identity;
   cleanup;
+  auditSink;
   status = "pending";
   userQueue = [];
   userResolvers = [];
   permissionMap = new Map;
-  subscribed = false;
+  subscriberCount = 0;
+  engineStarted = false;
   abortController = new AbortController;
-  constructor(sessionId, engineName, loaderName, workdir, engineOptions, envs, capabilities, identity, cleanup) {
+  events;
+  constructor(sessionId, engineName, loaderName, workdir, engineOptions, envs, capabilities, identity, cleanup, replayBufferSize = 1000, auditSink) {
     this.sessionId = sessionId;
     this.engineName = engineName;
     this.loaderName = loaderName;
@@ -24489,6 +24562,30 @@ class Session {
     this.capabilities = capabilities;
     this.identity = identity;
     this.cleanup = cleanup;
+    this.auditSink = auditSink;
+    this.events = new ReplayBuffer(replayBufferSize);
+  }
+  claimEngineStart() {
+    if (this.engineStarted)
+      return false;
+    this.engineStarted = true;
+    return true;
+  }
+  emit(event) {
+    const wrapped = this.events.push(event);
+    if (this.auditSink) {
+      try {
+        const r = this.auditSink.onEvent({
+          sessionId: this.sessionId,
+          eventId: wrapped.id,
+          event,
+          timestamp: Date.now()
+        });
+        if (r instanceof Promise)
+          r.catch(() => {});
+      } catch {}
+    }
+    return wrapped;
   }
   pushUserMessage(msg) {
     this.enqueue({ value: msg });
@@ -24528,13 +24625,14 @@ class Session {
     return true;
   }
   attachSubscriber() {
-    if (this.subscribed)
-      return false;
-    this.subscribed = true;
-    return true;
+    this.subscriberCount += 1;
   }
   detachSubscriber() {
-    this.subscribed = false;
+    if (this.subscriberCount > 0)
+      this.subscriberCount -= 1;
+  }
+  get subscribers() {
+    return this.subscriberCount;
   }
   cancel() {
     if (this.status === "completed" || this.status === "errored")
@@ -24577,7 +24675,9 @@ async function createSession(deps, registry2, body) {
     targetEngine: body.engine,
     workdir
   });
-  const session = new Session(sessionId, body.engine, body.identity.loader, workdir, mergeEngineOptions(result.options, body.options), body.envs ?? {}, engine.capabilities, result.metadata, result.cleanup);
+  const merged = mergeEngineOptions(result.options, body.options);
+  const final = result.harden ? result.harden(merged) : merged;
+  const session = new Session(sessionId, body.engine, body.identity.loader, workdir, final, body.envs ?? {}, engine.capabilities, result.metadata, result.cleanup, 1000, deps.auditSink);
   if (body.messages) {
     for (const m of body.messages)
       session.pushUserMessage(m);
@@ -24817,14 +24917,17 @@ class EventChannel {
 }
 
 // ../harness-server/dist/services/run-session.js
-async function* runSession(engine, session) {
-  yield {
+async function runSession(engine, session) {
+  const push = (ev) => {
+    session.emit(ev);
+  };
+  push({
     kind: "ca_session_started",
     sessionId: session.sessionId,
     engine: session.engineName,
     identity: session.identity,
     capabilities: session.capabilities
-  };
+  });
   session.status = "running";
   const channel = new EventChannel;
   const drain = (async () => {
@@ -24896,11 +24999,12 @@ async function* runSession(engine, session) {
     }
   })();
   for await (const ev of channel) {
-    yield ev;
+    push(ev);
     if (ev.kind === "ca_session_ended")
       break;
   }
   await drain;
+  session.events.close();
 }
 
 // ../harness-server/dist/routes/events.js
@@ -24914,17 +25018,18 @@ function eventsRoute(ctx) {
     const engine = ctx.deps.engines[session.engineName];
     if (!engine)
       throw NotFound("engine", session.engineName);
-    if (!session.attachSubscriber()) {
-      throw Conflict("ALREADY_SUBSCRIBED", "session already has an SSE subscriber");
+    const lastEventId = parseLastEventId(c.req.header("Last-Event-ID"), c.req.query("lastEventId"));
+    if (session.claimEngineStart()) {
+      runSession(engine, session);
     }
+    session.attachSubscriber();
     return streamSSE(c, async (stream2) => {
       stream2.onAbort(() => session.detachSubscriber());
-      let id2 = 0;
       try {
-        for await (const event of runSession(engine, session)) {
+        for await (const { id: eventId, event } of session.events.iterate({ since: lastEventId })) {
           await stream2.writeSSE({
             event: event.kind,
-            id: String(id2++),
+            id: String(eventId),
             data: JSON.stringify(event)
           });
         }
@@ -24936,6 +25041,13 @@ function eventsRoute(ctx) {
   });
   return app;
 }
+function parseLastEventId(header, query) {
+  const raw2 = header ?? query;
+  if (!raw2)
+    return -1;
+  const n = Number.parseInt(raw2, 10);
+  return Number.isFinite(n) ? n : -1;
+}
 
 // ../harness-server/dist/routes/chat.js
 function chatRoute(ctx) {
@@ -24943,21 +25055,22 @@ function chatRoute(ctx) {
   app.post("/chat", async (c) => {
     const body = CreateSessionBody.parse(await c.req.json());
     const session = await createSession(ctx.deps, ctx.registry, body);
-    session.attachSubscriber();
     const engine = ctx.deps.engines[session.engineName];
     if (!engine)
       throw new Error("engine vanished after createSession");
+    session.claimEngineStart();
+    runSession(engine, session);
+    session.attachSubscriber();
     return streamSSE(c, async (stream2) => {
       stream2.onAbort(() => {
         session.cancel();
         ctx.registry.delete(session.sessionId);
       });
-      let id = 0;
       try {
-        for await (const event of runSession(engine, session)) {
+        for await (const { id, event } of session.events.iterate()) {
           await stream2.writeSSE({
             event: event.kind,
-            id: String(id++),
+            id: String(id),
             data: JSON.stringify(event)
           });
         }
@@ -25232,6 +25345,9 @@ async function catchEscape(fn) {
     if (err instanceof PathEscapeError) {
       throw BadRequest("PATH_ESCAPE", err.message, { attempted: err.attempted });
     }
+    if (err?.code === "ENOENT") {
+      throw NotFound("file", err.path ?? "?");
+    }
     throw err;
   }
 }
@@ -25340,11 +25456,32 @@ function createHarnessServer(opts) {
     throw new Error("createHarnessServer: at least one identity loader must be registered");
   }
   const ctx = {
-    deps: { engines: opts.engines, identityLoaders: opts.identityLoaders },
+    deps: {
+      engines: opts.engines,
+      identityLoaders: opts.identityLoaders,
+      ...opts.auditSink ? { auditSink: opts.auditSink } : {}
+    },
     registry: new SessionRegistry(opts.sessionTtlMs)
   };
   const app = new Hono2;
   app.onError(onError);
+  if (opts.authHandler) {
+    const handler = opts.authHandler;
+    const publicPaths = new Set(opts.authPublicPaths ?? ["/v1/health"]);
+    app.use("/v1/*", async (c, next) => {
+      if (publicPaths.has(c.req.path))
+        return next();
+      const result = await handler.authenticate({
+        method: c.req.method,
+        path: c.req.path,
+        headers: new Headers(c.req.raw.headers)
+      });
+      if (!result) {
+        throw new ProtocolError(401, "UNAUTHORIZED", "authentication required");
+      }
+      return next();
+    });
+  }
   app.route("/v1", healthRoute(ctx));
   app.route("/v1", sessionsRoute(ctx));
   app.route("/v1", eventsRoute(ctx));
@@ -25505,8 +25642,8 @@ function signalToController2(signal) {
   return ctrl;
 }
 // ../identity-gitagentprotocol/dist/loader.js
-import { readFile as readFile3 } from "node:fs/promises";
-import { join as join6 } from "node:path";
+import { readFile as readFile6 } from "node:fs/promises";
+import { join as join9 } from "node:path";
 
 // ../../node_modules/.pnpm/yaml@2.8.4/node_modules/yaml/dist/index.js
 var composer = require_composer();
@@ -25570,7 +25707,15 @@ var GapManifest = exports_external.object({
     budget_usd: exports_external.number().nonnegative().optional()
   }).passthrough().optional(),
   skills: exports_external.array(exports_external.string()).optional(),
-  tools: exports_external.array(exports_external.string()).optional()
+  tools: exports_external.array(exports_external.string()).optional(),
+  compliance: exports_external.object({
+    supervision: exports_external.object({
+      human_in_the_loop: exports_external.enum(["always", "destructive", "none"]).optional(),
+      escalation_triggers: exports_external.array(exports_external.string()).optional(),
+      kill_switch: exports_external.boolean().optional(),
+      escalation_recipients: exports_external.array(exports_external.string()).optional()
+    }).passthrough().optional()
+  }).passthrough().optional()
 }).passthrough();
 
 // ../identity-gitagentprotocol/dist/source-resolver.js
@@ -30060,8 +30205,429 @@ async function exists2(path) {
 }
 
 // ../identity-gitagentprotocol/dist/adapters/claude-agent-sdk.js
-import { readFile as readFile2 } from "node:fs/promises";
+import { readFile as readFile5 } from "node:fs/promises";
+import { join as join8 } from "node:path";
+
+// ../identity-gitagentprotocol/dist/tools.js
+import { readFile as readFile2, readdir as readdir2 } from "node:fs/promises";
+import { spawn as spawn2 } from "node:child_process";
 import { join as join5 } from "node:path";
+import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+var GapTool = exports_external.object({
+  name: exports_external.string().min(1),
+  description: exports_external.string().optional(),
+  parameters: exports_external.object({
+    type: exports_external.literal("object").optional(),
+    properties: exports_external.record(exports_external.string(), exports_external.any()).optional(),
+    required: exports_external.array(exports_external.string()).optional()
+  }).passthrough().optional(),
+  implementation: exports_external.object({
+    builtin: exports_external.string().optional(),
+    script: exports_external.object({
+      command: exports_external.string(),
+      args: exports_external.array(exports_external.string()).optional(),
+      cwd: exports_external.string().optional(),
+      env: exports_external.record(exports_external.string(), exports_external.string()).optional(),
+      timeout_ms: exports_external.number().int().positive().optional()
+    }).passthrough().optional()
+  }).passthrough()
+}).passthrough();
+var MCP_SERVER_NAME = "gap_tools";
+async function loadGapTools(workdir) {
+  const yamlFiles = await listToolFiles(workdir);
+  const tools = [];
+  for (const path of yamlFiles) {
+    try {
+      const raw2 = await readFile2(path, "utf8");
+      let yaml;
+      try {
+        yaml = $parse(raw2);
+      } catch {
+        continue;
+      }
+      const parsed = GapTool.safeParse(yaml);
+      if (parsed.success)
+        tools.push(parsed.data);
+    } catch {}
+  }
+  const allowedTools = [];
+  const scriptTools = [];
+  for (const t2 of tools) {
+    if (t2.implementation.builtin) {
+      allowedTools.push(t2.implementation.builtin);
+    } else if (t2.implementation.script) {
+      scriptTools.push(t2);
+    }
+  }
+  if (scriptTools.length === 0) {
+    return { allowedTools, mcpServer: undefined, mcpToolNames: [] };
+  }
+  const sdkTools = scriptTools.map((t2) => buildScriptTool(t2, workdir));
+  const mcpServer = createSdkMcpServer({
+    name: MCP_SERVER_NAME,
+    version: "0.1.0",
+    tools: sdkTools
+  });
+  const mcpToolNames = scriptTools.map((t2) => `mcp__${MCP_SERVER_NAME}__${t2.name}`);
+  return { allowedTools, mcpServer, mcpToolNames };
+}
+async function listToolFiles(workdir) {
+  const dir = join5(workdir, "tools");
+  let names;
+  try {
+    names = await readdir2(dir);
+  } catch {
+    return [];
+  }
+  return names.filter((n) => n.endsWith(".yaml") || n.endsWith(".yml")).map((n) => join5(dir, n));
+}
+function buildScriptTool(t2, workdir) {
+  const shape = jsonSchemaToZodShape(t2.parameters);
+  const script = t2.implementation.script;
+  const handler = async (args) => {
+    const env = {
+      ...process.env,
+      ...script.env ?? {}
+    };
+    for (const [k2, v] of Object.entries(args)) {
+      env[k2.toUpperCase()] = stringify(v);
+    }
+    const { stdout, stderr, code } = await runProcess({
+      command: script.command,
+      args: script.args ?? [],
+      cwd: script.cwd ? join5(workdir, script.cwd) : workdir,
+      env,
+      timeoutMs: script.timeout_ms ?? 30000,
+      stdin: JSON.stringify(args)
+    });
+    if (code !== 0) {
+      return {
+        content: [{ type: "text", text: `exit ${code}: ${stderr.slice(0, 800)}` }],
+        isError: true
+      };
+    }
+    return { content: [{ type: "text", text: stdout }] };
+  };
+  return tool(t2.name, t2.description ?? `GAP tool: ${t2.name}`, shape, handler);
+}
+function runProcess(opts) {
+  return new Promise((resolve2) => {
+    const child = spawn2(opts.command, opts.args, { cwd: opts.cwd, env: opts.env });
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    }, opts.timeoutMs);
+    child.stdout.on("data", (b2) => {
+      stdout += b2.toString();
+    });
+    child.stderr.on("data", (b2) => {
+      stderr += b2.toString();
+    });
+    child.once("error", (err) => {
+      clearTimeout(timer);
+      resolve2({ stdout, stderr: stderr || String(err), code: 127 });
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      const exit = killed ? 124 : code ?? 1;
+      resolve2({ stdout, stderr, code: exit });
+    });
+    try {
+      child.stdin.write(opts.stdin);
+      child.stdin.end();
+    } catch {}
+  });
+}
+function jsonSchemaToZodShape(parameters) {
+  if (!parameters?.properties)
+    return {};
+  const required2 = new Set(parameters.required ?? []);
+  const shape = {};
+  for (const [name, raw2] of Object.entries(parameters.properties)) {
+    const prop = raw2;
+    let z_;
+    switch (prop.type) {
+      case "string":
+        z_ = exports_external.string();
+        break;
+      case "number":
+        z_ = exports_external.number();
+        break;
+      case "integer":
+        z_ = exports_external.number().int();
+        break;
+      case "boolean":
+        z_ = exports_external.boolean();
+        break;
+      case "array":
+        z_ = exports_external.array(exports_external.any());
+        break;
+      case "object":
+        z_ = exports_external.record(exports_external.string(), exports_external.any());
+        break;
+      default:
+        z_ = exports_external.any();
+        break;
+    }
+    if (prop.description)
+      z_ = z_.describe(prop.description);
+    shape[name] = required2.has(name) ? z_ : z_.optional();
+  }
+  return shape;
+}
+function stringify(v) {
+  if (typeof v === "string")
+    return v;
+  if (v === null || v === undefined)
+    return "";
+  return JSON.stringify(v);
+}
+
+// ../identity-gitagentprotocol/dist/subagents.js
+import { readdir as readdir3, readFile as readFile3, stat as stat2 } from "node:fs/promises";
+import { join as join6 } from "node:path";
+var InlineSubagent = exports_external.object({
+  description: exports_external.string().min(1),
+  prompt: exports_external.string().min(1),
+  model: exports_external.string().optional(),
+  tools: exports_external.array(exports_external.string()).optional(),
+  disallowed_tools: exports_external.array(exports_external.string()).optional()
+}).passthrough();
+var NestedSubagentManifest = exports_external.object({
+  name: exports_external.string().optional(),
+  version: exports_external.string().optional(),
+  description: exports_external.string().optional(),
+  model: exports_external.object({ preferred: exports_external.string().optional() }).passthrough().optional(),
+  tools: exports_external.array(exports_external.string()).optional()
+}).passthrough();
+async function loadGapSubagents(workdir) {
+  const dir = join6(workdir, "agents");
+  let entries;
+  try {
+    entries = await readdir3(dir);
+  } catch {
+    return {};
+  }
+  const out = {};
+  for (const entry of entries) {
+    const abs = join6(dir, entry);
+    const info = await safeStat(abs);
+    if (!info)
+      continue;
+    if (info.isDirectory()) {
+      const def = await loadNestedSubagent(abs);
+      if (def)
+        out[entry] = def;
+    } else if (info.isFile() && (entry.endsWith(".yaml") || entry.endsWith(".yml"))) {
+      const name = entry.replace(/\.ya?ml$/, "");
+      const def = await loadInlineSubagent(abs);
+      if (def)
+        out[name] = def;
+    }
+  }
+  return out;
+}
+async function loadInlineSubagent(path) {
+  const raw2 = await readFileSafe(path);
+  if (raw2 === null)
+    return null;
+  let yaml;
+  try {
+    yaml = $parse(raw2);
+  } catch {
+    return null;
+  }
+  const parsed = InlineSubagent.safeParse(yaml);
+  if (!parsed.success)
+    return null;
+  const def = {
+    description: parsed.data.description,
+    prompt: parsed.data.prompt
+  };
+  if (parsed.data.model)
+    def.model = parsed.data.model;
+  if (parsed.data.tools)
+    def.tools = parsed.data.tools;
+  if (parsed.data.disallowed_tools)
+    def.disallowedTools = parsed.data.disallowed_tools;
+  return def;
+}
+async function loadNestedSubagent(dir) {
+  const manifestRaw = await readFileSafe(join6(dir, "agent.yaml"));
+  const soul = await readFileSafe(join6(dir, "SOUL.md"));
+  if (!soul)
+    return null;
+  let description = "Sub-agent";
+  let model;
+  let tools;
+  if (manifestRaw) {
+    let yaml;
+    try {
+      yaml = $parse(manifestRaw);
+    } catch {
+      yaml = undefined;
+    }
+    const parsed = NestedSubagentManifest.safeParse(yaml);
+    if (parsed.success) {
+      if (parsed.data.description)
+        description = parsed.data.description;
+      if (parsed.data.model?.preferred)
+        model = parsed.data.model.preferred;
+      if (parsed.data.tools)
+        tools = parsed.data.tools;
+    }
+  }
+  const def = {
+    description,
+    prompt: soul.trim()
+  };
+  if (model)
+    def.model = model;
+  if (tools)
+    def.tools = tools;
+  return def;
+}
+async function safeStat(path) {
+  try {
+    return await stat2(path);
+  } catch {
+    return null;
+  }
+}
+async function readFileSafe(path) {
+  try {
+    return await readFile3(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// ../identity-gitagentprotocol/dist/hooks.js
+import { spawn as spawn3 } from "node:child_process";
+import { readFile as readFile4 } from "node:fs/promises";
+import { join as join7 } from "node:path";
+var HookEntry = exports_external.object({
+  matcher: exports_external.string().optional(),
+  command: exports_external.string().min(1),
+  timeout_ms: exports_external.number().int().positive().optional()
+}).passthrough();
+var HooksFile = exports_external.record(exports_external.string(), exports_external.array(HookEntry));
+var DEFAULT_TIMEOUT_MS = 30000;
+async function loadGapHooks(workdir) {
+  const path = join7(workdir, "hooks", "hooks.yaml");
+  const raw2 = await readFileSafe2(path);
+  if (raw2 === null)
+    return {};
+  let yaml;
+  try {
+    yaml = $parse(raw2);
+  } catch {
+    return {};
+  }
+  const parsed = HooksFile.safeParse(yaml);
+  if (!parsed.success)
+    return {};
+  const out = {};
+  for (const [event, entries] of Object.entries(parsed.data)) {
+    const matchers = [];
+    for (const entry of entries) {
+      matchers.push(buildMatcher(entry, workdir));
+    }
+    if (matchers.length > 0) {
+      out[event] = matchers;
+    }
+  }
+  return out;
+}
+function buildMatcher(entry, workdir) {
+  const timeoutMs = entry.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+  const callback = async (input, _toolUseID, options) => {
+    const result = await runHook({
+      command: entry.command,
+      cwd: workdir,
+      input: JSON.stringify(input),
+      timeoutMs,
+      abortSignal: options.signal
+    });
+    if (result.code !== 0) {
+      return { systemMessage: `hook '${entry.command}' exited ${result.code}: ${result.stderr.slice(0, 400)}` };
+    }
+    const out = parseHookOutput(result.stdout);
+    return out;
+  };
+  const matcher = { hooks: [callback] };
+  if (entry.matcher !== undefined)
+    matcher.matcher = entry.matcher;
+  if (entry.timeout_ms !== undefined)
+    matcher.timeout = Math.ceil(entry.timeout_ms / 1000);
+  return matcher;
+}
+function parseHookOutput(stdout) {
+  const trimmed2 = stdout.trim();
+  if (trimmed2 === "")
+    return {};
+  try {
+    return JSON.parse(trimmed2);
+  } catch {
+    return {};
+  }
+}
+function runHook(opts) {
+  return new Promise((resolve2) => {
+    const child = spawn3(opts.command, { cwd: opts.cwd, shell: true });
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    }, opts.timeoutMs);
+    const onAbort = () => {
+      killed = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    };
+    opts.abortSignal.addEventListener("abort", onAbort, { once: true });
+    child.stdout.on("data", (b2) => {
+      stdout += b2.toString();
+    });
+    child.stderr.on("data", (b2) => {
+      stderr += b2.toString();
+    });
+    child.once("error", (err) => {
+      clearTimeout(timer);
+      opts.abortSignal.removeEventListener("abort", onAbort);
+      resolve2({ stdout, stderr: stderr || String(err), code: 127 });
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      opts.abortSignal.removeEventListener("abort", onAbort);
+      const exit = killed ? 124 : code ?? 1;
+      resolve2({ stdout, stderr, code: exit });
+    });
+    try {
+      child.stdin.write(opts.input);
+      child.stdin.end();
+    } catch {}
+  });
+}
+async function readFileSafe2(path) {
+  try {
+    return await readFile4(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// ../identity-gitagentprotocol/dist/adapters/claude-agent-sdk.js
 async function gapToClaudeAgentOptions(manifest, workdir) {
   const append2 = await stitchSystemPrompt(workdir, manifest);
   const opts = {
@@ -30073,7 +30639,32 @@ async function gapToClaudeAgentOptions(manifest, workdir) {
     opts.maxTurns = manifest.runtime.max_turns;
   if (manifest.runtime?.budget_usd !== undefined)
     opts.maxBudgetUsd = manifest.runtime.budget_usd;
-  return opts;
+  const tools = await loadGapTools(workdir);
+  if (tools.allowedTools.length > 0 || tools.mcpToolNames.length > 0) {
+    opts.allowedTools = [...tools.allowedTools, ...tools.mcpToolNames];
+  }
+  if (tools.mcpServer) {
+    opts.mcpServers = { gap_tools: tools.mcpServer };
+  }
+  const agents = await loadGapSubagents(workdir);
+  if (Object.keys(agents).length > 0) {
+    opts.agents = agents;
+  }
+  const hooks = await loadGapHooks(workdir);
+  if (Object.keys(hooks).length > 0) {
+    opts.hooks = hooks;
+  }
+  const hitl = manifest.compliance?.supervision?.human_in_the_loop;
+  const requiresHumanReview = hitl === "always" || hitl === "destructive";
+  return {
+    options: opts,
+    harden: (merged) => {
+      if (requiresHumanReview && merged.permissionMode === "bypassPermissions") {
+        return { ...merged, permissionMode: "default" };
+      }
+      return merged;
+    }
+  };
 }
 async function stitchSystemPrompt(workdir, m) {
   const sections = [];
@@ -30082,17 +30673,17 @@ name: ${m.name}
 version: ${m.version}`);
   if (m.description)
     sections.push(`description: ${m.description}`);
-  const soul = await readIfPresent(join5(workdir, "SOUL.md"));
+  const soul = await readIfPresent(join8(workdir, "SOUL.md"));
   if (soul)
     sections.push(`# Soul
 
 ${soul.trim()}`);
-  const rules = await readIfPresent(join5(workdir, "RULES.md"));
+  const rules = await readIfPresent(join8(workdir, "RULES.md"));
   if (rules)
     sections.push(`# Rules
 
 ${rules.trim()}`);
-  const agentsMd = await readIfPresent(join5(workdir, "AGENTS.md"));
+  const agentsMd = await readIfPresent(join8(workdir, "AGENTS.md"));
   if (agentsMd)
     sections.push(`# Agents
 
@@ -30103,7 +30694,7 @@ ${agentsMd.trim()}`);
 }
 async function readIfPresent(path) {
   try {
-    return await readFile2(path, "utf8");
+    return await readFile5(path, "utf8");
   } catch {
     return null;
   }
@@ -30116,7 +30707,7 @@ async function gapToGitagentOptions(manifest, workdir) {
     opts.model = manifest.model.preferred;
   if (manifest.runtime?.max_turns)
     opts.maxTurns = manifest.runtime.max_turns;
-  return opts;
+  return { options: opts, harden: (m) => m };
 }
 
 // ../identity-gitagentprotocol/dist/loader.js
@@ -30137,9 +30728,10 @@ class GitAgentProtocolLoader {
     if (args.targetEngine === "claude-agent-sdk") {
       await mirrorSkillsForClaude(repoPath);
     }
-    const options = await adapter(manifest, repoPath);
+    const { options, harden } = await adapter(manifest, repoPath);
     return {
       options,
+      harden,
       metadata: {
         name: manifest.name,
         version: manifest.version
@@ -30147,7 +30739,7 @@ class GitAgentProtocolLoader {
     };
   }
   async readManifest(repoPath) {
-    const raw2 = await readFile3(join6(repoPath, "agent.yaml"), "utf8");
+    const raw2 = await readFile6(join9(repoPath, "agent.yaml"), "utf8");
     const parsed = $parse(raw2);
     return GapManifest.parse(parsed);
   }

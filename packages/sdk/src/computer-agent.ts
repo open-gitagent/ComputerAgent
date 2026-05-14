@@ -57,6 +57,15 @@ export class ComputerAgent {
   }
 
   /**
+   * Enables `await using agent = new ComputerAgent({...})` — TC39 explicit
+   * resource management. The substrate (if any) is torn down automatically
+   * when the agent goes out of scope.
+   */
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.dispose();
+  }
+
+  /**
    * Resolve the harness URL the agent talks to. Triggers substrate boot if
    * needed (lazy + memoized). Mainly useful for callers that want to call
    * `/v1/sessions/:id/fs/*` directly through the same URL.
