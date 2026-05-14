@@ -3,17 +3,17 @@ import { gapToGitagentOptions } from "./gitagent.js";
 
 describe("gapToGitagentOptions", () => {
   it("returns the workdir as dir", async () => {
-    const opts = await gapToGitagentOptions(
+    const { options } = await gapToGitagentOptions(
       { name: "x", version: "1.0.0" } as never,
       "/tmp/agent",
     );
-    expect(opts.dir).toBe("/tmp/agent");
-    expect(opts.model).toBeUndefined();
-    expect(opts.maxTurns).toBeUndefined();
+    expect(options.dir).toBe("/tmp/agent");
+    expect(options.model).toBeUndefined();
+    expect(options.maxTurns).toBeUndefined();
   });
 
   it("forwards model and maxTurns when present", async () => {
-    const opts = await gapToGitagentOptions(
+    const { options } = await gapToGitagentOptions(
       {
         name: "x",
         version: "1.0.0",
@@ -22,7 +22,7 @@ describe("gapToGitagentOptions", () => {
       } as never,
       "/tmp/agent",
     );
-    expect(opts).toEqual({
+    expect(options).toEqual({
       dir: "/tmp/agent",
       model: "openai:gpt-4o-mini",
       maxTurns: 12,

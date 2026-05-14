@@ -75,6 +75,15 @@ export interface IdentityLoadResult<TOptions = unknown> {
     readonly version: string;
     readonly sha?: string;
   };
+  /**
+   * Optional post-merge hardening hook. Applied AFTER caller-supplied options
+   * are merged on top of `options`. Use this to enforce identity-level
+   * constraints that must override caller choices — e.g. a GAP manifest with
+   * `compliance.supervision.human_in_the_loop: always` should reject any
+   * caller attempt to set `permissionMode: bypassPermissions`. The "strictest
+   * wins" rule lives here.
+   */
+  readonly harden?: (merged: TOptions) => TOptions;
   /** Optional cleanup; called when the session ends. */
   readonly cleanup?: () => Promise<void>;
 }

@@ -31,6 +31,27 @@ export const GapManifest = z
       .optional(),
     skills: z.array(z.string()).optional(),
     tools: z.array(z.string()).optional(),
+    compliance: z
+      .object({
+        supervision: z
+          .object({
+            /**
+             * GAP supervision mode. When `always`, the harness rejects caller
+             * options that would bypass tool-call confirmation (the "strictest
+             * wins" rule from PLAN.md). `destructive` is reserved for future
+             * use — the MVP translator treats it the same as `always`. `none`
+             * is the default permissive mode.
+             */
+            human_in_the_loop: z.enum(["always", "destructive", "none"]).optional(),
+            escalation_triggers: z.array(z.string()).optional(),
+            kill_switch: z.boolean().optional(),
+            escalation_recipients: z.array(z.string()).optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 

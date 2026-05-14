@@ -41,12 +41,15 @@ export async function createSession(
     workdir,
   });
 
+  const merged = mergeEngineOptions(result.options, body.options);
+  const final = result.harden ? result.harden(merged) : merged;
+
   const session = new Session(
     sessionId,
     body.engine,
     body.identity.loader,
     workdir,
-    mergeEngineOptions(result.options, body.options),
+    final,
     body.envs ?? {},
     engine.capabilities,
     result.metadata,

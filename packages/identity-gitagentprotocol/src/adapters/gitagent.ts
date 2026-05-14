@@ -16,12 +16,19 @@ export interface GitagentOptions {
   maxTurns?: number;
 }
 
+export interface GitagentAdapterResult {
+  options: GitagentOptions;
+  harden: (merged: GitagentOptions) => GitagentOptions;
+}
+
 export async function gapToGitagentOptions(
   manifest: GapManifest,
   workdir: string,
-): Promise<GitagentOptions> {
+): Promise<GitagentAdapterResult> {
   const opts: GitagentOptions = { dir: workdir };
   if (manifest.model?.preferred) opts.model = manifest.model.preferred;
   if (manifest.runtime?.max_turns) opts.maxTurns = manifest.runtime.max_turns;
-  return opts;
+  // gitclaw does not yet expose a permission-mode knob through its options
+  // surface; HITL enforcement on this engine is a future-PR concern.
+  return { options: opts, harden: (m) => m };
 }

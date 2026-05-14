@@ -3,6 +3,12 @@ import { join } from "node:path";
 import type { ClaudeAgentOptions } from "@computeragent/protocol";
 import type { GapManifest } from "../manifest.js";
 
+export interface ClaudeAdapterResult {
+  options: ClaudeAgentOptions;
+  /** Post-merge hardening: enforces GAP compliance constraints over any caller overrides. */
+  harden: (merged: ClaudeAgentOptions) => ClaudeAgentOptions;
+}
+
 /**
  * GAP → Claude Agent SDK options translator. Pure-ish: side effects limited to
  * reading docs files (SOUL.md, RULES.md, AGENTS.md) from the workdir.
@@ -13,12 +19,16 @@ import type { GapManifest } from "../manifest.js";
  *   agent.yaml.runtime.budget_usd       → maxBudgetUsd
  *   SOUL.md + RULES.md + AGENTS.md      → systemPrompt (preset = claude_code, append = stitched)
  *
- * Out of scope (future): tools/ → MCP, agents/ → sub-agents, hooks/, full compliance.
+ * Compliance hardening (strictest-wins, applied AFTER caller options merge in):
+ *   compliance.supervision.human_in_the_loop in {always, destructive}
+ *     → permissionMode: 'default' (overrides caller's bypassPermissions)
+ *
+ * Out of scope (future): tools/ → MCP, agents/ → sub-agents, hooks/.
  */
 export async function gapToClaudeAgentOptions(
   manifest: GapManifest,
   workdir: string,
-): Promise<ClaudeAgentOptions> {
+): Promise<ClaudeAdapterResult> {
   const append = await stitchSystemPrompt(workdir, manifest);
   const opts: ClaudeAgentOptions = {
     systemPrompt: { type: "preset", preset: "claude_code", append },
@@ -26,7 +36,19 @@ export async function gapToClaudeAgentOptions(
   if (manifest.model?.preferred) opts.model = manifest.model.preferred;
   if (manifest.runtime?.max_turns) opts.maxTurns = manifest.runtime.max_turns;
   if (manifest.runtime?.budget_usd !== undefined) opts.maxBudgetUsd = manifest.runtime.budget_usd;
-  return opts;
+
+  const hitl = manifest.compliance?.supervision?.human_in_the_loop;
+  const requiresHumanReview = hitl === "always" || hitl === "destructive";
+
+  return {
+    options: opts,
+    harden: (merged) => {
+      if (requiresHumanReview && merged.permissionMode === "bypassPermissions") {
+        return { ...merged, permissionMode: "default" };
+      }
+      return merged;
+    },
+  };
 }
 
 async function stitchSystemPrompt(workdir: string, m: GapManifest): Promise<string> {

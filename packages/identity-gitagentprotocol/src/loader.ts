@@ -8,11 +8,15 @@ import { mirrorSkillsForClaude } from "./skills.js";
 import { gapToClaudeAgentOptions } from "./adapters/claude-agent-sdk.js";
 import { gapToGitagentOptions } from "./adapters/gitagent.js";
 
-type AdapterFn = (manifest: GapManifest, workdir: string) => Promise<unknown>;
+interface AdapterResult {
+  options: unknown;
+  harden: (merged: unknown) => unknown;
+}
+type AdapterFn = (manifest: GapManifest, workdir: string) => Promise<AdapterResult>;
 
 const ADAPTERS: Record<string, AdapterFn> = {
-  "claude-agent-sdk": gapToClaudeAgentOptions,
-  "gitagent": gapToGitagentOptions,
+  "claude-agent-sdk": gapToClaudeAgentOptions as AdapterFn,
+  "gitagent": gapToGitagentOptions as AdapterFn,
 };
 
 /**
@@ -44,9 +48,10 @@ export class GitAgentProtocolLoader implements IdentityLoader<unknown> {
       await mirrorSkillsForClaude(repoPath);
     }
 
-    const options = await adapter(manifest, repoPath);
+    const { options, harden } = await adapter(manifest, repoPath);
     return {
       options,
+      harden,
       metadata: {
         name: manifest.name,
         version: manifest.version,
