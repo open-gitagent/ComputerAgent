@@ -190,6 +190,10 @@ function runProcess(opts: RunOpts): Promise<RunResult> {
       const exit = killed ? 124 : (code ?? 1);
       resolve({ stdout, stderr, code: exit });
     });
+    // Swallow EPIPE (process exited before stdin was consumed) — async stream errors
+    // bypass the try/catch around .write(); without this listener Node reports an
+    // unhandled error.
+    child.stdin.on("error", () => { /* ignore */ });
     try { child.stdin.write(opts.stdin); child.stdin.end(); } catch { /* ignore */ }
   });
 }

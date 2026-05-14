@@ -140,6 +140,8 @@ function runHook(opts: RunOpts): Promise<RunResult> {
       const exit = killed ? 124 : (code ?? 1);
       resolve({ stdout, stderr, code: exit });
     });
+    // Swallow EPIPE — process may exit before consuming stdin.
+    child.stdin.on("error", () => { /* ignore */ });
     try { child.stdin.write(opts.input); child.stdin.end(); } catch { /* ignore */ }
   });
 }
