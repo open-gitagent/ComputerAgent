@@ -1,6 +1,6 @@
 import type { IdentitySource } from "./identity-source.js";
 import type { UserMessage } from "./harness-rest.js";
-import type { PermissionResult } from "./sdk-passthrough.js";
+import type { PermissionResult, SessionStore } from "./sdk-passthrough.js";
 
 /**
  * Capabilities an engine declares at registration. Surfaced via `/v1/health`
@@ -45,6 +45,13 @@ export interface EngineContext<TOptions = unknown> {
   readonly abortSignal: AbortSignal;
   /** Optional hard cost cap. */
   readonly budget?: { readonly maxUsd?: number };
+  /**
+   * Optional pluggable session store. When set, the engine should use it for
+   * conversation persistence — append turn entries, and on first turn check
+   * for prior entries to resume from. Presence of the store IS the resume
+   * signal; the engine decides based on what `load()` returns.
+   */
+  readonly sessionStore?: SessionStore;
 }
 
 /** Discriminated union of events an engine can emit. */

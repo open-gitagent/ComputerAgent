@@ -3,6 +3,7 @@ import type { EngineDriver, IdentityLoader } from "@computeragent/protocol";
 import type { AuditSink } from "./audit.js";
 import type { AuthHandler } from "./auth.js";
 import { onError, ProtocolError } from "./error-mapper.js";
+import { DEFAULT_STORE_BUILDERS, type SessionStoreRegistry } from "./stores/registry.js";
 import { healthRoute } from "./routes/health.js";
 import { sessionsRoute } from "./routes/sessions.js";
 import { eventsRoute } from "./routes/events.js";
@@ -26,6 +27,12 @@ export interface CreateHarnessServerOptions {
   readonly authHandler?: AuthHandler;
   /** Paths excluded from auth even when an authHandler is set. Default: ["/v1/health"]. */
   readonly authPublicPaths?: readonly string[];
+  /**
+   * Optional swappable SessionStore builders, keyed by `kind`. Merged on top
+   * of built-in `memory` and `file` kinds — users can override defaults or
+   * add new ones (`mongo`, `redis`, etc.) without forking the framework.
+   */
+  readonly sessionStores?: SessionStoreRegistry;
 }
 
 /** Plug-in references — handed to route modules that need engines/loaders. */
@@ -33,6 +40,7 @@ export interface ServerDeps {
   readonly engines: Readonly<Record<string, EngineDriver>>;
   readonly identityLoaders: Readonly<Record<string, IdentityLoader>>;
   readonly auditSink?: AuditSink;
+  readonly sessionStores: SessionStoreRegistry;
 }
 
 /** Full per-server context — deps plus the (mutable) session registry. */
@@ -60,6 +68,7 @@ export function createHarnessServer(opts: CreateHarnessServerOptions): Hono {
       engines: opts.engines,
       identityLoaders: opts.identityLoaders,
       ...(opts.auditSink ? { auditSink: opts.auditSink } : {}),
+      sessionStores: { ...DEFAULT_STORE_BUILDERS, ...(opts.sessionStores ?? {}) },
     },
     registry: new SessionRegistry(opts.sessionTtlMs),
   };

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IdentitySource } from "./identity-source.js";
+import { SessionStoreConfig } from "./session-store-config.js";
 
 /**
  * Zod schemas for every REST request and response body in the Harness Protocol.
@@ -43,6 +44,13 @@ export const CreateSessionBody = z.object({
    * (and call `POST /sessions/:id/end-input` to close the queue itself).
    */
   streamingInput: z.boolean().optional(),
+  /**
+   * Optional swappable session store. When set, the server resolves `kind`
+   * via the registry configured at `createHarnessServer({ sessionStores })`
+   * and hands the live store to the engine. Presence of this field + a known
+   * `sessionId` IS the resume signal — no separate flag.
+   */
+  sessionStore: SessionStoreConfig.optional(),
 });
 export type CreateSessionBody = z.infer<typeof CreateSessionBody>;
 

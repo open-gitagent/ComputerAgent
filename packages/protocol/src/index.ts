@@ -4,6 +4,7 @@ export * from "./identity-source.js";
 export * from "./harness-rest.js";
 export * from "./sse-events.js";
 export * from "./contracts.js";
+export { SessionStoreConfig } from "./session-store-config.js";
 export type {
   SDKMessage,
   SDKAssistantMessage,
@@ -16,4 +17,7 @@ export type {
   PermissionMode,
   CanUseTool,
   PermissionResult,
+  SessionStore,
+  SessionStoreEntry,
+  SessionKey,
 } from "./sdk-passthrough.js";

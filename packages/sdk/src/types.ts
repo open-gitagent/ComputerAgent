@@ -2,6 +2,7 @@ import type {
   HarnessEvent,
   IdentitySource,
   PermissionResult,
+  SessionStoreConfig,
   UserMessage,
 } from "@computeragent/protocol";
 import type { Substrate } from "./substrate.js";
@@ -54,6 +55,17 @@ export interface ComputerAgentOptions {
   readonly onToolCall?: (call: ToolCallContext) => Promise<PermissionDecision> | PermissionDecision;
   /** Custom fetch (for testing or proxy). */
   readonly fetch?: typeof fetch;
+  /**
+   * Optional swappable SessionStore for conversation persistence. The server
+   * resolves the `kind` via its registry (built-in: `"memory"`, `"file"`;
+   * custom kinds registered via `createHarnessServer({ sessionStores })`).
+   *
+   * Combined with `sessionId`, this enables resume across process restarts:
+   * pass the same store config + sessionId, the engine loads prior entries
+   * and continues. Pass without a known sessionId to start a fresh persisted
+   * session.
+   */
+  readonly sessionStore?: SessionStoreConfig;
 }
 
 /** Resolved final outcome of a chat turn (or chained turns drained via `.run()`). */

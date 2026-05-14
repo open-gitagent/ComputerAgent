@@ -7,6 +7,7 @@ import { Session } from "../session.js";
 import { SessionRegistry } from "../registry.js";
 import { BadRequest } from "../error-mapper.js";
 import type { ServerDeps } from "../app.js";
+import { resolveStore } from "../stores/registry.js";
 
 /**
  * Orchestrates session creation: resolves engine + loader, materializes the workdir,
@@ -44,6 +45,10 @@ export async function createSession(
   const merged = mergeEngineOptions(result.options, body.options);
   const final = result.harden ? result.harden(merged) : merged;
 
+  const sessionStore = body.sessionStore
+    ? resolveStore(deps.sessionStores, body.sessionStore)
+    : undefined;
+
   const session = new Session(
     sessionId,
     body.engine,
@@ -56,6 +61,7 @@ export async function createSession(
     result.cleanup,
     1000,
     deps.auditSink,
+    sessionStore,
   );
 
   // Initial messages from the body get enqueued immediately. The engine sees them

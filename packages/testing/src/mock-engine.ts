@@ -37,9 +37,15 @@ const DEFAULT_CAPABILITIES: EngineCapabilities = {
 export class MockEngine implements EngineDriver<unknown> {
   readonly name = "mock";
   readonly capabilities: EngineCapabilities;
-  readonly received: { permissions: PermissionRequest[]; userMessages: unknown[] } = {
+  readonly received: {
+    permissions: PermissionRequest[];
+    userMessages: unknown[];
+    /** Populated on first startSession() call when ctx.sessionStore is present. */
+    loadedEntries: unknown[] | null;
+  } = {
     permissions: [],
     userMessages: [],
+    loadedEntries: null,
   };
 
   constructor(
@@ -52,10 +58,27 @@ export class MockEngine implements EngineDriver<unknown> {
   async *startSession(ctx: EngineContext<unknown>): AsyncIterable<EngineEvent> {
     const userIter = ctx.userMessageQueue[Symbol.asyncIterator]();
 
+    // When the framework provides a SessionStore, observe its contract:
+    // load() once at start (so tests can verify resume), then append() each
+    // emitted payload (so tests can verify persistence). Inert when absent.
+    if (ctx.sessionStore) {
+      const loaded = await ctx.sessionStore.load({
+        projectKey: "mock",
+        sessionId: ctx.sessionId,
+      });
+      this.received.loadedEntries = loaded;
+    }
+
     for (const step of this.script) {
       if (ctx.abortSignal.aborted) return;
 
       if (step.kind === "emit") {
+        if (ctx.sessionStore) {
+          await ctx.sessionStore.append(
+            { projectKey: "mock", sessionId: ctx.sessionId },
+            [{ type: "mock_emit", uuid: `${ctx.sessionId}-${this.received.userMessages.length + this.received.permissions.length}-${(step.payload as { uuid?: string })?.uuid ?? Math.random()}`, payload: step.payload }],
+          );
+        }
         yield { kind: "sdk_message", payload: step.payload };
       } else if (step.kind === "ask_permission") {
         const callId = `mock-call-${this.received.permissions.length + 1}`;

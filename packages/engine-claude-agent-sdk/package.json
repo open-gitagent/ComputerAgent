@@ -21,9 +21,11 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.132",
-    "@computeragent/protocol": "workspace:*"
+    "@computeragent/protocol": "workspace:*",
+    "uuid": "^11.0.0"
   },
   "devDependencies": {
+    "@types/uuid": "^10.0.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }

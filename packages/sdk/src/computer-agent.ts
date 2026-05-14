@@ -32,6 +32,15 @@ export class ComputerAgent {
   private booted: BootedHarness | null = null;
   private bootingPromise: Promise<string> | null = null;
   private existingSessionId: string | undefined;
+  /**
+   * True once this instance has POSTed to /v1/sessions. Distinct from
+   * `existingSessionId !== undefined`: a constructor-supplied sessionId
+   * still needs an initial /v1/sessions POST so the server registers a
+   * Session entry for it (and the engine receives any sessionStore config).
+   * After the first chat(), subsequent chats reuse the same session via
+   * /v1/sessions/:id/messages within this instance.
+   */
+  private hasRegisteredOnServer = false;
 
   constructor(private readonly opts: ComputerAgentOptions) {
     this.source = normalizeSource(opts.source);
@@ -76,15 +85,16 @@ export class ComputerAgent {
 
   /** Run a turn. See ChatHandle for usage shapes. */
   chat(input: ChatInput): ChatHandle {
-    const isFirst = this.existingSessionId === undefined;
+    const isFirstOnServer = !this.hasRegisteredOnServer;
+    this.hasRegisteredOnServer = true;
     const isStreamingInput = isAsyncIterableInput(input);
     const harnessUrlPromise = this.resolveHarnessUrl();
 
-    const sessionIdPromise = isFirst
+    const sessionIdPromise = isFirstOnServer
       ? this.createSession(toMessageArray(input), isStreamingInput, harnessUrlPromise)
       : Promise.resolve(this.existingSessionId!);
 
-    if (!isFirst || isStreamingInput) {
+    if (!isFirstOnServer || isStreamingInput) {
       void sessionIdPromise.then(async (sid) => {
         await this.pushMessages(sid, input, harnessUrlPromise);
         if (isStreamingInput) await this.postEndInput(sid, harnessUrlPromise);
@@ -138,6 +148,7 @@ export class ComputerAgent {
     if (this.opts.options) body.options = this.opts.options;
     if (this.opts.sessionId) body.sessionId = this.opts.sessionId;
     if (streamingInput) body.streamingInput = true;
+    if (this.opts.sessionStore) body.sessionStore = this.opts.sessionStore;
 
     const res = await this.fetchImpl(`${harnessUrl}/v1/sessions`, {
       method: "POST",

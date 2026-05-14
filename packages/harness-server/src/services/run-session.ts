@@ -59,6 +59,7 @@ export async function runSession(
           return session.awaitPermission(req);
         },
         abortSignal: session.abortController.signal,
+        ...(session.sessionStore ? { sessionStore: session.sessionStore } : {}),
       });
 
       for await (const event of stream) {

@@ -173,6 +173,20 @@ export const conformanceCases: readonly ConformanceCase[] = [
       assert(res.status === 400, `expected 400, got ${res.status}`);
     },
   },
+  {
+    group: "validation",
+    name: "POST /v1/sessions with unknown sessionStore.kind returns 400 UNKNOWN_STORE",
+    async run(d) {
+      const res = await d.request("/v1/sessions", json({
+        ...baseBody,
+        sessionStore: { kind: "definitely-not-a-real-store" },
+      }));
+      assert(res.status === 400, `expected 400, got ${res.status}`);
+      const body = (await res.json()) as { error?: { code?: string; details?: { available?: string[] } } };
+      assert(body.error?.code === "UNKNOWN_STORE", `expected UNKNOWN_STORE, got ${body.error?.code}`);
+      assert(Array.isArray(body.error?.details?.available), "available list must be present");
+    },
+  },
 
   // ── SSE event stream ──────────────────────────────────────────────────────
   {

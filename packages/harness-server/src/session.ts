@@ -3,6 +3,7 @@ import type {
   HarnessEvent,
   PermissionRequest,
   PermissionResult,
+  SessionStore,
   UserMessage,
 } from "@computeragent/protocol";
 import { ReplayBuffer, type BufferedEvent } from "./replay-buffer.js";
@@ -55,6 +56,7 @@ export class Session {
     readonly cleanup?: () => Promise<void>,
     replayBufferSize: number = 1000,
     private readonly auditSink?: AuditSink,
+    readonly sessionStore?: SessionStore,
   ) {
     this.events = new ReplayBuffer<HarnessEvent>(replayBufferSize);
   }

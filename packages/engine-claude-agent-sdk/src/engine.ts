@@ -8,6 +8,7 @@ import type {
   UserMessage,
 } from "@computeragent/protocol";
 import { buildCanUseTool } from "./permission-bridge.js";
+import { deriveEngineUuid } from "./derive-uuid.js";
 
 const CAPABILITIES: EngineCapabilities = {
   streamingInput: true,
@@ -49,6 +50,13 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
       abortController,
       canUseTool: buildCanUseTool(ctx.onPermissionRequest),
       ...(ctx.budget?.maxUsd !== undefined ? { maxBudgetUsd: ctx.budget.maxUsd } : {}),
+      // When the framework provides a SessionStore, we wire it through and
+      // ask the SDK to resume under a deterministic UUIDv5 derived from the
+      // harness sessionId. The SDK's load() returns null on first turn (no
+      // prior entries) and replays prior transcript on subsequent turns.
+      ...(ctx.sessionStore
+        ? { sessionStore: ctx.sessionStore, resume: deriveEngineUuid(ctx.sessionId) }
+        : {}),
     };
 
     for await (const message of query({ prompt, options })) {

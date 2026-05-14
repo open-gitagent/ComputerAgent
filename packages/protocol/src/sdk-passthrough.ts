@@ -18,4 +18,7 @@ export type {
   PermissionMode,
   CanUseTool,
   PermissionResult,
+  SessionStore,
+  SessionStoreEntry,
+  SessionKey,
 } from "@anthropic-ai/claude-agent-sdk";
