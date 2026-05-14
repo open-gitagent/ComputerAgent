@@ -9,3 +9,5 @@ export { MemorySessionStore } from "./stores/memory-store.js";
 export { FileSessionStore } from "./stores/file-store.js";
 export { DEFAULT_STORE_BUILDERS, resolveStore } from "./stores/registry.js";
 export type { SessionStoreBuilder, SessionStoreRegistry } from "./stores/registry.js";
+export { wrapValidatingStore } from "./stores/validating-store.js";
+export type { ValidatingStoreStats } from "./stores/validating-store.js";

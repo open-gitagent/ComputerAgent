@@ -8,6 +8,7 @@ import { SessionRegistry } from "../registry.js";
 import { BadRequest } from "../error-mapper.js";
 import type { ServerDeps } from "../app.js";
 import { resolveStore } from "../stores/registry.js";
+import { wrapValidatingStore } from "../stores/validating-store.js";
 
 /**
  * Orchestrates session creation: resolves engine + loader, materializes the workdir,
@@ -45,9 +46,12 @@ export async function createSession(
   const merged = mergeEngineOptions(result.options, body.options);
   const final = result.harden ? result.harden(merged) : merged;
 
-  const sessionStore = body.sessionStore
+  const rawStore = body.sessionStore
     ? resolveStore(deps.sessionStores, body.sessionStore)
     : undefined;
+  const sessionStore = rawStore && deps.validateStoreEntries
+    ? wrapValidatingStore(rawStore)
+    : rawStore;
 
   const session = new Session(
     sessionId,

@@ -33,6 +33,18 @@ export interface CreateHarnessServerOptions {
    * add new ones (`mongo`, `redis`, etc.) without forking the framework.
    */
   readonly sessionStores?: SessionStoreRegistry;
+  /**
+   * When true, the framework validates entries returned by `SessionStore.load()`
+   * against the minimum SessionStoreEntry contract (object with a string
+   * `type` field). Malformed entries are silently dropped before reaching the
+   * engine. Default OFF — the framework is a pass-through and engine drivers
+   * validate.
+   *
+   * Turn ON when the store is shared with external systems that might write
+   * incompatible records, or for production deployments that want the
+   * framework to enforce the contract at the boundary.
+   */
+  readonly validateStoreEntries?: boolean;
 }
 
 /** Plug-in references — handed to route modules that need engines/loaders. */
@@ -41,6 +53,7 @@ export interface ServerDeps {
   readonly identityLoaders: Readonly<Record<string, IdentityLoader>>;
   readonly auditSink?: AuditSink;
   readonly sessionStores: SessionStoreRegistry;
+  readonly validateStoreEntries: boolean;
 }
 
 /** Full per-server context — deps plus the (mutable) session registry. */
@@ -69,6 +82,7 @@ export function createHarnessServer(opts: CreateHarnessServerOptions): Hono {
       identityLoaders: opts.identityLoaders,
       ...(opts.auditSink ? { auditSink: opts.auditSink } : {}),
       sessionStores: { ...DEFAULT_STORE_BUILDERS, ...(opts.sessionStores ?? {}) },
+      validateStoreEntries: opts.validateStoreEntries ?? false,
     },
     registry: new SessionRegistry(opts.sessionTtlMs),
   };
