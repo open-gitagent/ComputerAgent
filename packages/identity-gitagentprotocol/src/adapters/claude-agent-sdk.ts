@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ClaudeAgentOptions } from "@computeragent/protocol";
 import type { GapManifest } from "../manifest.js";
+import { loadGapTools } from "../tools.js";
 
 export interface ClaudeAdapterResult {
   options: ClaudeAgentOptions;
@@ -36,6 +37,14 @@ export async function gapToClaudeAgentOptions(
   if (manifest.model?.preferred) opts.model = manifest.model.preferred;
   if (manifest.runtime?.max_turns) opts.maxTurns = manifest.runtime.max_turns;
   if (manifest.runtime?.budget_usd !== undefined) opts.maxBudgetUsd = manifest.runtime.budget_usd;
+
+  const tools = await loadGapTools(workdir);
+  if (tools.allowedTools.length > 0 || tools.mcpToolNames.length > 0) {
+    opts.allowedTools = [...tools.allowedTools, ...tools.mcpToolNames];
+  }
+  if (tools.mcpServer) {
+    opts.mcpServers = { gap_tools: tools.mcpServer };
+  }
 
   const hitl = manifest.compliance?.supervision?.human_in_the_loop;
   const requiresHumanReview = hitl === "always" || hitl === "destructive";

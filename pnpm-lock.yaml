@@ -123,6 +123,9 @@ importers:
 
   packages/identity-gitagentprotocol:
     dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.2.132
+        version: 0.2.136(zod@4.4.3)
       '@computeragent/protocol':
         specifier: workspace:*
         version: link:../protocol
