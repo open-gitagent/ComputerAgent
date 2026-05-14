@@ -4,14 +4,17 @@ import type {
   EngineContext,
   EngineDriver,
   EngineEvent,
+  SessionStore,
   UserMessage,
 } from "@computeragent/protocol";
 import { buildPreToolUse } from "./permission-bridge.js";
 import {
   appendAssistantTurn,
   appendUserTurn,
+  nextTurnIndex,
   PROJECT_KEY,
   renderPriorContext,
+  TurnIndexer,
 } from "./session-replay.js";
 
 const CAPABILITIES: EngineCapabilities = {
@@ -54,17 +57,14 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
     // SessionStore replay: gitclaw has no native sessionStore parameter, so
     // when one is configured we synthesize resume by loading prior turns and
     // injecting them via systemPromptSuffix, then writing each new exchange
-    // back. See ./session-replay.ts.
+    // back. See ./session-replay.ts. A single TurnIndexer is shared between
+    // user and assistant persistence so the document on disk sorts by
+    // turnIndex into true conversation order regardless of write interleaving.
+    const store = ctx.sessionStore;
     const storeKey = { projectKey: PROJECT_KEY, sessionId: ctx.sessionId };
-    const priorSuffix = ctx.sessionStore
-      ? renderPriorContext((await ctx.sessionStore.load(storeKey)) ?? [])
-      : null;
-    const ordinalStart = priorSuffix ? countPriorTurns(priorSuffix) : 0;
-
-    // Track user messages so we can persist them after capture; this also
-    // adapts our queue to gitclaw's GCUserMessage shape.
-    const capturedUserMessages: string[] = [];
-    const prompt = adaptUserMessages(ctx.userMessageQueue, capturedUserMessages);
+    const prior = store ? (await store.load(storeKey)) ?? [] : [];
+    const priorSuffix = renderPriorContext(prior);
+    const indexer = new TurnIndexer(nextTurnIndex(prior));
 
     const abortController = signalToController(ctx.abortSignal);
 
@@ -72,6 +72,17 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
     const systemPromptSuffix = priorSuffix
       ? (baseSuffix ? `${baseSuffix}\n\n${priorSuffix}` : priorSuffix)
       : (baseSuffix || undefined);
+
+    // Adapter that persists each user message BEFORE forwarding to gitclaw,
+    // so the document records the message in turn-correct order even if the
+    // turn errors out partway through (the prior assistant→user ordering
+    // problem in v1 of this code).
+    const prompt = adaptAndPersistUserMessages(
+      ctx.userMessageQueue,
+      ctx.sessionId,
+      store,
+      indexer,
+    );
 
     const options: QueryOptions = {
       prompt,
@@ -83,36 +94,17 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
       ...(systemPromptSuffix ? { systemPromptSuffix } : {}),
     };
 
-    let assistantOrdinal = ordinalStart;
     for await (const message of query(options)) {
       if (ctx.abortSignal.aborted) break;
       yield { kind: "sdk_message", payload: message };
-      if (ctx.sessionStore) {
+      if (store) {
         const text = extractAssistantText(message);
         if (text) {
-          assistantOrdinal += 1;
-          await appendAssistantTurn(ctx.sessionStore, ctx.sessionId, text, assistantOrdinal);
+          await appendAssistantTurn(store, ctx.sessionId, text, indexer.next());
         }
       }
     }
-
-    // Persist user messages now that the turn has finished. We do this at the
-    // end (rather than per-message) so a turn cancelled mid-flight doesn't
-    // half-persist; user messages are durable iff the turn produced output.
-    if (ctx.sessionStore && capturedUserMessages.length > 0) {
-      let userOrdinal = ordinalStart;
-      for (const text of capturedUserMessages) {
-        userOrdinal += 1;
-        await appendUserTurn(ctx.sessionStore, ctx.sessionId, text, userOrdinal);
-      }
-    }
   }
-}
-
-function countPriorTurns(rendered: string): number {
-  // Used to derive a stable ordinal for new turn entries so uuids don't
-  // collide with prior content. Cheap line-count proxy is good enough.
-  return (rendered.match(/^(user|assistant):/gm) ?? []).length;
 }
 
 function extractAssistantText(message: unknown): string {
@@ -129,16 +121,21 @@ function stripDir<T extends { dir?: string }>(opts: T): Omit<T, "dir"> {
 
 /**
  * Bridge our UserMessage queue to gitclaw's GCUserMessage AsyncIterable.
- * When `captured` is supplied, each forwarded message is also recorded so
- * the engine can persist it to the SessionStore after the turn completes.
+ * When a SessionStore is configured, each user message is persisted before
+ * being forwarded to gitclaw — so the document records turns in true
+ * conversation order even if the turn errors out partway through.
  */
-async function* adaptUserMessages(
+async function* adaptAndPersistUserMessages(
   queue: AsyncIterable<UserMessage>,
-  captured?: string[],
+  sessionId: string,
+  store: SessionStore | undefined,
+  indexer: TurnIndexer,
 ): AsyncIterable<GCUserMessage> {
   for await (const m of queue) {
     const text = flattenContent(m.content);
-    captured?.push(text);
+    if (store) {
+      await appendUserTurn(store, sessionId, text, indexer.next());
+    }
     yield { type: "user", content: text };
   }
 }
