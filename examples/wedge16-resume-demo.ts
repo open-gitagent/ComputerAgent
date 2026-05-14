@@ -112,7 +112,7 @@ async function main(): Promise<void> {
           lastText = p.result;
         }
       } else if (ev.kind === "ca_session_ended") {
-        console.error(`[demo] session ended: ${ev.reason}`);
+        console.error(`[demo] session ended: ${ev.reason}${ev.errorMessage ? `  error=${ev.errorMessage}` : ""}`);
       }
     }
 

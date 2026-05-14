@@ -42,6 +42,38 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
     const prompt = adaptUserMessages(ctx.userMessageQueue, ctx.sessionId);
     const abortController = signalToController(ctx.abortSignal);
 
+    // SessionStore wiring. Strategy:
+    //   - Always pass `sessionStore` when set (so the SDK appends turn
+    //     entries).
+    //   - Always pin `sessionId` to a deterministic UUIDv5 derived from
+    //     the harness sessionId. This makes the SDK write+read under the
+    //     SAME key across turns; without it the SDK auto-generates a fresh
+    //     UUID per turn and the next turn can't find anything to resume.
+    //   - Only pass `resume: <uuid>` when prior entries actually exist
+    //     under that key. The SDK errors when asked to resume a UUID with
+    //     no prior data.
+    const engineUuid = deriveEngineUuid(ctx.sessionId);
+    let storeOpts: {
+      sessionStore?: typeof ctx.sessionStore;
+      sessionId?: string;
+      resume?: string;
+    } = {};
+    if (ctx.sessionStore) {
+      const prior = await ctx.sessionStore.load({
+        projectKey: PROJECT_KEY,
+        sessionId: engineUuid,
+      });
+      if (prior && prior.length > 0) {
+        // Resuming an existing session: pass `resume` only. The Claude SDK
+        // uses the resumed session's id internally for future appends.
+        storeOpts = { sessionStore: ctx.sessionStore, resume: engineUuid };
+      } else {
+        // Fresh session under our deterministic key: pin `sessionId` so
+        // appends land under the same key the next turn will look up.
+        storeOpts = { sessionStore: ctx.sessionStore, sessionId: engineUuid };
+      }
+    }
+
     const options: ClaudeAgentOptions = {
       ...ctx.options,
       cwd: ctx.workdir,
@@ -50,13 +82,7 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
       abortController,
       canUseTool: buildCanUseTool(ctx.onPermissionRequest),
       ...(ctx.budget?.maxUsd !== undefined ? { maxBudgetUsd: ctx.budget.maxUsd } : {}),
-      // When the framework provides a SessionStore, we wire it through and
-      // ask the SDK to resume under a deterministic UUIDv5 derived from the
-      // harness sessionId. The SDK's load() returns null on first turn (no
-      // prior entries) and replays prior transcript on subsequent turns.
-      ...(ctx.sessionStore
-        ? { sessionStore: ctx.sessionStore, resume: deriveEngineUuid(ctx.sessionId) }
-        : {}),
+      ...storeOpts,
     };
 
     for await (const message of query({ prompt, options })) {
@@ -65,6 +91,13 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
     }
   }
 }
+
+/**
+ * Project key used when probing the SessionStore. Stable across processes so
+ * a session written by one harness can be loaded by another against the same
+ * store. Engines for other projects should use their own constants.
+ */
+const PROJECT_KEY = "computeragent";
 
 /**
  * Bridges our `AsyncIterable<UserMessage>` to the SDK's expected
