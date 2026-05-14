@@ -1,9 +1,11 @@
 import type {
   EngineCapabilities,
+  HarnessEvent,
   PermissionRequest,
   PermissionResult,
   UserMessage,
 } from "@computeragent/protocol";
+import { ReplayBuffer, type BufferedEvent } from "./replay-buffer.js";
 
 /** Status a session can hold. Pure state machine, no side effects. */
 export type SessionStatus =
@@ -35,8 +37,10 @@ export class Session {
     string,
     { resolve: (r: PermissionResult) => void; originalInput: unknown }
   >();
-  private subscribed = false;
+  private subscriberCount = 0;
+  private engineStarted = false;
   readonly abortController = new AbortController();
+  readonly events: ReplayBuffer<HarnessEvent>;
 
   constructor(
     readonly sessionId: string,
@@ -48,7 +52,26 @@ export class Session {
     readonly capabilities: EngineCapabilities,
     readonly identity: { name: string; version: string; sha?: string },
     readonly cleanup?: () => Promise<void>,
-  ) {}
+    replayBufferSize: number = 1000,
+  ) {
+    this.events = new ReplayBuffer<HarnessEvent>(replayBufferSize);
+  }
+
+  /**
+   * Whether the engine drive has already been kicked off for this session.
+   * The kickoff is idempotent — multiple SSE GETs to the same session share
+   * one engine drive and read from the replay buffer.
+   */
+  claimEngineStart(): boolean {
+    if (this.engineStarted) return false;
+    this.engineStarted = true;
+    return true;
+  }
+
+  /** Emit an event into the replay buffer. Returns the wire envelope (id + event). */
+  emit(event: HarnessEvent): BufferedEvent<HarnessEvent> {
+    return this.events.push(event);
+  }
 
   /** Push a user message. The engine's iterator will yield it next. */
   pushUserMessage(msg: UserMessage): void {
@@ -106,16 +129,18 @@ export class Session {
     return true;
   }
 
-  /** Mark this session as having an SSE subscriber. Returns false if one exists already. */
-  attachSubscriber(): boolean {
-    if (this.subscribed) return false;
-    this.subscribed = true;
-    return true;
+  /** Track an SSE subscriber. Multiple concurrent subscribers are allowed. */
+  attachSubscriber(): void {
+    this.subscriberCount += 1;
   }
 
-  /** Detach (e.g. on disconnect or stream end). Lets a future GET re-attach in MVP. */
+  /** Detach (e.g. on disconnect or stream end). */
   detachSubscriber(): void {
-    this.subscribed = false;
+    if (this.subscriberCount > 0) this.subscriberCount -= 1;
+  }
+
+  get subscribers(): number {
+    return this.subscriberCount;
   }
 
   cancel(): void {

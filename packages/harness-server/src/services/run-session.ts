@@ -3,34 +3,43 @@ import type { Session } from "../session.js";
 import { EventChannel } from "../event-channel.js";
 
 /**
- * Drives the engine for a session and yields HarnessEvents in order.
+ * Drives the engine for a session and pushes every emitted event into the
+ * session's replay buffer. Closes the buffer when the engine terminates
+ * (cleanly, cancelled, or errored).
  *
- * Emits exactly one `ca_session_started` first and exactly one `ca_session_ended` last.
- * Forwards engine `sdk_message` events verbatim. When the engine calls
- * `onPermissionRequest`, a `ca_permission_request` event is pushed to the SSE
- * stream BEFORE the permission promise is awaited — so clients see the callId
- * and can POST a decision.
+ * Engine drive is per-session, not per-connection. Multiple SSE consumers can
+ * iterate `session.events` concurrently or sequentially; all see the same
+ * monotonic id sequence. Resolves when the engine finishes.
  *
- * Errors and aborts collapse into the terminal `ca_session_ended` event — never
- * throws past its own iteration boundary.
+ * Emits exactly one `ca_session_started` first and exactly one `ca_session_ended`
+ * last. Forwards engine `sdk_message` events verbatim. When the engine calls
+ * `onPermissionRequest`, a `ca_permission_request` event is pushed BEFORE the
+ * permission promise is awaited — so clients see the callId and can POST a
+ * decision.
+ *
+ * Errors and aborts collapse into the terminal `ca_session_ended` event. Never
+ * throws past its own boundary.
  */
-export async function* runSession(
+export async function runSession(
   engine: EngineDriver,
   session: Session,
-): AsyncIterable<HarnessEvent> {
-  yield {
+): Promise<void> {
+  const push = (ev: HarnessEvent): void => {
+    session.emit(ev);
+  };
+
+  push({
     kind: "ca_session_started",
     sessionId: session.sessionId,
     engine: session.engineName,
     identity: session.identity,
     capabilities: session.capabilities,
-  };
+  });
 
   session.status = "running";
 
   const channel = new EventChannel<HarnessEvent>();
 
-  // Drain the engine into the channel in the background.
   const drain = (async () => {
     try {
       const stream = engine.startSession({
@@ -101,8 +110,9 @@ export async function* runSession(
   })();
 
   for await (const ev of channel) {
-    yield ev;
+    push(ev);
     if (ev.kind === "ca_session_ended") break;
   }
   await drain;
+  session.events.close();
 }

@@ -1,14 +1,20 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ServerContext } from "../app.js";
-import { Conflict, NotFound } from "../error-mapper.js";
+import { NotFound } from "../error-mapper.js";
 import { runSession } from "../services/run-session.js";
 
 /**
  * GET /v1/sessions/:id/events — SSE stream.
  *
- * One subscriber per session for MVP. The first GET kicks off the engine; a second
- * concurrent GET gets 409 CONFLICT. Multi-client fan-out is a Wedge 1.5 concern.
+ * Engine drive is per-session: the first GET kicks it off, every subsequent
+ * GET reads from the same replay buffer. Reconnecting clients can supply
+ * `Last-Event-ID: N` (or `?lastEventId=N`) to skip events ≤ N — the buffer
+ * replays any retained events with id > N then tails new ones as they arrive.
+ *
+ * If `Last-Event-ID` is older than the buffer's retained tail, the client has
+ * fallen behind the ring; they get partial replay, which is better than silent
+ * data loss but should be surfaced to the application layer for reconciliation.
  */
 export function eventsRoute(ctx: ServerContext): Hono {
   const app = new Hono();
@@ -21,22 +27,24 @@ export function eventsRoute(ctx: ServerContext): Hono {
     const engine = ctx.deps.engines[session.engineName];
     if (!engine) throw NotFound("engine", session.engineName);
 
-    if (!session.attachSubscriber()) {
-      throw Conflict("ALREADY_SUBSCRIBED", "session already has an SSE subscriber");
+    const lastEventId = parseLastEventId(c.req.header("Last-Event-ID"), c.req.query("lastEventId"));
+
+    if (session.claimEngineStart()) {
+      void runSession(engine, session);
     }
+    session.attachSubscriber();
 
     return streamSSE(c, async (stream) => {
       stream.onAbort(() => session.detachSubscriber());
-      let id = 0;
       try {
-        for await (const event of runSession(engine, session)) {
+        for await (const { id: eventId, event } of session.events.iterate({ since: lastEventId })) {
           await stream.writeSSE({
             event: event.kind,
-            id: String(id++),
+            id: String(eventId),
             data: JSON.stringify(event),
           });
         }
-        // Give Bun's HTTP layer a tick to flush the chunked-encoding terminator
+        // Give the HTTP layer a tick to flush the chunked-encoding terminator
         // before stream.close() tears down the socket. Without this, curl can
         // exit with code 18 ("partial file") even on a clean run.
         await stream.sleep(50);
@@ -47,4 +55,11 @@ export function eventsRoute(ctx: ServerContext): Hono {
   });
 
   return app;
+}
+
+function parseLastEventId(header: string | undefined, query: string | undefined): number {
+  const raw = header ?? query;
+  if (!raw) return -1;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : -1;
 }
