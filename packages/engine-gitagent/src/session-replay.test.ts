@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SessionKey, SessionStore, SessionStoreEntry } from "@computeragent/protocol";
+import type { SessionStoreEntry } from "@computeragent/protocol";
+import { MemorySessionStore } from "@computeragent/harness-server";
 import {
   appendAssistantTurn,
   appendUserTurn,
@@ -7,26 +8,6 @@ import {
   renderPriorContext,
   TurnIndexer,
 } from "./session-replay.js";
-
-class InMemoryStore implements SessionStore {
-  private readonly bySession = new Map<string, SessionStoreEntry[]>();
-  async append(key: SessionKey, entries: SessionStoreEntry[]): Promise<void> {
-    const list = this.bySession.get(key.sessionId) ?? [];
-    const seen = new Set(list.map((e) => e.uuid).filter(Boolean) as string[]);
-    for (const e of entries) {
-      if (e.uuid && seen.has(e.uuid)) continue;
-      list.push(e);
-      if (e.uuid) seen.add(e.uuid);
-    }
-    this.bySession.set(key.sessionId, list);
-  }
-  async load(key: SessionKey): Promise<SessionStoreEntry[] | null> {
-    return this.bySession.get(key.sessionId) ?? null;
-  }
-  size(sessionId: string): number {
-    return this.bySession.get(sessionId)?.length ?? 0;
-  }
-}
 
 describe("nextTurnIndex", () => {
   it("returns 0 when there are no prior entries", () => {
@@ -90,27 +71,27 @@ describe("renderPriorContext", () => {
 
 describe("appendUserTurn + appendAssistantTurn via MemorySessionStore", () => {
   it("idempotency: same role+turnIndex+text replays produce the same uuid", async () => {
-    const store = new InMemoryStore();
+    const store = new MemorySessionStore();
     await appendUserTurn(store, "s1", "hello", 0);
     await appendUserTurn(store, "s1", "hello", 0);
     expect(await store.size("s1")).toBe(1);
   });
 
   it("different turnIndex → different uuid → both retained", async () => {
-    const store = new InMemoryStore();
+    const store = new MemorySessionStore();
     await appendUserTurn(store, "s1", "hello", 0);
     await appendUserTurn(store, "s1", "hello", 1);
     expect(await store.size("s1")).toBe(2);
   });
 
   it("appendAssistantTurn skips empty text", async () => {
-    const store = new InMemoryStore();
+    const store = new MemorySessionStore();
     await appendAssistantTurn(store, "s1", "", 0);
     expect(await store.size("s1")).toBe(0);
   });
 
   it("entries carry turnIndex and timestamp", async () => {
-    const store = new InMemoryStore();
+    const store = new MemorySessionStore();
     await appendAssistantTurn(store, "s1", "ok", 7);
     const entries = await store.load({ projectKey: "p", sessionId: "s1" });
     expect(entries).toHaveLength(1);

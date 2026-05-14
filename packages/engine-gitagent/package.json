@@ -24,6 +24,7 @@
     "gitclaw": "^1.4.1"
   },
   "devDependencies": {
+    "@computeragent/harness-server": "workspace:*",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }
