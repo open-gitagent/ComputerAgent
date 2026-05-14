@@ -4,6 +4,7 @@ import type { ClaudeAgentOptions } from "@computeragent/protocol";
 import type { GapManifest } from "../manifest.js";
 import { loadGapTools } from "../tools.js";
 import { loadGapSubagents } from "../subagents.js";
+import { loadGapHooks } from "../hooks.js";
 
 export interface ClaudeAdapterResult {
   options: ClaudeAgentOptions;
@@ -50,6 +51,11 @@ export async function gapToClaudeAgentOptions(
   const agents = await loadGapSubagents(workdir);
   if (Object.keys(agents).length > 0) {
     opts.agents = agents;
+  }
+
+  const hooks = await loadGapHooks(workdir);
+  if (Object.keys(hooks).length > 0) {
+    opts.hooks = hooks;
   }
 
   const hitl = manifest.compliance?.supervision?.human_in_the_loop;
