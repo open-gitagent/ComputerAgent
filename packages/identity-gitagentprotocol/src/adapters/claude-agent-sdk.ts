@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ClaudeAgentOptions } from "@computeragent/protocol";
 import type { GapManifest } from "../manifest.js";
 import { loadGapTools } from "../tools.js";
+import { loadGapSubagents } from "../subagents.js";
 
 export interface ClaudeAdapterResult {
   options: ClaudeAgentOptions;
@@ -44,6 +45,11 @@ export async function gapToClaudeAgentOptions(
   }
   if (tools.mcpServer) {
     opts.mcpServers = { gap_tools: tools.mcpServer };
+  }
+
+  const agents = await loadGapSubagents(workdir);
+  if (Object.keys(agents).length > 0) {
+    opts.agents = agents;
   }
 
   const hitl = manifest.compliance?.supervision?.human_in_the_loop;

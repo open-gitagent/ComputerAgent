@@ -79,7 +79,9 @@ export async function loadGapTools(workdir: string): Promise<ToolsLoadResult> {
   for (const path of yamlFiles) {
     try {
       const raw = await readFile(path, "utf8");
-      const parsed = GapTool.safeParse(parseYaml(raw));
+      let yaml: unknown;
+      try { yaml = parseYaml(raw); } catch { continue; }
+      const parsed = GapTool.safeParse(yaml);
       if (parsed.success) tools.push(parsed.data);
       // Tools that fail validation are silently skipped — surfacing the error
       // would couple this translator to a logging API. Validators can be
