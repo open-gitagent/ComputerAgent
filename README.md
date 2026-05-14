@@ -20,7 +20,7 @@ ComputerAgent decomposes the agent stack into three orthogonal axes — any comb
 | 3 — Substrates | `runtime-local`, `runtime-e2b`, `runtime-vzvm` | ✅ |
 | 1.5 — Hardening | replay buffer, audit log, auth, conformance suite | future |
 
-102 tests across 11 packages, all green. End-to-end live demos against real Anthropic + E2B APIs verified.
+102 tests across 11 packages, all green. End-to-end live demos verified across all three substrates against the real Anthropic API: local subprocess, E2B cloud sandbox, and Apple VZVirtualMachine via Tart.
 
 See [`PLAN.md`](./PLAN.md) for the full architecture history.
 
