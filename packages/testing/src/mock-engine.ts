@@ -13,6 +13,15 @@ import type { PermissionResult } from "@computeragent/protocol";
  */
 export type MockStep =
   | { kind: "emit"; payload: unknown }
+  | {
+      kind: "emit_usage";
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheCreationInputTokens?: number;
+      cacheReadInputTokens?: number;
+      costUsd?: number;
+      costSemantic?: "cumulative" | "delta";
+    }
   | { kind: "ask_permission"; toolName: string; input?: unknown; expect: PermissionResult["behavior"] }
   | { kind: "wait_for_user_message" }
   | { kind: "wait_ms"; ms: number };
@@ -80,6 +89,20 @@ export class MockEngine implements EngineDriver<unknown> {
           );
         }
         yield { kind: "sdk_message", payload: step.payload };
+      } else if (step.kind === "emit_usage") {
+        yield {
+          kind: "ca_usage_snapshot",
+          ...(step.inputTokens !== undefined ? { inputTokens: step.inputTokens } : {}),
+          ...(step.outputTokens !== undefined ? { outputTokens: step.outputTokens } : {}),
+          ...(step.cacheCreationInputTokens !== undefined
+            ? { cacheCreationInputTokens: step.cacheCreationInputTokens }
+            : {}),
+          ...(step.cacheReadInputTokens !== undefined
+            ? { cacheReadInputTokens: step.cacheReadInputTokens }
+            : {}),
+          ...(step.costUsd !== undefined ? { costUsd: step.costUsd } : {}),
+          ...(step.costSemantic !== undefined ? { costSemantic: step.costSemantic } : {}),
+        };
       } else if (step.kind === "ask_permission") {
         const callId = `mock-call-${this.received.permissions.length + 1}`;
         const req: PermissionRequest = {

@@ -51,13 +51,23 @@ export const CaPermissionRequestEvent = baseEvent("ca_permission_request").exten
 });
 export type CaPermissionRequestEvent = z.infer<typeof CaPermissionRequestEvent>;
 
-/** Periodic usage snapshot — token + cost telemetry. */
+/**
+ * Periodic usage snapshot — token + cost telemetry.
+ *
+ * Token fields are per-message (tokens used by one LLM call). The SDK
+ * aggregates them into `ChatResult.usage` via summation.
+ *
+ * `costSemantic` tells aggregators how to combine `costUsd` across multiple
+ * snapshots — see the engine's contract. Cost is never computed client-side
+ * from a price table; engines pass through whatever their provider returned.
+ */
 export const CaUsageSnapshotEvent = baseEvent("ca_usage_snapshot").extend({
   inputTokens: z.number().int().nonnegative().optional(),
   outputTokens: z.number().int().nonnegative().optional(),
   cacheCreationInputTokens: z.number().int().nonnegative().optional(),
   cacheReadInputTokens: z.number().int().nonnegative().optional(),
   costUsd: z.number().nonnegative().optional(),
+  costSemantic: z.enum(["cumulative", "delta"]).optional(),
 });
 export type CaUsageSnapshotEvent = z.infer<typeof CaUsageSnapshotEvent>;
 

@@ -32,6 +32,7 @@ export type {
   RunTaskOptions,
   SessionStoreKind,
   ToolCallContext,
+  UsageRollup,
   Substrate,
   BootHarnessOptions,
   BootedHarness,

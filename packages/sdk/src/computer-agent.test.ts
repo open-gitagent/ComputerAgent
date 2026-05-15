@@ -205,6 +205,97 @@ describe("ComputerAgent — multi-turn", () => {
     }
   });
 
+  it("ChatResult.usage aggregates token snapshots (sums tokens) and cumulative cost (max) — issue #5", async () => {
+    const engine = new MockEngine([
+      // Turn-1 snapshot from a Claude-SDK-like engine: cumulative cost.
+      { kind: "emit_usage", inputTokens: 100, outputTokens: 200, costUsd: 0.01, costSemantic: "cumulative" },
+      // A second cumulative snapshot from the same engine — running total grew.
+      { kind: "emit_usage", inputTokens: 50, outputTokens: 75, costUsd: 0.025, costSemantic: "cumulative" },
+      { kind: "emit", payload: { type: "result", result: "ok" } },
+    ]);
+    serverHandle = await bootServer(engine);
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+    });
+
+    const result = await agent.chat("hi");
+    // Tokens sum across snapshots.
+    expect(result.usage.inputTokens).toBe(150);
+    expect(result.usage.outputTokens).toBe(275);
+    // Cumulative cost — max value seen.
+    expect(result.usage.costUsd).toBe(0.025);
+  });
+
+  it("ChatResult.usage sums delta-semantic cost across per-message snapshots", async () => {
+    // gitclaw-style: each assistant message reports its own per-call cost.
+    const engine = new MockEngine([
+      { kind: "emit_usage", inputTokens: 80, outputTokens: 120, costUsd: 0.004, costSemantic: "delta" },
+      { kind: "emit_usage", inputTokens: 40, outputTokens: 60, costUsd: 0.002, costSemantic: "delta" },
+      { kind: "emit", payload: { type: "result", result: "ok" } },
+    ]);
+    serverHandle = await bootServer(engine);
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+    });
+
+    const result = await agent.chat("hi");
+    expect(result.usage.inputTokens).toBe(120);
+    expect(result.usage.outputTokens).toBe(180);
+    // Delta cost — summed.
+    expect(result.usage.costUsd).toBeCloseTo(0.006, 6);
+  });
+
+  it("ChatResult.usage returns zeros + undefined cost when engine emits no snapshots", async () => {
+    const engine = new MockEngine([
+      { kind: "emit", payload: { type: "result", result: "ok" } },
+    ]);
+    serverHandle = await bootServer(engine);
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+    });
+
+    const result = await agent.chat("hi");
+    expect(result.usage).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      costUsd: undefined,
+    });
+  });
+
+  it("ChatResult.usage handles tokens-only snapshots (cost stays undefined)", async () => {
+    const engine = new MockEngine([
+      { kind: "emit_usage", inputTokens: 10, outputTokens: 20 },   // no costUsd
+      { kind: "emit", payload: { type: "result", result: "ok" } },
+    ]);
+    serverHandle = await bootServer(engine);
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+    });
+
+    const result = await agent.chat("hi");
+    expect(result.usage.inputTokens).toBe(10);
+    expect(result.usage.outputTokens).toBe(20);
+    expect(result.usage.costUsd).toBeUndefined();
+  });
+
   it("two sequential .chat() calls produce distinct responses (issue #2)", async () => {
     // Two turns scripted in one engine session. The engine waits for each
     // user message in turn, then emits a result. If the SDK's multi-turn

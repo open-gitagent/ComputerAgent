@@ -24546,7 +24546,8 @@ var CaUsageSnapshotEvent = baseEvent("ca_usage_snapshot").extend({
   outputTokens: exports_external.number().int().nonnegative().optional(),
   cacheCreationInputTokens: exports_external.number().int().nonnegative().optional(),
   cacheReadInputTokens: exports_external.number().int().nonnegative().optional(),
-  costUsd: exports_external.number().nonnegative().optional()
+  costUsd: exports_external.number().nonnegative().optional(),
+  costSemantic: exports_external.enum(["cumulative", "delta"]).optional()
 });
 var CaSessionEndedEvent = baseEvent("ca_session_ended").extend({
   reason: exports_external.enum(["complete", "cancelled", "error", "budget_exceeded"]),
@@ -25118,7 +25119,10 @@ async function runSession(engine, session) {
             sessionId: session.sessionId,
             ...event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {},
             ...event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {},
-            ...event.costUsd !== undefined ? { costUsd: event.costUsd } : {}
+            ...event.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: event.cacheCreationInputTokens } : {},
+            ...event.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: event.cacheReadInputTokens } : {},
+            ...event.costUsd !== undefined ? { costUsd: event.costUsd } : {},
+            ...event.costSemantic !== undefined ? { costSemantic: event.costSemantic } : {}
           });
         }
       }
@@ -25798,9 +25802,28 @@ class ClaudeAgentEngine {
     for await (const message of query({ prompt, options })) {
       if (ctx.abortSignal.aborted)
         break;
+      const snapshot = toUsageSnapshot(message);
+      if (snapshot)
+        yield snapshot;
       yield { kind: "sdk_message", payload: message };
     }
   }
+}
+function toUsageSnapshot(message) {
+  const m = message;
+  if (m?.type !== "result")
+    return;
+  const u = m.usage;
+  if (!u && m.total_cost_usd === undefined)
+    return;
+  return {
+    kind: "ca_usage_snapshot",
+    ...u?.input_tokens !== undefined ? { inputTokens: u.input_tokens } : {},
+    ...u?.output_tokens !== undefined ? { outputTokens: u.output_tokens } : {},
+    ...u?.cache_creation_input_tokens !== undefined ? { cacheCreationInputTokens: u.cache_creation_input_tokens } : {},
+    ...u?.cache_read_input_tokens !== undefined ? { cacheReadInputTokens: u.cache_read_input_tokens } : {},
+    ...m.total_cost_usd !== undefined ? { costUsd: m.total_cost_usd, costSemantic: "cumulative" } : {}
+  };
 }
 var PROJECT_KEY = "computeragent";
 async function* adaptUserMessages(queue, sessionId = "computeragent-session") {
@@ -25976,6 +25999,9 @@ ${priorSuffix}` : priorSuffix : baseSuffix || undefined;
       for await (const message of query2(options)) {
         if (ctx.abortSignal.aborted)
           break;
+        const snapshot = toUsageSnapshot2(message);
+        if (snapshot)
+          yield snapshot;
         yield { kind: "sdk_message", payload: message };
         const text = extractAssistantText(message);
         if (text) {
@@ -25994,6 +26020,23 @@ ${priorSuffix}` : priorSuffix : baseSuffix || undefined;
       }
     }
   }
+}
+function toUsageSnapshot2(message) {
+  const m = message;
+  if (m?.type !== "assistant" || !m.usage)
+    return;
+  const u = m.usage;
+  if (u.inputTokens === undefined && u.outputTokens === undefined && u.costUsd === undefined) {
+    return;
+  }
+  return {
+    kind: "ca_usage_snapshot",
+    ...u.inputTokens !== undefined ? { inputTokens: u.inputTokens } : {},
+    ...u.outputTokens !== undefined ? { outputTokens: u.outputTokens } : {},
+    ...u.cacheWriteTokens !== undefined ? { cacheCreationInputTokens: u.cacheWriteTokens } : {},
+    ...u.cacheReadTokens !== undefined ? { cacheReadInputTokens: u.cacheReadTokens } : {},
+    ...u.costUsd !== undefined ? { costUsd: u.costUsd, costSemantic: "delta" } : {}
+  };
 }
 function extractAssistantText(message) {
   const m = message;

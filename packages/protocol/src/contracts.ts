@@ -57,7 +57,34 @@ export interface EngineContext<TOptions = unknown> {
 /** Discriminated union of events an engine can emit. */
 export type EngineEvent =
   | { readonly kind: "sdk_message"; readonly payload: unknown }
-  | { readonly kind: "ca_usage_snapshot"; readonly inputTokens?: number; readonly outputTokens?: number; readonly costUsd?: number };
+  | {
+      readonly kind: "ca_usage_snapshot";
+      /**
+       * Per-message token counts. The harness forwards each snapshot to the
+       * SSE stream verbatim; the SDK aggregates them into `ChatResult.usage`.
+       */
+      readonly inputTokens?: number;
+      readonly outputTokens?: number;
+      readonly cacheCreationInputTokens?: number;
+      readonly cacheReadInputTokens?: number;
+      /**
+       * Cost in USD reported by the underlying LLM provider.
+       *
+       * IMPORTANT: never computed client-side from a price table.
+       *   - Claude Agent SDK: cumulative running total (we use the LAST seen value)
+       *   - gitclaw: per-message (we SUM across snapshots)
+       *
+       * Undefined when the provider doesn't return cost. See issue #5.
+       */
+      readonly costUsd?: number;
+      /**
+       * Cost semantic — tells aggregators how to combine multiple snapshots.
+       *   - "cumulative": each value is the running total; take the MAX
+       *   - "delta":      each value is per-message; SUM them
+       *   - undefined:    legacy / unknown; treat as cumulative to be safe
+       */
+      readonly costSemantic?: "cumulative" | "delta";
+    };
 
 /**
  * EngineDriver — wraps an agent loop (Claude Agent SDK, Codex, gitclaw, …).

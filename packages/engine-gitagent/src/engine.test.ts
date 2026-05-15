@@ -30,6 +30,69 @@ describe("GitAgentEngine", () => {
     expect(typeof (stream as AsyncIterable<unknown>)[Symbol.asyncIterator]).toBe("function");
   });
 
+  it("emits ca_usage_snapshot after each GCAssistantMessage with usage, delta semantic (issue #5)", async () => {
+    // Mock gitclaw to yield an assistant message with usage attached.
+    vi.doMock("gitclaw", async () => ({
+      query: async function* mockQuery() {
+        yield {
+          type: "assistant",
+          content: "hello",
+          model: "anthropic/claude-sonnet",
+          provider: "anthropic",
+          stopReason: "stop",
+          usage: {
+            inputTokens: 500,
+            outputTokens: 120,
+            cacheReadTokens: 50,
+            cacheWriteTokens: 10,
+            totalTokens: 680,
+            costUsd: 0.0042,
+          },
+        };
+      },
+    }));
+
+    vi.resetModules();
+    const { GitAgentEngine: PatchedEngine } = await import("./engine.js");
+
+    const ctrl = new AbortController();
+    const e = new PatchedEngine();
+    const events: unknown[] = [];
+    for await (const ev of e.startSession({
+      sessionId: "sess_t",
+      options: {},
+      workdir: "/tmp",
+      envs: {},
+      userMessageQueue: (async function* () { yield { role: "user" as const, content: "hi" }; })(),
+      onPermissionRequest: async () => ({ behavior: "deny", message: "n/a" }),
+      abortSignal: ctrl.signal,
+    })) {
+      events.push(ev);
+      // gitagent engine loops forever — bail after first response.
+      if (events.length >= 2) break;
+    }
+
+    const usage = events.find((e) => (e as { kind?: string }).kind === "ca_usage_snapshot") as {
+      kind: "ca_usage_snapshot";
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadInputTokens?: number;
+      cacheCreationInputTokens?: number;
+      costUsd?: number;
+      costSemantic?: "cumulative" | "delta";
+    } | undefined;
+
+    expect(usage).toBeDefined();
+    expect(usage!.inputTokens).toBe(500);
+    expect(usage!.outputTokens).toBe(120);
+    expect(usage!.cacheReadInputTokens).toBe(50);
+    expect(usage!.cacheCreationInputTokens).toBe(10);
+    expect(usage!.costUsd).toBeCloseTo(0.0042, 6);
+    expect(usage!.costSemantic).toBe("delta");
+
+    vi.doUnmock("gitclaw");
+  });
+
   it("multi-turn: each user message in the queue triggers a fresh query() with growing systemPromptSuffix (issue #4)", async () => {
     // Mock gitclaw's `query()` so we can observe what the engine calls it with
     // per turn. Each query() call records its options and yields exactly one

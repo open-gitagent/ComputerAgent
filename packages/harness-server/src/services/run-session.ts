@@ -76,7 +76,14 @@ export async function runSession(
             sessionId: session.sessionId,
             ...(event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {}),
             ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
+            ...(event.cacheCreationInputTokens !== undefined
+              ? { cacheCreationInputTokens: event.cacheCreationInputTokens }
+              : {}),
+            ...(event.cacheReadInputTokens !== undefined
+              ? { cacheReadInputTokens: event.cacheReadInputTokens }
+              : {}),
             ...(event.costUsd !== undefined ? { costUsd: event.costUsd } : {}),
+            ...(event.costSemantic !== undefined ? { costSemantic: event.costSemantic } : {}),
           });
         }
       }

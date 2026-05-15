@@ -102,12 +102,6 @@ for await (const ev of handle) {
           console.log(`    ← ${content.slice(0, 200)}${content.length > 200 ? "…" : ""}`);
         }
       }
-    } else if (p.type === "result") {
-      const u = p.usage as { input_tokens?: number; output_tokens?: number } | undefined;
-      const cost = (p as { total_cost_usd?: number }).total_cost_usd;
-      if (u || cost !== undefined) {
-        console.log(`\n  [usage: in=${u?.input_tokens} out=${u?.output_tokens}${cost !== undefined ? ` cost=$${cost.toFixed(4)}` : ""}]`);
-      }
     }
   } else if (ev.kind === "ca_session_ended") {
     endedReason = ev.reason + (ev.errorMessage ? ` — ${ev.errorMessage}` : "");
@@ -116,8 +110,23 @@ for await (const ev of handle) {
 }
 
 const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+const usage = handle.getUsage();
+const totalTokens = usage.inputTokens + usage.outputTokens;
+
 console.log(`\n${"─".repeat(70)}`);
-console.log(`Done in ${elapsed}s • ${toolCalls} tool calls • status: ${endedReason}\n`);
+console.log(`Done in ${elapsed}s • ${toolCalls} tool calls • status: ${endedReason}`);
+console.log(
+  `Usage: ${usage.inputTokens.toLocaleString()} in + ${usage.outputTokens.toLocaleString()} out` +
+    (usage.cacheReadInputTokens > 0
+      ? ` (cache read: ${usage.cacheReadInputTokens.toLocaleString()})`
+      : "") +
+    (usage.cacheCreationInputTokens > 0
+      ? ` (cache write: ${usage.cacheCreationInputTokens.toLocaleString()})`
+      : "") +
+    ` = ${totalTokens.toLocaleString()} tokens` +
+    (usage.costUsd !== undefined ? ` • $${usage.costUsd.toFixed(4)}` : "") +
+    "\n",
+);
 
 // Pull SECURITY_REVIEW.md from the workdir.
 // (The agent writes it inside the cloned-target subdirectory.)

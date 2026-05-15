@@ -1,5 +1,5 @@
 import type { HarnessEvent } from "@computeragent/protocol";
-import type { ChatResult, PermissionDecision } from "./types.js";
+import type { ChatResult, PermissionDecision, UsageRollup } from "./types.js";
 import { decisionToBody } from "./types.js";
 
 interface ChatHandleDeps {
@@ -28,12 +28,36 @@ interface ChatHandleDeps {
 export class ChatHandle implements AsyncIterable<HarnessEvent>, PromiseLike<ChatResult> {
   private resultPromise: Promise<ChatResult> | undefined;
   private readonly collectedMessages: unknown[] = [];
+  /** Running aggregate of usage snapshots seen during the turn. */
+  private readonly usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cumulativeCostUsd: undefined as number | undefined,    // for "cumulative" semantic — track max
+    deltaCostUsdSum: 0,                                    // for "delta" semantic — sum
+    sawCost: false,
+    sawDelta: false,
+  };
 
   constructor(private readonly deps: ChatHandleDeps) {}
 
   /** Resolves to the session id (after `POST /v1/sessions` returns). */
   sessionId(): Promise<string> {
     return this.deps.sessionIdPromise;
+  }
+
+  /**
+   * Snapshot of the usage aggregator at this moment. Callable during or
+   * after iteration — `for await (const ev of handle) { ... handle.getUsage() ... }`
+   * works, as does reading it after the loop exits.
+   *
+   * Equivalent to `result.usage` after `await handle`, but doesn't require
+   * a second drain — useful when the caller is streaming events themselves
+   * and just wants the rollup at the end.
+   */
+  getUsage(): UsageRollup {
+    return this.finalizeUsage();
   }
 
   /** Iterate raw events. Yields once per HarnessEvent the server emits. */
@@ -43,12 +67,66 @@ export class ChatHandle implements AsyncIterable<HarnessEvent>, PromiseLike<Chat
       if (ev.kind === "ca_permission_request") {
         await this.handlePermission(ev.callId, ev.toolName, ev.input);
       }
+      if (ev.kind === "ca_usage_snapshot") this.absorbUsage(ev);
       yield ev;
       if (ev.kind === "ca_session_ended") {
         if (this.deps.onComplete) await this.deps.onComplete();
         return;
       }
     }
+  }
+
+  /**
+   * Fold a usage snapshot into the running aggregate. Tokens always SUM.
+   * Cost depends on the engine's `costSemantic`:
+   *   - "cumulative" (Claude SDK): keep the MAX value seen
+   *   - "delta" (gitclaw):          SUM the per-message values
+   *   - undefined:                  treat as cumulative for safety
+   *
+   * If a single turn somehow mixes both semantics (e.g. two engines in a
+   * chain — not currently possible but defensive), we prefer the cumulative
+   * value to avoid double-counting.
+   */
+  private absorbUsage(ev: Extract<HarnessEvent, { kind: "ca_usage_snapshot" }>): void {
+    if (ev.inputTokens !== undefined) this.usage.inputTokens += ev.inputTokens;
+    if (ev.outputTokens !== undefined) this.usage.outputTokens += ev.outputTokens;
+    if (ev.cacheCreationInputTokens !== undefined) {
+      this.usage.cacheCreationInputTokens += ev.cacheCreationInputTokens;
+    }
+    if (ev.cacheReadInputTokens !== undefined) {
+      this.usage.cacheReadInputTokens += ev.cacheReadInputTokens;
+    }
+    if (ev.costUsd !== undefined) {
+      this.usage.sawCost = true;
+      if (ev.costSemantic === "delta") {
+        this.usage.deltaCostUsdSum += ev.costUsd;
+        this.usage.sawDelta = true;
+      } else {
+        // "cumulative" or undefined — track the max.
+        if (this.usage.cumulativeCostUsd === undefined || ev.costUsd > this.usage.cumulativeCostUsd) {
+          this.usage.cumulativeCostUsd = ev.costUsd;
+        }
+      }
+    }
+  }
+
+  private finalizeUsage(): UsageRollup {
+    let costUsd: number | undefined;
+    if (this.usage.sawCost) {
+      // Prefer cumulative when both seen — see absorbUsage doc.
+      if (this.usage.cumulativeCostUsd !== undefined) {
+        costUsd = this.usage.cumulativeCostUsd;
+      } else if (this.usage.sawDelta) {
+        costUsd = this.usage.deltaCostUsdSum;
+      }
+    }
+    return {
+      inputTokens: this.usage.inputTokens,
+      outputTokens: this.usage.outputTokens,
+      cacheCreationInputTokens: this.usage.cacheCreationInputTokens,
+      cacheReadInputTokens: this.usage.cacheReadInputTokens,
+      costUsd,
+    };
   }
 
   /** Drain to completion and return the final result. Memoized. */
@@ -91,6 +169,7 @@ export class ChatHandle implements AsyncIterable<HarnessEvent>, PromiseLike<Chat
       sessionId: await this.deps.sessionIdPromise,
       messages: this.collectedMessages,
       ended,
+      usage: this.finalizeUsage(),
     };
   }
 

@@ -87,9 +87,59 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
 
     for await (const message of query({ prompt, options })) {
       if (ctx.abortSignal.aborted) break;
+
+      // Surface token/cost telemetry BEFORE the message itself. SDKResultMessage
+      // is the turn terminator — once the SDK consumer sees it, my issue #2
+      // fix synthesizes a `ca_session_ended` and stops reading. So usage has
+      // to land on the wire BEFORE the result, otherwise it's dropped. The
+      // consumer (SDK aggregator) uses costSemantic="cumulative" to take the
+      // max and sums the per-turn tokens. Never compute cost client-side — see #5.
+      const snapshot = toUsageSnapshot(message);
+      if (snapshot) yield snapshot;
+
       yield { kind: "sdk_message", payload: message };
     }
   }
+}
+
+/**
+ * Translate an SDKMessage to a `ca_usage_snapshot` event if it carries usage data.
+ * Currently only `SDKResultMessage` (success or error) does. Returns `undefined`
+ * for every other message type so the caller can no-op.
+ *
+ * Field reads use snake_case (wire-side from Anthropic API) since the SDK
+ * forwards Anthropic's JSON shape unchanged at runtime.
+ */
+function toUsageSnapshot(message: unknown): EngineEvent | undefined {
+  const m = message as {
+    type?: string;
+    total_cost_usd?: number;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
+  };
+  if (m?.type !== "result") return undefined;
+  const u = m.usage;
+  // Skip the snapshot if neither tokens nor cost are present — no signal to forward.
+  if (!u && m.total_cost_usd === undefined) return undefined;
+
+  return {
+    kind: "ca_usage_snapshot",
+    ...(u?.input_tokens !== undefined ? { inputTokens: u.input_tokens } : {}),
+    ...(u?.output_tokens !== undefined ? { outputTokens: u.output_tokens } : {}),
+    ...(u?.cache_creation_input_tokens !== undefined
+      ? { cacheCreationInputTokens: u.cache_creation_input_tokens }
+      : {}),
+    ...(u?.cache_read_input_tokens !== undefined
+      ? { cacheReadInputTokens: u.cache_read_input_tokens }
+      : {}),
+    ...(m.total_cost_usd !== undefined
+      ? { costUsd: m.total_cost_usd, costSemantic: "cumulative" as const }
+      : {}),
+  };
 }
 
 /**

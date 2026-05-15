@@ -106,6 +106,28 @@ export interface ComputerAgentOptions {
   readonly sessionStore?: SessionStoreConfig;
 }
 
+/**
+ * Aggregated token + cost telemetry for a chat turn.
+ *
+ * Tokens are summed across every `ca_usage_snapshot` event the engine emits
+ * during the turn (each engine snapshot is per-message; the SDK adds them up).
+ *
+ * `costUsd` follows the engine's `costSemantic`:
+ *   - "cumulative" (Claude Agent SDK): we take the MAX seen value
+ *   - "delta" (gitclaw):                we SUM the per-message values
+ *
+ * `undefined` for any field means the engine didn't emit it. Cost is
+ * undefined when the underlying provider doesn't return cost — never
+ * computed client-side from a price table (issue #5).
+ */
+export interface UsageRollup {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheCreationInputTokens: number;
+  readonly cacheReadInputTokens: number;
+  readonly costUsd: number | undefined;
+}
+
 /** Resolved final outcome of a chat turn (or chained turns drained via `.run()`). */
 export interface ChatResult {
   readonly sessionId: string;
@@ -113,6 +135,12 @@ export interface ChatResult {
   readonly messages: ReadonlyArray<unknown>;
   /** Terminal `ca_session_ended` event. */
   readonly ended: Extract<HarnessEvent, { kind: "ca_session_ended" }>;
+  /**
+   * Token + cost rollup for this turn. Zeros for token counts and `undefined`
+   * for `costUsd` when the engine didn't emit any usage snapshots (e.g. a
+   * mock engine, or an error before the first LLM call).
+   */
+  readonly usage: UsageRollup;
 }
 
 /** Map our SDK PermissionDecision to the wire body shape. */

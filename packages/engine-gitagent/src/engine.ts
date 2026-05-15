@@ -128,6 +128,14 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
       // gets persisted + accumulated so the next iteration sees it.
       for await (const message of query(options)) {
         if (ctx.abortSignal.aborted) break;
+
+        // Emit usage BEFORE the message itself. gitclaw's session_end is
+        // the turn terminator on the SDK side; if usage rides on the wire
+        // after the terminator, the SDK consumer's already bailed and the
+        // snapshot is dropped. (Same constraint as engine-claude-agent-sdk.)
+        const snapshot = toUsageSnapshot(message);
+        if (snapshot) yield snapshot;
+
         yield { kind: "sdk_message", payload: message };
 
         const text = extractAssistantText(message);
@@ -147,6 +155,57 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
       }
     }
   }
+}
+
+/**
+ * Translate a gitclaw GCAssistantMessage to a `ca_usage_snapshot` event when it
+ * carries usage data. gitclaw reports usage **per assistant message** as a delta
+ * (one LLM call's tokens + cost, not running totals). The SDK aggregator SUMs
+ * these — see `costSemantic: "delta"` in the protocol.
+ *
+ * Returns undefined for messages without usage (e.g. tool_use, tool_result,
+ * system messages, deltas — gitclaw only attaches usage to assistant messages).
+ *
+ * Field names come from gitclaw's published shape:
+ *   GCAssistantMessage.usage = { inputTokens, outputTokens, cacheReadTokens,
+ *                                cacheWriteTokens, totalTokens, costUsd }
+ */
+function toUsageSnapshot(message: unknown): EngineEvent | undefined {
+  const m = message as {
+    type?: string;
+    usage?: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+      costUsd?: number;
+    };
+  };
+  if (m?.type !== "assistant" || !m.usage) return undefined;
+  const u = m.usage;
+  // Skip empty usage records — no signal worth a wire round-trip.
+  if (
+    u.inputTokens === undefined &&
+    u.outputTokens === undefined &&
+    u.costUsd === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    kind: "ca_usage_snapshot",
+    ...(u.inputTokens !== undefined ? { inputTokens: u.inputTokens } : {}),
+    ...(u.outputTokens !== undefined ? { outputTokens: u.outputTokens } : {}),
+    // Map gitclaw's naming to the protocol's Anthropic-aligned naming.
+    ...(u.cacheWriteTokens !== undefined
+      ? { cacheCreationInputTokens: u.cacheWriteTokens }
+      : {}),
+    ...(u.cacheReadTokens !== undefined
+      ? { cacheReadInputTokens: u.cacheReadTokens }
+      : {}),
+    ...(u.costUsd !== undefined
+      ? { costUsd: u.costUsd, costSemantic: "delta" as const }
+      : {}),
+  };
 }
 
 function extractAssistantText(message: unknown): string {
