@@ -157,6 +157,47 @@ describe("ComputerAgent — multi-turn", () => {
     expect(first.sessionId).toMatch(/^sess_/);
     expect(agent.sessionId).toBe(first.sessionId);
   });
+
+  it("two sequential .chat() calls produce distinct responses (issue #2)", async () => {
+    // Two turns scripted in one engine session. The engine waits for each
+    // user message in turn, then emits a result. If the SDK's multi-turn
+    // wiring is right, turn 2's response must be "response-2", not the
+    // replayed "response-1" from turn 1.
+    const engine = new MockEngine([
+      { kind: "wait_for_user_message" },
+      { kind: "emit", payload: { type: "result", text: "response-1" } },
+      { kind: "wait_for_user_message" },
+      { kind: "emit", payload: { type: "result", text: "response-2" } },
+    ]);
+    serverHandle = await bootServer(engine);
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+    });
+
+    const r1 = await agent.chat("turn 1");
+    const r1Text = (r1.messages.find(
+      (m): m is { type: "result"; text: string } =>
+        (m as { type?: string }).type === "result",
+    ))?.text;
+    expect(r1Text).toBe("response-1");
+
+    const r2 = await agent.chat("turn 2");
+    const r2Text = (r2.messages.find(
+      (m): m is { type: "result"; text: string } =>
+        (m as { type?: string }).type === "result",
+    ))?.text;
+    expect(r2Text).toBe("response-2");
+
+    // Same session across both turns
+    expect(r1.sessionId).toBe(r2.sessionId);
+
+    // Engine actually saw both user messages
+    expect(engine.received.userMessages).toHaveLength(2);
+  });
 });
 
 describe("ComputerAgent — Substrate runtime", () => {
