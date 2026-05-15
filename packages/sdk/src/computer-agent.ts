@@ -1,5 +1,7 @@
 import type {
   CreateSessionResponse,
+  FsTreeEntry,
+  FsTreeResponse,
   HarnessEvent,
   IdentitySource,
   UserMessage,
@@ -106,6 +108,78 @@ export class ComputerAgent {
    */
   harnessUrl(): Promise<string> {
     return this.resolveHarnessUrl();
+  }
+
+  /**
+   * Fetch a file from the agent's workdir as raw bytes (issue #1).
+   *
+   *   const bytes = await agent.fetchArtifact("deck.pptx");
+   *   if (bytes) await Bun.write("local-deck.pptx", bytes);
+   *
+   * Returns `null` if the file doesn't exist (404). Throws for other harness
+   * errors. Path is relative to the session workdir — the harness jails it.
+   *
+   * Use for binary outputs an agent produced via its Write/Bash tools:
+   * `.pptx`, `.pdf`, `.xlsx`, `.zip`, `.png`, anything. For text use
+   * `fetchArtifactText()` — same call, returns a string.
+   */
+  async fetchArtifact(path: string): Promise<Uint8Array | null> {
+    const url = await this.requireSessionFileUrl(path);
+    const res = await this.fetchImpl(url);
+    if (res.status === 404) return null;
+    if (!res.ok) throw await asHarnessError(res);
+    const buf = await res.arrayBuffer();
+    return new Uint8Array(buf);
+  }
+
+  /**
+   * Fetch a file from the agent's workdir as UTF-8 text. Returns `null` if
+   * the file doesn't exist. Throws for other harness errors.
+   */
+  async fetchArtifactText(path: string): Promise<string | null> {
+    const url = await this.requireSessionFileUrl(path);
+    const res = await this.fetchImpl(url);
+    if (res.status === 404) return null;
+    if (!res.ok) throw await asHarnessError(res);
+    return await res.text();
+  }
+
+  /**
+   * List the agent's workdir as a flat array of entries (files + dirs).
+   * Default depth is 1; pass `depth: 10` for a near-full tree. The harness
+   * jails paths to the workdir root.
+   *
+   * Useful for "what did the agent produce?" exploration before fetching
+   * specific files via `fetchArtifact()`.
+   */
+  async listWorkdir(opts: { path?: string; depth?: number } = {}): Promise<readonly FsTreeEntry[]> {
+    const sid = this.requireSessionId();
+    const harnessUrl = await this.resolveHarnessUrl();
+    const params = new URLSearchParams();
+    if (opts.path !== undefined) params.set("path", opts.path);
+    if (opts.depth !== undefined) params.set("depth", String(opts.depth));
+    const qs = params.toString();
+    const res = await this.fetchImpl(
+      `${harnessUrl}/v1/sessions/${sid}/fs/tree${qs ? `?${qs}` : ""}`,
+    );
+    if (!res.ok) throw await asHarnessError(res);
+    const body = (await res.json()) as FsTreeResponse;
+    return body.entries;
+  }
+
+  private requireSessionId(): string {
+    if (!this.existingSessionId) {
+      throw new Error(
+        "ComputerAgent: no session yet — call `chat()` (and let it start) before fetching artifacts or listing the workdir.",
+      );
+    }
+    return this.existingSessionId;
+  }
+
+  private async requireSessionFileUrl(path: string): Promise<string> {
+    const sid = this.requireSessionId();
+    const harnessUrl = await this.resolveHarnessUrl();
+    return `${harnessUrl}/v1/sessions/${sid}/fs/file?path=${encodeURIComponent(path)}`;
   }
 
   /**

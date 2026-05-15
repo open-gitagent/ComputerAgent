@@ -14,7 +14,7 @@ export type {
   UsageRollup,
 } from "./types.js";
 export type { Substrate, BootHarnessOptions, BootedHarness } from "./substrate.js";
-export type { HarnessEvent, IdentitySource, UserMessage } from "@computeragent/protocol";
+export type { FsTreeEntry, HarnessEvent, IdentitySource, UserMessage } from "@computeragent/protocol";
 export {
   HarnessProtocolError,
   UnknownEngineError,

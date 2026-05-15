@@ -6,7 +6,8 @@
   "scripts": {
     "wedge1": "bun run wedge1-server.ts",
     "marketing-agent": "bun run marketing-agent.ts",
-    "security-agent": "bun run security-agent.ts"
+    "security-agent": "bun run security-agent.ts",
+    "binary-artifact-demo": "bun run binary-artifact-demo.ts"
   },
   "dependencies": {
     "computeragent": "workspace:*",

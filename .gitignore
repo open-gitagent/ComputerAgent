@@ -12,6 +12,7 @@ coverage/
 .pnpm-store/
 .cache/
 fixtures/.tmp/
+examples/binary-outputs/
 examples/marketing-outputs/
 examples/marketing-real-outputs/
 examples/security-reports/

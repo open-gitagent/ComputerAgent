@@ -36,6 +36,7 @@ export type {
   Substrate,
   BootHarnessOptions,
   BootedHarness,
+  FsTreeEntry,
   HarnessEvent,
   IdentitySource,
   UserMessage,
