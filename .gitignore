@@ -12,3 +12,6 @@ coverage/
 .pnpm-store/
 .cache/
 fixtures/.tmp/
+examples/marketing-outputs/
+examples/marketing-real-outputs/
+examples/wedge16-sessions/
