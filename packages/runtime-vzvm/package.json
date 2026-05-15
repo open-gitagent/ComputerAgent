@@ -12,7 +12,12 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "assets", "src", "README.md"],
+  "files": [
+    "dist",
+    "assets",
+    "src",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json && pnpm run build:bundle",
     "build:bundle": "bun build src/sandbox-boot.ts --target=node --outfile=assets/harness-bundle.mjs --format=esm --external @anthropic-ai/claude-agent-sdk --external @anthropic-ai/claude-code --external gitclaw",
@@ -37,5 +42,19 @@
     "tart": {
       "optional": true
     }
+  },
+  "keywords": [
+    "ai-agents",
+    "agent-substrate",
+    "tart",
+    "vzvirtualmachine",
+    "apple-silicon",
+    "computeragent"
+  ],
+  "homepage": "https://github.com/open-gitagent/ComputerAgent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/open-gitagent/ComputerAgent.git",
+    "directory": "packages/runtime-vzvm"
   }
 }

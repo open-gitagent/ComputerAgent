@@ -1,0 +1,41 @@
+{
+  "name": "create-computeragent",
+  "version": "0.1.0",
+  "description": "Scaffold a runnable ComputerAgent project in 60 seconds. `npx create-computeragent my-agent`",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "create-computeragent": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "files": ["dist", "template", "README.md"],
+  "keywords": [
+    "ai-agents",
+    "agent-framework",
+    "anthropic",
+    "claude",
+    "agent-protocol",
+    "scaffolding",
+    "create-app"
+  ],
+  "homepage": "https://github.com/open-gitagent/ComputerAgent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/open-gitagent/ComputerAgent.git",
+    "directory": "packages/create-computeragent"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js 2>/dev/null || true",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

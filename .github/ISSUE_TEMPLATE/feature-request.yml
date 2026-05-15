@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a new capability or change to an existing one
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem this solves
+      description: What can't you do today, or what's awkward?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        If this is a new plug-in, can it live in its own package without changing the framework?
+        (Engines, identity loaders, substrates, and session stores all should.)
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Which port does this touch?
+      options:
+        - "Pure plug-in (new engine / identity / substrate / session store)"
+        - "harness-server framework"
+        - "Wire protocol (Harness Protocol REST/SSE)"
+        - "SDK"
+        - "CLI"
+        - "Other / unsure"
+    validations:
+      required: true

@@ -1,8 +1,42 @@
 # ComputerAgent
 
-> Run any AI agent, anywhere, with any loop, and any memory backend.
+[![CI](https://github.com/open-gitagent/ComputerAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/open-gitagent/ComputerAgent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Tests](https://img.shields.io/badge/tests-278%20passing-brightgreen)](#status)
+[![Packages](https://img.shields.io/badge/packages-13-blue)](#packages)
+
+> **Run any AI agent, anywhere, with any loop, and any memory backend.**
+>
+> Think Docker for AI agents — a portable agent definition (any format), a swappable engine, a swappable host, a swappable memory store. One SDK call, four orthogonal axes.
+
+```bash
+npx create-computeragent my-agent
+cd my-agent && npm install
+ANTHROPIC_API_KEY=sk-ant-... npm start
+```
+
+That's it. 60 seconds to a running agent.
 
 A reference implementation of the **Harness Protocol** — a framework-agnostic standard for executing AI agents over HTTP+SSE, with a complete agent workspace exposed through the same surface.
+
+## Why ComputerAgent
+
+- **Portable agents** — agents are git repos (or inline manifests), not framework-specific Python objects. Move them between machines, between teams, between models without rewriting.
+- **Swappable everything** — the four ports (engine / identity / substrate / memory) are independently pluggable. Run the same agent on your laptop today and in an E2B sandbox tomorrow with a one-line change.
+- **Boring tech** — Hono on Bun/Node, Zod, vitest, MIT. No experimental frameworks. The protocol is plain HTTP+SSE; `curl` can drive it.
+- **Production-shaped failure semantics** — explicit, documented contracts: `AuditSink` is fire-and-forget, `SessionStore` is fail-loud, sibling sessions never share blast radius. Validated by an adversarial conformance suite.
+- **Live-tested** — every substrate × every engine × every memory backend verified end-to-end against the real Anthropic API.
+
+### vs. other agent frameworks
+
+| | LangChain / LangGraph | CrewAI | AutoGen | OpenInterpreter | **ComputerAgent** |
+|---|---|---|---|---|---|
+| Agent definition is portable across processes | Python class | Python YAML | Python class | Python | **Git repo / inline manifest (any language)** |
+| Wire protocol you can drive with `curl` | ❌ | ❌ | ❌ | ❌ | **✅ HTTP+SSE** |
+| Same code runs locally + in cloud sandbox + in a VM | Per-integration | Per-integration | Per-integration | Local only | **✅ One-line `runtime:` swap** |
+| Swappable conversation memory backend | Per-integration | ❌ | Per-integration | ❌ | **✅ One-line `sessionStore:` swap** |
+| Resume across process restart, host changes, substrate teardown | Manual | ❌ | Manual | ❌ | **✅ Built-in (`SessionStore`)** |
+| Conformance suite for third-party plug-ins | ❌ | ❌ | ❌ | ❌ | **✅ `@computeragent/testing`** |
 
 ComputerAgent decomposes the agent stack into **four orthogonal axes** — any combination works through the same SDK call:
 

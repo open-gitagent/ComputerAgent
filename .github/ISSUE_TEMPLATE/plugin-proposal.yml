@@ -1,0 +1,48 @@
+name: Plug-in proposal
+description: Announce or propose a third-party plug-in (engine, identity, substrate, session store)
+labels: [plugin]
+body:
+  - type: dropdown
+    id: port
+    attributes:
+      label: Which port does your plug-in implement?
+      options:
+        - EngineDriver
+        - IdentityLoader
+        - Substrate
+        - SessionStore
+    validations:
+      required: true
+
+  - type: input
+    id: name
+    attributes:
+      label: Package name
+      placeholder: "@your-org/computeragent-engine-foo"
+    validations:
+      required: true
+
+  - type: input
+    id: repo
+    attributes:
+      label: Repository URL
+    validations:
+      required: true
+
+  - type: textarea
+    id: conformance
+    attributes:
+      label: Conformance status
+      description: |
+        Does it pass `runConformanceSuite()` from `@computeragent/testing`?
+        Paste the report (passed / failed counts).
+      placeholder: |
+        passed: 23, failed: 0
+    validations:
+      required: true
+
+  - type: textarea
+    id: usage
+    attributes:
+      label: Minimal usage example
+      render: typescript

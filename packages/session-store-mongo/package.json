@@ -12,7 +12,10 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -26,5 +29,18 @@
   "devDependencies": {
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
+  },
+  "keywords": [
+    "ai-agents",
+    "session-store",
+    "mongodb",
+    "memory",
+    "computeragent"
+  ],
+  "homepage": "https://github.com/open-gitagent/ComputerAgent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/open-gitagent/ComputerAgent.git",
+    "directory": "packages/session-store-mongo"
   }
 }

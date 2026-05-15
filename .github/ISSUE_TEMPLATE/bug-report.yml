@@ -1,0 +1,48 @@
+name: Bug report
+description: Something doesn't work the way the docs say
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the bug. Include the smallest reproduction you can.
+      placeholder: |
+        I ran `runTask({...})` with `harness: "claude-agent-sdk"` and `sessionStore: { kind: "file" }` and got ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: |
+        - ComputerAgent version (or commit SHA):
+        - Node version:
+        - OS:
+        - Engine: claude-agent-sdk / gitagent / custom
+        - Substrate: local / e2b / vzvm / custom
+        - Session store: memory / file / mongo / sqlite / custom
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / stack trace
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Quick checks
+      options:
+        - label: I've run `pnpm -r build` and `pnpm -r test` from the latest main
+        - label: My environment matches the README's prereqs (Node ≥ 20, pnpm ≥ 9)
