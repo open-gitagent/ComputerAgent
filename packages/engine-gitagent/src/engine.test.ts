@@ -30,6 +30,55 @@ describe("GitAgentEngine", () => {
     expect(typeof (stream as AsyncIterable<unknown>)[Symbol.asyncIterator]).toBe("function");
   });
 
+  it("flat opts.temperature is folded into gitclaw's constraints.temperature (Wedge 1.7)", async () => {
+    let capturedOptions: Record<string, unknown> | undefined;
+    vi.doMock("gitclaw", async () => ({
+      query: async function* mockQuery(options: Record<string, unknown>) {
+        capturedOptions = options;
+        yield {
+          type: "assistant",
+          content: "ok",
+          model: "anthropic/claude-sonnet",
+          provider: "anthropic",
+          stopReason: "stop",
+        };
+      },
+    }));
+
+    vi.resetModules();
+    const { GitAgentEngine: PatchedEngine } = await import("./engine.js");
+
+    const ctrl = new AbortController();
+    const e = new PatchedEngine();
+    const events: unknown[] = [];
+    for await (const ev of e.startSession({
+      sessionId: "sess_t",
+      // GAP loader / SDK shortcut puts temperature flat on options.
+      options: { temperature: 0.42, constraints: { stop_sequences: ["X"] } } as never,
+      workdir: "/tmp",
+      envs: {},
+      userMessageQueue: (async function* () {
+        yield { role: "user" as const, content: "hi" };
+      })(),
+      onPermissionRequest: async () => ({ behavior: "deny", message: "n/a" }),
+      abortSignal: ctrl.signal,
+    })) {
+      events.push(ev);
+      if (events.length >= 2) break;
+    }
+
+    // gitclaw saw the temperature INSIDE constraints, not at the top level.
+    expect(capturedOptions).toBeDefined();
+    const constraints = (capturedOptions as { constraints?: Record<string, unknown> }).constraints;
+    expect(constraints?.temperature).toBe(0.42);
+    // Pre-existing constraints field is preserved.
+    expect(constraints?.stop_sequences).toEqual(["X"]);
+    // The flat shortcut was stripped (didn't leak into the QueryOptions root).
+    expect((capturedOptions as { temperature?: number }).temperature).toBeUndefined();
+
+    vi.doUnmock("gitclaw");
+  });
+
   it("emits ca_usage_snapshot after each GCAssistantMessage with usage, delta semantic (issue #5)", async () => {
     // Mock gitclaw to yield an assistant message with usage attached.
     vi.doMock("gitclaw", async () => ({

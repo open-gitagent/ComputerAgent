@@ -114,13 +114,28 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
         ? (baseSuffix ? `${baseSuffix}\n\n${priorSuffix}` : priorSuffix)
         : (baseSuffix || undefined);
 
+      // Fold the flat `temperature` shortcut (set by `new ComputerAgent({...})`
+      // or by the GAP loader from `agent.yaml`'s `model.constraints.temperature`)
+      // into gitclaw's nested `constraints` object — that's where gitclaw
+      // actually looks. See Wedge 1.7.
+      const flatTemperature = (ctx.options as { temperature?: number }).temperature;
+      const inheritedConstraints =
+        (ctx.options as { constraints?: Record<string, unknown> }).constraints ?? {};
+      const constraints: Record<string, unknown> =
+        flatTemperature !== undefined
+          ? { ...inheritedConstraints, temperature: flatTemperature }
+          : inheritedConstraints;
+
       const options: QueryOptions = {
         prompt: singleMessageIterable(userText),
         dir: ctx.options.dir ?? ctx.workdir,
         sessionId: ctx.sessionId,
         abortController,
         hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
-        ...stripDir(ctx.options),
+        ...stripDirAndFlatTemperature(ctx.options),
+        ...(Object.keys(constraints).length > 0
+          ? { constraints: constraints as QueryOptions["constraints"] }
+          : {}),
         ...(systemPromptSuffix ? { systemPromptSuffix } : {}),
       };
 
@@ -217,6 +232,19 @@ function extractAssistantText(message: unknown): string {
 
 function stripDir<T extends { dir?: string }>(opts: T): Omit<T, "dir"> {
   const { dir: _dir, ...rest } = opts;
+  return rest;
+}
+
+/**
+ * Strip both `dir` and the flat `temperature` shortcut before spreading
+ * into gitclaw's QueryOptions. `temperature` is folded into `constraints`
+ * by the engine; if it leaks through as a flat field gitclaw ignores it
+ * but it's noisy in the typed options. See Wedge 1.7.
+ */
+function stripDirAndFlatTemperature<T extends { dir?: string; temperature?: number }>(
+  opts: T,
+): Omit<T, "dir" | "temperature"> {
+  const { dir: _dir, temperature: _temp, ...rest } = opts;
   return rest;
 }
 

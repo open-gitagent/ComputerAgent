@@ -296,6 +296,158 @@ describe("ComputerAgent — multi-turn", () => {
     expect(result.usage.costUsd).toBeUndefined();
   });
 
+  it("model field is folded into body.options.model (Wedge 1.7)", async () => {
+    const engine = new MockEngine([{ kind: "emit", payload: { type: "result", result: "ok" } }]);
+    serverHandle = await bootServer(engine);
+
+    let capturedBody: Record<string, unknown> | undefined;
+    const interceptingFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/v1/sessions") && init?.method === "POST" && typeof init.body === "string") {
+        capturedBody = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      return fetch(input, init);
+    };
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+      fetch: interceptingFetch,
+      model: "claude-haiku-4-5-20251001",
+    });
+    await agent.chat("hi");
+
+    expect(capturedBody?.options).toBeDefined();
+    expect((capturedBody?.options as { model?: string }).model).toBe("claude-haiku-4-5-20251001");
+  });
+
+  it("model field wins over options.model when both are set", async () => {
+    const engine = new MockEngine([{ kind: "emit", payload: { type: "result", result: "ok" } }]);
+    serverHandle = await bootServer(engine);
+
+    let capturedBody: Record<string, unknown> | undefined;
+    const interceptingFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/v1/sessions") && init?.method === "POST" && typeof init.body === "string") {
+        capturedBody = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      return fetch(input, init);
+    };
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+      fetch: interceptingFetch,
+      options: { model: "old-model-from-options" },
+      model: "new-model-from-shortcut",
+    });
+    await agent.chat("hi");
+
+    expect((capturedBody?.options as { model?: string }).model).toBe("new-model-from-shortcut");
+  });
+
+  it("temperature field is folded into body.options.temperature", async () => {
+    const engine = new MockEngine([{ kind: "emit", payload: { type: "result", result: "ok" } }]);
+    serverHandle = await bootServer(engine);
+
+    let capturedBody: Record<string, unknown> | undefined;
+    const interceptingFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/v1/sessions") && init?.method === "POST" && typeof init.body === "string") {
+        capturedBody = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      return fetch(input, init);
+    };
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+      fetch: interceptingFetch,
+      temperature: 0.42,
+    });
+    await agent.chat("hi");
+
+    expect((capturedBody?.options as { temperature?: number }).temperature).toBe(0.42);
+  });
+
+  it("baseUrl injects ANTHROPIC_BASE_URL into envs", async () => {
+    const engine = new MockEngine([{ kind: "emit", payload: { type: "result", result: "ok" } }]);
+    serverHandle = await bootServer(engine);
+
+    let capturedBody: Record<string, unknown> | undefined;
+    const interceptingFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/v1/sessions") && init?.method === "POST" && typeof init.body === "string") {
+        capturedBody = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      return fetch(input, init);
+    };
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+      fetch: interceptingFetch,
+      envs: { ANTHROPIC_API_KEY: "test" },
+      baseUrl: "https://my-proxy.example.com",
+    });
+    await agent.chat("hi");
+
+    expect((capturedBody?.envs as Record<string, string>).ANTHROPIC_BASE_URL).toBe(
+      "https://my-proxy.example.com",
+    );
+    expect((capturedBody?.envs as Record<string, string>).ANTHROPIC_API_KEY).toBe("test");
+  });
+
+  it("baseUrl does NOT clobber an explicit envs.ANTHROPIC_BASE_URL", async () => {
+    const engine = new MockEngine([{ kind: "emit", payload: { type: "result", result: "ok" } }]);
+    serverHandle = await bootServer(engine);
+
+    let capturedBody: Record<string, unknown> | undefined;
+    const interceptingFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/v1/sessions") && init?.method === "POST" && typeof init.body === "string") {
+        capturedBody = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      return fetch(input, init);
+    };
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+      fetch: interceptingFetch,
+      envs: { ANTHROPIC_BASE_URL: "https://explicit.example.com" },
+      baseUrl: "https://shortcut.example.com",
+    });
+    await agent.chat("hi");
+
+    expect((capturedBody?.envs as Record<string, string>).ANTHROPIC_BASE_URL).toBe(
+      "https://explicit.example.com",
+    );
+  });
+
+  it("invalid baseUrl throws at construction (fail fast)", () => {
+    expect(
+      () =>
+        new ComputerAgent({
+          source: { type: "local", path: "/tmp" },
+          harness: "mock",
+          identityLoader: "mock",
+          harnessUrl: "http://127.0.0.1:1",
+          baseUrl: "not a url",
+        }),
+    ).toThrow(/invalid baseUrl/);
+  });
+
   it("two sequential .chat() calls produce distinct responses (issue #2)", async () => {
     // Two turns scripted in one engine session. The engine waits for each
     // user message in turn, then emits a result. If the SDK's multi-turn

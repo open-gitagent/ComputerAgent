@@ -89,6 +89,28 @@ export interface ComputerAgentOptions {
   readonly sessionId?: string;
   /** Engine-specific options forwarded as `body.options` (model, maxTurns, permissionMode, …). */
   readonly options?: Readonly<Record<string, unknown>>;
+  /**
+   * Override the model the agent uses. Wins over `agent.yaml`'s `model.preferred`
+   * (and over `options.model` if both are set — this is the high-level shortcut).
+   * Engine-specific value, e.g. `"claude-haiku-4-5-20251001"` for `claude-agent-sdk`.
+   */
+  readonly model?: string;
+  /**
+   * Override the sampling temperature. Wins over `agent.yaml`'s
+   * `model.constraints.temperature`. Applies to engines that expose temperature
+   * (gitagent passes it through to gitclaw's `constraints`); `claude-agent-sdk`
+   * v0.2.x's public `Options` type doesn't expose temperature, so the engine
+   * logs a one-time warning and ignores it for that engine. See issue (Wedge 1.7).
+   */
+  readonly temperature?: number;
+  /**
+   * Override the LLM provider base URL. Useful for routing the agent's API calls
+   * through a proxy (Helicone, OpenRouter, LiteLLM) or a self-hosted
+   * Anthropic-compatible endpoint. Injected as the `ANTHROPIC_BASE_URL` env var
+   * if not already set in `envs`. Parsed via `new URL(...)` — throws early on
+   * malformed input.
+   */
+  readonly baseUrl?: string;
   /** HITL callback. If omitted, ca_permission_request events are auto-allowed. */
   readonly onToolCall?: (call: ToolCallContext) => Promise<PermissionDecision> | PermissionDecision;
   /** Custom fetch (for testing or proxy). */

@@ -32,6 +32,11 @@ await using agent = new ComputerAgent({
   runtime: new LocalSubstrate(),
   envs: { ANTHROPIC_API_KEY },
   options: { permissionMode: "bypassPermissions" },
+
+  // Optional runtime overrides — all three win over agent.yaml:
+  // model: "claude-haiku-4-5-20251001",       // force a specific model
+  // temperature: 0.2,                         // override sampling temperature
+  // baseUrl: "https://my-proxy.example.com",  // route through a proxy / self-hosted endpoint
 });
 
 const result = await agent.chat('Write a 3-line haiku about TypeScript to "haiku.txt".');

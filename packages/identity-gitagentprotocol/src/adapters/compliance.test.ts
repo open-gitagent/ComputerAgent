@@ -16,6 +16,24 @@ async function runHarden(
   return harden({ ...options, ...callerOpts });
 }
 
+describe("manifest.model.constraints.temperature → opts.temperature (Wedge 1.7)", () => {
+  it("maps a declared temperature to a flat opts.temperature field", async () => {
+    const { options } = await gapToClaudeAgentOptions(
+      { ...base, model: { preferred: "claude-sonnet-4-5-20250929", constraints: { temperature: 0.3 } } },
+      "/tmp/no-such",
+    );
+    expect((options as ClaudeAgentOptions & { temperature?: number }).temperature).toBe(0.3);
+  });
+
+  it("omits temperature when not declared", async () => {
+    const { options } = await gapToClaudeAgentOptions(
+      { ...base, model: { preferred: "claude-sonnet-4-5-20250929" } },
+      "/tmp/no-such",
+    );
+    expect((options as ClaudeAgentOptions & { temperature?: number }).temperature).toBeUndefined();
+  });
+});
+
 describe("compliance.supervision.human_in_the_loop → permissionMode hardening", () => {
   it("'always' rewrites caller's bypassPermissions to default", async () => {
     const merged = await runHarden(

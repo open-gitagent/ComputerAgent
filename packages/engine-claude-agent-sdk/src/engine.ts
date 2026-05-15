@@ -74,8 +74,16 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
       }
     }
 
+    // `temperature` is part of our cross-engine options surface (Wedge 1.7)
+    // but `@anthropic-ai/claude-agent-sdk` v0.2.x's public `Options` type
+    // doesn't expose it. Warn once per process so callers know it's a no-op
+    // here — they can switch to harness="gitagent" if temperature matters,
+    // or wait for the upstream SDK to expose the field.
+    const flatTemperature = (ctx.options as { temperature?: number }).temperature;
+    if (flatTemperature !== undefined) warnTemperatureUnsupported();
+
     const options: ClaudeAgentOptions = {
-      ...ctx.options,
+      ...stripFlatTemperature(ctx.options),
       cwd: ctx.workdir,
       env: { ...ctx.envs },
       includePartialMessages: true,
@@ -174,4 +182,30 @@ function signalToController(signal: AbortSignal): AbortController {
   if (signal.aborted) ctrl.abort();
   else signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   return ctrl;
+}
+
+/**
+ * Drop the flat `temperature` shortcut before spreading into ClaudeAgentOptions.
+ * The Claude Agent SDK v0.2.x doesn't accept `temperature` on `Options`, so
+ * leaving it in would land as an unknown property (mostly harmless but noisy).
+ * See Wedge 1.7.
+ */
+function stripFlatTemperature<T extends Record<string, unknown>>(
+  opts: T,
+): Omit<T, "temperature"> {
+  const { temperature: _t, ...rest } = opts as T & { temperature?: number };
+  return rest as Omit<T, "temperature">;
+}
+
+let temperatureWarned = false;
+function warnTemperatureUnsupported(): void {
+  if (temperatureWarned) return;
+  temperatureWarned = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[computeragent] `temperature` is set but the claude-agent-sdk engine (v0.2.x) " +
+      "doesn't expose temperature on its public Options type — it has no effect. " +
+      "Use `harness: \"gitagent\"` if temperature control matters, or wait for the " +
+      "Anthropic SDK to add the field. (warned once per process)",
+  );
 }

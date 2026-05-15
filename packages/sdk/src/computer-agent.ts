@@ -52,6 +52,20 @@ export class ComputerAgent {
    * Critical for multi-turn correctness — see issue #2.
    */
   private lastSeenEventId = -1;
+  /**
+   * Effective envs after folding in `baseUrl` (injected as ANTHROPIC_BASE_URL
+   * if the caller didn't already set that key explicitly). Computed once at
+   * construction so the substrate boot and every createSession() see the same
+   * env set. See Wedge 1.7.
+   */
+  private readonly effectiveEnvs: Readonly<Record<string, string>>;
+  /**
+   * Effective engine options after folding in the `model` and `temperature`
+   * shortcuts. Computed once at construction so all chats see the same
+   * options. Constructor shortcuts win over `opts.options` if both set
+   * (the typed field is the high-level lever).
+   */
+  private readonly effectiveOptions: Readonly<Record<string, unknown>> | undefined;
 
   constructor(private readonly opts: ComputerAgentOptions) {
     this.source = normalizeSource(opts.source);
@@ -59,6 +73,39 @@ export class ComputerAgent {
     this.substrate = isSubstrate(opts.runtime) ? opts.runtime : null;
     this.fetchImpl = opts.fetch ?? fetch;
     if (opts.sessionId) this.existingSessionId = opts.sessionId;
+
+    // ── Validate + bake baseUrl into envs ───────────────────────────────────
+    // Parse via `new URL(...)` to fail fast on syntactic garbage. Network
+    // reachability is verified at first API call; we just want to catch
+    // typos like "https//proxy.example" before they cause a confusing fetch.
+    if (opts.baseUrl !== undefined) {
+      try {
+        new URL(opts.baseUrl);
+      } catch {
+        throw new Error(
+          `ComputerAgent: invalid baseUrl ${JSON.stringify(opts.baseUrl)} — must be a valid URL (e.g. "https://api.anthropic.com").`,
+        );
+      }
+    }
+    const baseEnvs = opts.envs ?? {};
+    if (opts.baseUrl && baseEnvs.ANTHROPIC_BASE_URL === undefined) {
+      this.effectiveEnvs = { ...baseEnvs, ANTHROPIC_BASE_URL: opts.baseUrl };
+    } else {
+      this.effectiveEnvs = baseEnvs;
+    }
+
+    // ── Bake model + temperature shortcuts into options ─────────────────────
+    const baseOptions = opts.options ?? {};
+    const overrides: Record<string, unknown> = {};
+    if (opts.model !== undefined) overrides.model = opts.model;
+    if (opts.temperature !== undefined) overrides.temperature = opts.temperature;
+    const hasOverrides = Object.keys(overrides).length > 0;
+    const hasBase = Object.keys(baseOptions).length > 0;
+    if (hasOverrides || hasBase) {
+      this.effectiveOptions = hasOverrides ? { ...baseOptions, ...overrides } : baseOptions;
+    } else {
+      this.effectiveOptions = undefined;
+    }
   }
 
   /** Stable session id. Available only after the first `.chat()` (or if explicitly passed). */
@@ -233,7 +280,7 @@ export class ComputerAgent {
     if (this.booted) return Promise.resolve(this.booted.baseUrl);
     if (!this.bootingPromise) {
       this.bootingPromise = this.substrate
-        .bootHarness({ envs: this.opts.envs ?? {} })
+        .bootHarness({ envs: this.effectiveEnvs })
         .then((b) => {
           this.booted = b;
           return b.baseUrl;
@@ -254,8 +301,8 @@ export class ComputerAgent {
       },
       streamingInput: true,
     };
-    if (this.opts.envs) body.envs = this.opts.envs;
-    if (this.opts.options) body.options = this.opts.options;
+    if (Object.keys(this.effectiveEnvs).length > 0) body.envs = this.effectiveEnvs;
+    if (this.effectiveOptions) body.options = this.effectiveOptions;
     if (this.opts.sessionId) body.sessionId = this.opts.sessionId;
     if (this.opts.sessionStore) body.sessionStore = this.opts.sessionStore;
 

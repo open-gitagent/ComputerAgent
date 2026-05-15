@@ -24546,7 +24546,8 @@ var CaUsageSnapshotEvent = baseEvent("ca_usage_snapshot").extend({
   outputTokens: exports_external.number().int().nonnegative().optional(),
   cacheCreationInputTokens: exports_external.number().int().nonnegative().optional(),
   cacheReadInputTokens: exports_external.number().int().nonnegative().optional(),
-  costUsd: exports_external.number().nonnegative().optional()
+  costUsd: exports_external.number().nonnegative().optional(),
+  costSemantic: exports_external.enum(["cumulative", "delta"]).optional()
 });
 var CaSessionEndedEvent = baseEvent("ca_session_ended").extend({
   reason: exports_external.enum(["complete", "cancelled", "error", "budget_exceeded"]),
@@ -25118,7 +25119,10 @@ async function runSession(engine, session) {
             sessionId: session.sessionId,
             ...event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {},
             ...event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {},
-            ...event.costUsd !== undefined ? { costUsd: event.costUsd } : {}
+            ...event.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: event.cacheCreationInputTokens } : {},
+            ...event.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: event.cacheReadInputTokens } : {},
+            ...event.costUsd !== undefined ? { costUsd: event.costUsd } : {},
+            ...event.costSemantic !== undefined ? { costSemantic: event.costSemantic } : {}
           });
         }
       }
@@ -25785,8 +25789,11 @@ class ClaudeAgentEngine {
         storeOpts = { sessionStore: ctx.sessionStore, sessionId: engineUuid };
       }
     }
+    const flatTemperature = ctx.options.temperature;
+    if (flatTemperature !== undefined)
+      warnTemperatureUnsupported();
     const options = {
-      ...ctx.options,
+      ...stripFlatTemperature(ctx.options),
       cwd: ctx.workdir,
       env: { ...ctx.envs },
       includePartialMessages: true,
@@ -25798,9 +25805,28 @@ class ClaudeAgentEngine {
     for await (const message of query({ prompt, options })) {
       if (ctx.abortSignal.aborted)
         break;
+      const snapshot = toUsageSnapshot(message);
+      if (snapshot)
+        yield snapshot;
       yield { kind: "sdk_message", payload: message };
     }
   }
+}
+function toUsageSnapshot(message) {
+  const m = message;
+  if (m?.type !== "result")
+    return;
+  const u = m.usage;
+  if (!u && m.total_cost_usd === undefined)
+    return;
+  return {
+    kind: "ca_usage_snapshot",
+    ...u?.input_tokens !== undefined ? { inputTokens: u.input_tokens } : {},
+    ...u?.output_tokens !== undefined ? { outputTokens: u.output_tokens } : {},
+    ...u?.cache_creation_input_tokens !== undefined ? { cacheCreationInputTokens: u.cache_creation_input_tokens } : {},
+    ...u?.cache_read_input_tokens !== undefined ? { cacheReadInputTokens: u.cache_read_input_tokens } : {},
+    ...m.total_cost_usd !== undefined ? { costUsd: m.total_cost_usd, costSemantic: "cumulative" } : {}
+  };
 }
 var PROJECT_KEY = "computeragent";
 async function* adaptUserMessages(queue, sessionId = "computeragent-session") {
@@ -25820,6 +25846,17 @@ function signalToController(signal) {
   else
     signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   return ctrl;
+}
+function stripFlatTemperature(opts) {
+  const { temperature: _t, ...rest } = opts;
+  return rest;
+}
+var temperatureWarned = false;
+function warnTemperatureUnsupported() {
+  if (temperatureWarned)
+    return;
+  temperatureWarned = true;
+  console.warn("[computeragent] `temperature` is set but the claude-agent-sdk engine (v0.2.x) " + "doesn't expose temperature on its public Options type — it has no effect. " + 'Use `harness: "gitagent"` if temperature control matters, or wait for the ' + "Anthropic SDK to add the field. (warned once per process)");
 }
 // ../engine-gitagent/dist/engine.js
 import { query as query2 } from "gitclaw";
@@ -25964,18 +26001,25 @@ class GitAgentEngine {
       const systemPromptSuffix = priorSuffix ? baseSuffix ? `${baseSuffix}
 
 ${priorSuffix}` : priorSuffix : baseSuffix || undefined;
+      const flatTemperature = ctx.options.temperature;
+      const inheritedConstraints = ctx.options.constraints ?? {};
+      const constraints = flatTemperature !== undefined ? { ...inheritedConstraints, temperature: flatTemperature } : inheritedConstraints;
       const options = {
         prompt: singleMessageIterable(userText),
         dir: ctx.options.dir ?? ctx.workdir,
         sessionId: ctx.sessionId,
         abortController,
         hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
-        ...stripDir(ctx.options),
+        ...stripDirAndFlatTemperature(ctx.options),
+        ...Object.keys(constraints).length > 0 ? { constraints } : {},
         ...systemPromptSuffix ? { systemPromptSuffix } : {}
       };
       for await (const message of query2(options)) {
         if (ctx.abortSignal.aborted)
           break;
+        const snapshot = toUsageSnapshot2(message);
+        if (snapshot)
+          yield snapshot;
         yield { kind: "sdk_message", payload: message };
         const text = extractAssistantText(message);
         if (text) {
@@ -25995,6 +26039,23 @@ ${priorSuffix}` : priorSuffix : baseSuffix || undefined;
     }
   }
 }
+function toUsageSnapshot2(message) {
+  const m = message;
+  if (m?.type !== "assistant" || !m.usage)
+    return;
+  const u = m.usage;
+  if (u.inputTokens === undefined && u.outputTokens === undefined && u.costUsd === undefined) {
+    return;
+  }
+  return {
+    kind: "ca_usage_snapshot",
+    ...u.inputTokens !== undefined ? { inputTokens: u.inputTokens } : {},
+    ...u.outputTokens !== undefined ? { outputTokens: u.outputTokens } : {},
+    ...u.cacheWriteTokens !== undefined ? { cacheCreationInputTokens: u.cacheWriteTokens } : {},
+    ...u.cacheReadTokens !== undefined ? { cacheReadInputTokens: u.cacheReadTokens } : {},
+    ...u.costUsd !== undefined ? { costUsd: u.costUsd, costSemantic: "delta" } : {}
+  };
+}
 function extractAssistantText(message) {
   const m = message;
   if (m?.type === "assistant" && typeof m.content === "string")
@@ -26003,8 +26064,8 @@ function extractAssistantText(message) {
     return m.text;
   return "";
 }
-function stripDir(opts) {
-  const { dir: _dir, ...rest } = opts;
+function stripDirAndFlatTemperature(opts) {
+  const { dir: _dir, temperature: _temp, ...rest } = opts;
   return rest;
 }
 async function* singleMessageIterable(text) {
@@ -26085,7 +26146,10 @@ var GapManifest = exports_external.object({
   description: exports_external.string().optional(),
   model: exports_external.object({
     preferred: exports_external.string().optional(),
-    fallback: exports_external.array(exports_external.string()).optional()
+    fallback: exports_external.array(exports_external.string()).optional(),
+    constraints: exports_external.object({
+      temperature: exports_external.number().optional()
+    }).passthrough().optional()
   }).passthrough().optional(),
   runtime: exports_external.object({
     max_turns: exports_external.number().int().positive().optional(),
@@ -31027,6 +31091,9 @@ async function gapToClaudeAgentOptions(manifest, workdir) {
     opts.maxTurns = manifest.runtime.max_turns;
   if (manifest.runtime?.budget_usd !== undefined)
     opts.maxBudgetUsd = manifest.runtime.budget_usd;
+  if (manifest.model?.constraints?.temperature !== undefined) {
+    opts.temperature = manifest.model.constraints.temperature;
+  }
   const tools = await loadGapTools(workdir);
   if (tools.allowedTools.length > 0 || tools.mcpToolNames.length > 0) {
     opts.allowedTools = [...tools.allowedTools, ...tools.mcpToolNames];
@@ -31095,6 +31162,9 @@ async function gapToGitagentOptions(manifest, workdir) {
     opts.model = manifest.model.preferred;
   if (manifest.runtime?.max_turns)
     opts.maxTurns = manifest.runtime.max_turns;
+  if (manifest.model?.constraints?.temperature !== undefined) {
+    opts.temperature = manifest.model.constraints.temperature;
+  }
   return { options: opts, harden: (m) => m };
 }
 

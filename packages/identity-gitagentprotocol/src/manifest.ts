@@ -18,6 +18,18 @@ export const GapManifest = z
       .object({
         preferred: z.string().optional(),
         fallback: z.array(z.string()).optional(),
+        /**
+         * Sampling constraints — engine-dependent how much of this gets honored.
+         * `temperature` is typed because every shipped engine considers it (some
+         * apply it, others ignore with a warning — see Wedge 1.7). Other fields
+         * pass through unchanged.
+         */
+        constraints: z
+          .object({
+            temperature: z.number().optional(),
+          })
+          .passthrough()
+          .optional(),
       })
       .passthrough()
       .optional(),

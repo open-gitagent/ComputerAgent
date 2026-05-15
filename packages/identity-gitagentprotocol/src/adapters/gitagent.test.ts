@@ -28,4 +28,24 @@ describe("gapToGitagentOptions", () => {
       maxTurns: 12,
     });
   });
+
+  it("maps manifest.model.constraints.temperature to a flat temperature field (Wedge 1.7)", async () => {
+    const { options } = await gapToGitagentOptions(
+      {
+        name: "x",
+        version: "1.0.0",
+        model: { preferred: "anthropic:claude-sonnet-4-5", constraints: { temperature: 0.2 } },
+      } as never,
+      "/tmp/agent",
+    );
+    expect((options as { temperature?: number }).temperature).toBe(0.2);
+  });
+
+  it("omits temperature when not declared", async () => {
+    const { options } = await gapToGitagentOptions(
+      { name: "x", version: "1.0.0", model: { preferred: "anthropic:claude-sonnet-4-5" } } as never,
+      "/tmp/agent",
+    );
+    expect((options as { temperature?: number }).temperature).toBeUndefined();
+  });
 });

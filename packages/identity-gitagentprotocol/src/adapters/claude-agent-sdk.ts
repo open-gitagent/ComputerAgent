@@ -39,6 +39,15 @@ export async function gapToClaudeAgentOptions(
   if (manifest.model?.preferred) opts.model = manifest.model.preferred;
   if (manifest.runtime?.max_turns) opts.maxTurns = manifest.runtime.max_turns;
   if (manifest.runtime?.budget_usd !== undefined) opts.maxBudgetUsd = manifest.runtime.budget_usd;
+  // Carry the GAP-declared temperature through as a flat opt. The engine
+  // decides what to do with it — gitclaw folds it into `constraints`,
+  // claude-agent-sdk currently can't (no `temperature` on its public
+  // `Options` type) and warns. Caller-supplied `temperature` overrides this
+  // via the standard mergeEngineOptions chain. See Wedge 1.7.
+  if (manifest.model?.constraints?.temperature !== undefined) {
+    (opts as ClaudeAgentOptions & { temperature?: number }).temperature =
+      manifest.model.constraints.temperature;
+  }
 
   const tools = await loadGapTools(workdir);
   if (tools.allowedTools.length > 0 || tools.mcpToolNames.length > 0) {

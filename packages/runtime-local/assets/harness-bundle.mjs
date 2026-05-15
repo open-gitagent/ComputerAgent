@@ -25789,8 +25789,11 @@ class ClaudeAgentEngine {
         storeOpts = { sessionStore: ctx.sessionStore, sessionId: engineUuid };
       }
     }
+    const flatTemperature = ctx.options.temperature;
+    if (flatTemperature !== undefined)
+      warnTemperatureUnsupported();
     const options = {
-      ...ctx.options,
+      ...stripFlatTemperature(ctx.options),
       cwd: ctx.workdir,
       env: { ...ctx.envs },
       includePartialMessages: true,
@@ -25843,6 +25846,17 @@ function signalToController(signal) {
   else
     signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   return ctrl;
+}
+function stripFlatTemperature(opts) {
+  const { temperature: _t, ...rest } = opts;
+  return rest;
+}
+var temperatureWarned = false;
+function warnTemperatureUnsupported() {
+  if (temperatureWarned)
+    return;
+  temperatureWarned = true;
+  console.warn("[computeragent] `temperature` is set but the claude-agent-sdk engine (v0.2.x) " + "doesn't expose temperature on its public Options type — it has no effect. " + 'Use `harness: "gitagent"` if temperature control matters, or wait for the ' + "Anthropic SDK to add the field. (warned once per process)");
 }
 // ../engine-gitagent/dist/engine.js
 import { query as query2 } from "gitclaw";
@@ -25987,13 +26001,17 @@ class GitAgentEngine {
       const systemPromptSuffix = priorSuffix ? baseSuffix ? `${baseSuffix}
 
 ${priorSuffix}` : priorSuffix : baseSuffix || undefined;
+      const flatTemperature = ctx.options.temperature;
+      const inheritedConstraints = ctx.options.constraints ?? {};
+      const constraints = flatTemperature !== undefined ? { ...inheritedConstraints, temperature: flatTemperature } : inheritedConstraints;
       const options = {
         prompt: singleMessageIterable(userText),
         dir: ctx.options.dir ?? ctx.workdir,
         sessionId: ctx.sessionId,
         abortController,
         hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
-        ...stripDir(ctx.options),
+        ...stripDirAndFlatTemperature(ctx.options),
+        ...Object.keys(constraints).length > 0 ? { constraints } : {},
         ...systemPromptSuffix ? { systemPromptSuffix } : {}
       };
       for await (const message of query2(options)) {
@@ -26046,8 +26064,8 @@ function extractAssistantText(message) {
     return m.text;
   return "";
 }
-function stripDir(opts) {
-  const { dir: _dir, ...rest } = opts;
+function stripDirAndFlatTemperature(opts) {
+  const { dir: _dir, temperature: _temp, ...rest } = opts;
   return rest;
 }
 async function* singleMessageIterable(text) {
@@ -26128,7 +26146,10 @@ var GapManifest = exports_external.object({
   description: exports_external.string().optional(),
   model: exports_external.object({
     preferred: exports_external.string().optional(),
-    fallback: exports_external.array(exports_external.string()).optional()
+    fallback: exports_external.array(exports_external.string()).optional(),
+    constraints: exports_external.object({
+      temperature: exports_external.number().optional()
+    }).passthrough().optional()
   }).passthrough().optional(),
   runtime: exports_external.object({
     max_turns: exports_external.number().int().positive().optional(),
@@ -31070,6 +31091,9 @@ async function gapToClaudeAgentOptions(manifest, workdir) {
     opts.maxTurns = manifest.runtime.max_turns;
   if (manifest.runtime?.budget_usd !== undefined)
     opts.maxBudgetUsd = manifest.runtime.budget_usd;
+  if (manifest.model?.constraints?.temperature !== undefined) {
+    opts.temperature = manifest.model.constraints.temperature;
+  }
   const tools = await loadGapTools(workdir);
   if (tools.allowedTools.length > 0 || tools.mcpToolNames.length > 0) {
     opts.allowedTools = [...tools.allowedTools, ...tools.mcpToolNames];
@@ -31138,6 +31162,9 @@ async function gapToGitagentOptions(manifest, workdir) {
     opts.model = manifest.model.preferred;
   if (manifest.runtime?.max_turns)
     opts.maxTurns = manifest.runtime.max_turns;
+  if (manifest.model?.constraints?.temperature !== undefined) {
+    opts.temperature = manifest.model.constraints.temperature;
+  }
   return { options: opts, harden: (m) => m };
 }
 
