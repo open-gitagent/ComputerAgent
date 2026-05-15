@@ -5,6 +5,7 @@ import type {
   UserMessage,
 } from "@computeragent/protocol";
 import { ChatHandle } from "./chat-handle.js";
+import { asHarnessError } from "./errors.js";
 import { consumeSseEvents } from "./sse-client.js";
 import type { Substrate, BootedHarness } from "./substrate.js";
 import type { ChatInput, ComputerAgentOptions, PermissionDecision, ToolCallContext } from "./types.js";
@@ -189,7 +190,17 @@ export class ComputerAgent {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`POST /v1/sessions failed: ${res.status} ${await res.text()}`);
+    if (!res.ok) {
+      // Surface typed errors when the harness rejected a known field — engine
+      // name, loader name, or store kind. Catchable via UnknownEngineError /
+      // UnknownLoaderError / UnknownStoreError; falls back to HarnessProtocolError
+      // for other coded errors or generic Error for non-JSON bodies.
+      throw await asHarnessError(res, {
+        engine: this.opts.harness,
+        loader: this.opts.identityLoader ?? DEFAULT_LOADER,
+        storeKind: this.opts.sessionStore?.kind,
+      });
+    }
     const created = (await res.json()) as CreateSessionResponse;
     this.existingSessionId = created.sessionId;
     return created.sessionId;

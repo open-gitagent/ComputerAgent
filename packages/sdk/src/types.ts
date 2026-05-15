@@ -14,6 +14,39 @@ export type ChatInput =
   | UserMessage[]
   | AsyncIterable<UserMessage>;
 
+/**
+ * Engine names shipped with this SDK. The actual set the harness accepts is
+ * decided at server boot via `createHarnessServer({ engines })`, so this
+ * type accepts any string — built-ins are listed for autocomplete only.
+ *
+ * The `(string & {})` clause prevents TS from collapsing the union to plain
+ * `string` (which would lose the autocomplete) while still permitting any
+ * custom engine name a downstream user might register.
+ *
+ * Add a new built-in engine by extending this union here AND by registering
+ * it at the harness boot site. New third-party engines need no SDK change —
+ * just pass the string they registered.
+ */
+export type HarnessName =
+  | "claude-agent-sdk"
+  | "gitagent"
+  | (string & {});
+
+/** Identity loaders shipped with this SDK. Same open-set semantics as `HarnessName`. */
+export type IdentityLoaderName =
+  | "gitagentprotocol"
+  | (string & {});
+
+/**
+ * Session-store kinds the harness's default registry knows about. Custom kinds
+ * registered via `createHarnessServer({ sessionStores })` are accepted too.
+ * (E.g. `@computeragent/session-store-mongo` and `-sqlite` register their own.)
+ */
+export type SessionStoreKind =
+  | "memory"
+  | "file"
+  | (string & {});
+
 /** Decision returned from a user-supplied `onToolCall` callback. */
 export type PermissionDecision =
   | { decision: "allow"; input?: Record<string, unknown> }
@@ -32,10 +65,15 @@ export interface ToolCallContext {
 export interface ComputerAgentOptions {
   /** GAP source — git URL, local path, or inline manifest. */
   readonly source: IdentitySource | string;
-  /** Engine name registered on the harness server (e.g. "claude-agent-sdk", "gitagent"). */
-  readonly harness: string;
-  /** Identity loader name (defaults to "gitagentprotocol"). */
-  readonly identityLoader?: string;
+  /**
+   * Engine name registered on the harness server. Built-ins shipped with this
+   * SDK: `"claude-agent-sdk"`, `"gitagent"`. Custom engines registered via
+   * `createHarnessServer({ engines })` are accepted too — the field is open
+   * to extension.
+   */
+  readonly harness: HarnessName;
+  /** Identity loader name. Built-in: `"gitagentprotocol"`. Defaults to that. */
+  readonly identityLoader?: IdentityLoaderName;
   /**
    * WHERE the harness server runs. Three forms:
    *   - omitted / "local" → `harnessUrl` (default localhost:7700)

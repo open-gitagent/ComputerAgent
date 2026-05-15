@@ -25940,32 +25940,56 @@ class GitAgentEngine {
   async* startSession(ctx) {
     const store = ctx.sessionStore;
     const storeKey = { projectKey: PROJECT_KEY2, sessionId: ctx.sessionId };
-    const prior = store ? await store.load(storeKey) ?? [] : [];
-    const priorSuffix = renderPriorContext(prior);
-    const indexer = new TurnIndexer(nextTurnIndex(prior));
+    const accumulated = store ? await store.load(storeKey) ?? [] : [];
+    const indexer = new TurnIndexer(nextTurnIndex(accumulated));
     const abortController = signalToController2(ctx.abortSignal);
     const baseSuffix = ctx.options.systemPromptSuffix ?? "";
-    const systemPromptSuffix = priorSuffix ? baseSuffix ? `${baseSuffix}
-
-${priorSuffix}` : priorSuffix : baseSuffix || undefined;
-    const prompt = adaptAndPersistUserMessages(ctx.userMessageQueue, ctx.sessionId, store, indexer);
-    const options = {
-      prompt,
-      dir: ctx.options.dir ?? ctx.workdir,
-      sessionId: ctx.sessionId,
-      abortController,
-      hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
-      ...stripDir(ctx.options),
-      ...systemPromptSuffix ? { systemPromptSuffix } : {}
-    };
-    for await (const message of query2(options)) {
+    for await (const userMsg of ctx.userMessageQueue) {
       if (ctx.abortSignal.aborted)
         break;
-      yield { kind: "sdk_message", payload: message };
+      const userText = flattenContent(userMsg.content);
+      const userIndex = indexer.next();
       if (store) {
+        await appendUserTurn(store, ctx.sessionId, userText, userIndex);
+      }
+      accumulated.push({
+        type: "ca_user",
+        uuid: `inproc-user-${ctx.sessionId}-${userIndex}`,
+        timestamp: new Date().toISOString(),
+        turnIndex: userIndex,
+        text: userText
+      });
+      const priorForSuffix = accumulated.slice(0, -1);
+      const priorSuffix = renderPriorContext(priorForSuffix);
+      const systemPromptSuffix = priorSuffix ? baseSuffix ? `${baseSuffix}
+
+${priorSuffix}` : priorSuffix : baseSuffix || undefined;
+      const options = {
+        prompt: singleMessageIterable(userText),
+        dir: ctx.options.dir ?? ctx.workdir,
+        sessionId: ctx.sessionId,
+        abortController,
+        hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
+        ...stripDir(ctx.options),
+        ...systemPromptSuffix ? { systemPromptSuffix } : {}
+      };
+      for await (const message of query2(options)) {
+        if (ctx.abortSignal.aborted)
+          break;
+        yield { kind: "sdk_message", payload: message };
         const text = extractAssistantText(message);
         if (text) {
-          await appendAssistantTurn(store, ctx.sessionId, text, indexer.next());
+          const assistantIndex = indexer.next();
+          if (store) {
+            await appendAssistantTurn(store, ctx.sessionId, text, assistantIndex);
+          }
+          accumulated.push({
+            type: "ca_assistant",
+            uuid: `inproc-assistant-${ctx.sessionId}-${assistantIndex}`,
+            timestamp: new Date().toISOString(),
+            turnIndex: assistantIndex,
+            text
+          });
         }
       }
     }
@@ -25983,14 +26007,8 @@ function stripDir(opts) {
   const { dir: _dir, ...rest } = opts;
   return rest;
 }
-async function* adaptAndPersistUserMessages(queue, sessionId, store, indexer) {
-  for await (const m of queue) {
-    const text = flattenContent(m.content);
-    if (store) {
-      await appendUserTurn(store, sessionId, text, indexer.next());
-    }
-    yield { type: "user", content: text };
-  }
+async function* singleMessageIterable(text) {
+  yield { type: "user", content: text };
 }
 function flattenContent(content) {
   if (typeof content === "string")

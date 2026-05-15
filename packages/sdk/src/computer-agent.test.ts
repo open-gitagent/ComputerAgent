@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHarnessServer } from "@computeragent/harness-server";
 import { MockEngine, MockLoader } from "@computeragent/testing";
 import { ComputerAgent } from "./computer-agent.js";
+import { UnknownEngineError, UnknownLoaderError } from "./errors.js";
 
 /**
  * Integration tests: real harness server (booted in-process) + real SDK going
@@ -156,6 +157,52 @@ describe("ComputerAgent — multi-turn", () => {
     const first = await agent.chat("turn 1");
     expect(first.sessionId).toMatch(/^sess_/);
     expect(agent.sessionId).toBe(first.sessionId);
+  });
+
+  it("typo'd harness name throws UnknownEngineError with available list + suggestion", async () => {
+    const engine = new MockEngine([]);
+    serverHandle = await bootServer(engine);
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "moc",  // typo of "mock"
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+    });
+
+    try {
+      await agent.chat("hi");
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(UnknownEngineError);
+      const err = e as UnknownEngineError;
+      expect(err.code).toBe("UNKNOWN_ENGINE");
+      expect(err.requested).toBe("moc");
+      expect(err.available).toContain("mock");
+      expect(err.message).toContain('Did you mean "mock"');
+    }
+  });
+
+  it("typo'd identityLoader throws UnknownLoaderError", async () => {
+    const engine = new MockEngine([]);
+    serverHandle = await bootServer(engine);
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "moc",  // typo
+      harnessUrl: serverHandle.url,
+    });
+
+    try {
+      await agent.chat("hi");
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(UnknownLoaderError);
+      const err = e as UnknownLoaderError;
+      expect(err.requested).toBe("moc");
+      expect(err.available).toContain("mock");
+    }
   });
 
   it("two sequential .chat() calls produce distinct responses (issue #2)", async () => {
