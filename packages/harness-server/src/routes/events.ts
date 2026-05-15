@@ -36,6 +36,15 @@ export function eventsRoute(ctx: ServerContext): Hono {
 
     return streamSSE(c, async (stream) => {
       stream.onAbort(() => session.detachSubscriber());
+      // Periodic SSE comment to keep idle connections alive during long-running
+      // tool calls (e.g. Exa deep_search can run 90-120s emitting zero events).
+      // The colon-prefixed line is an SSE comment per the spec — clients ignore
+      // it but the bytes prevent intermediaries and OS-level TCP idle timeouts
+      // from dropping the connection. ~20s cadence is safe under most defaults.
+      const keepalive = setInterval(() => {
+        // Best-effort. If the socket is already gone, writeln throws — swallow.
+        void stream.writeln(":keepalive").catch(() => {});
+      }, 20_000);
       try {
         for await (const { id: eventId, event } of session.events.iterate({ since: lastEventId })) {
           await stream.writeSSE({
@@ -49,6 +58,7 @@ export function eventsRoute(ctx: ServerContext): Hono {
         // exit with code 18 ("partial file") even on a clean run.
         await stream.sleep(50);
       } finally {
+        clearInterval(keepalive);
         session.detachSubscriber();
       }
     });
