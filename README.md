@@ -49,19 +49,25 @@ ComputerAgent decomposes the agent stack into **four orthogonal axes** — any c
 
 ## 60-second getting started
 
-Requires [Bun](https://bun.sh) ≥ 1.1 and [pnpm](https://pnpm.io) ≥ 9.
+Two ways. Either scaffolds a runnable project; pick one.
+
+**Fastest — `npx create-computeragent`:**
 
 ```bash
-git clone https://github.com/open-gitagent/ComputerAgent
-cd ComputerAgent
-pnpm install
-pnpm build
+npx create-computeragent my-agent
+cd my-agent && npm install
+ANTHROPIC_API_KEY=sk-ant-... npm start
+```
+
+**Or wire it up yourself:**
+
+```bash
+npm install computeragent
 ```
 
 ```ts
 // my-first-agent.ts
-import { runTask } from "@computeragent/sdk";
-import { LocalSubstrate } from "@computeragent/runtime-local";
+import { runTask, LocalSubstrate } from "computeragent";
 
 const result = await runTask({
   source: {
@@ -88,10 +94,12 @@ console.log(result.ended.reason);   // "complete"
 ```
 
 ```bash
-ANTHROPIC_API_KEY=sk-... bun run my-first-agent.ts
+ANTHROPIC_API_KEY=sk-... node --experimental-strip-types my-first-agent.ts
 ```
 
 That's it. No harness server to boot, no session lifecycle to manage — `runTask` handles everything and tears the substrate down before returning.
+
+The `computeragent` umbrella package gives you the SDK + `LocalSubstrate` in one install. For other substrates / engines / memory backends, install the scoped packages alongside (see [Packages](#packages)).
 
 ## Swap the substrate. Same code.
 
@@ -167,6 +175,8 @@ See [`PLAN.md`](./PLAN.md) for the full architecture history.
 
 | Package | Role |
 |---|---|
+| **`computeragent`** | Umbrella — re-exports SDK + `LocalSubstrate`. The one-line install. |
+| `create-computeragent` | `npx create-computeragent my-agent` scaffolder |
 | `@computeragent/protocol` | Type defs + zod schemas + `EngineDriver` / `IdentityLoader` / `SessionStore` contracts |
 | `@computeragent/harness-server` | Generic HTTP+SSE framework with workspace FS API + built-in stores (Memory, File) |
 | `@computeragent/engine-claude-agent-sdk` | Wraps `@anthropic-ai/claude-agent-sdk` |

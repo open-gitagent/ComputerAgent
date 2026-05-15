@@ -73,6 +73,22 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.19.18)
 
+  packages/computeragent:
+    dependencies:
+      '@computeragent/runtime-local':
+        specifier: workspace:*
+        version: link:../runtime-local
+      '@computeragent/sdk':
+        specifier: workspace:*
+        version: link:../sdk
+    devDependencies:
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.19.18)
+
   packages/create-computeragent:
     devDependencies:
       '@types/node':

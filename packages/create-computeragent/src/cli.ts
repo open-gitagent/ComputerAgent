@@ -52,8 +52,7 @@ await writeFile(
         start: "node --experimental-strip-types index.ts",
       },
       dependencies: {
-        "@computeragent/sdk": "^0.1.0",
-        "@computeragent/runtime-local": "^0.1.0",
+        computeragent: "^0.1.0",
       },
       engines: { node: ">=22.6.0" },
     },
@@ -64,8 +63,7 @@ await writeFile(
 
 await writeFile(
   join(targetDir, "index.ts"),
-  `import { runTask } from "@computeragent/sdk";
-import { LocalSubstrate } from "@computeragent/runtime-local";
+  `import { runTask, LocalSubstrate } from "computeragent";
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {
