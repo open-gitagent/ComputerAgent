@@ -331,15 +331,23 @@ function isAsyncIterableInput(input: ChatInput): input is AsyncIterable<UserMess
 /**
  * Does this event mark the end of a turn?
  *
- * Currently: an `sdk_message` whose payload type is `result`. This matches
- * the Claude Agent SDK's terminal `SDKResultMessage`. Other engines that
- * follow the same convention (one `result`-typed message per turn) get the
- * same behavior. Engines without a clear turn boundary in their event union
- * would need a different signal — but at v0.1 every shipped engine follows
- * the SDKResultMessage convention.
+ * Recognises every shipped engine's NATURAL terminator message:
+ *
+ *   - Claude Agent SDK:   `{ type: "result", ... }`     — SDKResultMessage
+ *   - gitclaw (gitagent): `{ type: "system", subtype: "session_end", ... }`
+ *
+ * Both are real messages the underlying engine emits at the end of a turn —
+ * not synthetic markers injected by us. The SDK looks for either, so an
+ * `agent.chat()` handle terminates as soon as whichever engine is in play
+ * signals its own turn is over.
+ *
+ * Future engines (Codex, OpenCode, Gemini-CLI, ...) plug in by extending
+ * this matcher with their native terminator shape. No protocol change needed.
  */
 function isTurnResultEvent(event: HarnessEvent): boolean {
   if (event.kind !== "sdk_message") return false;
-  const payload = event.payload as { type?: string } | null | undefined;
-  return payload?.type === "result";
+  const payload = event.payload as { type?: string; subtype?: string } | null | undefined;
+  if (payload?.type === "result") return true;
+  if (payload?.type === "system" && payload?.subtype === "session_end") return true;
+  return false;
 }

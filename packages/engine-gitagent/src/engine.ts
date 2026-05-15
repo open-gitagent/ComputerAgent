@@ -4,7 +4,7 @@ import type {
   EngineContext,
   EngineDriver,
   EngineEvent,
-  SessionStore,
+  SessionStoreEntry,
   UserMessage,
 } from "@computeragent/protocol";
 import { buildPreToolUse } from "./permission-bridge.js";
@@ -35,17 +35,29 @@ type GitclawForwardOptions = Pick<
 /**
  * EngineDriver implementation backed by `gitclaw` (the gitagent bot).
  *
+ * Multi-turn shape: `gitclaw.query()` is NOT streaming-input — its prompt
+ * AsyncIterable is consumed for ONE turn, then the iterator terminates.
+ * To support multi-turn agent.chat() on a single agent instance (issue #4),
+ * the engine loops one-query-per-user-message: each new user message in
+ * `ctx.userMessageQueue` triggers a fresh `query()` call with all prior
+ * turns folded into `systemPromptSuffix` as restored context.
+ *
+ * Same context-restoration mechanism powers cross-process resume — the
+ * difference is just where the prior turns live:
+ *   - in-process multi-turn: in `accumulated`, in memory
+ *   - cross-process resume:  in the SessionStore on disk, loaded at start
+ *
  * Owns:
- *   - Adapting our streaming-input queue (UserMessage[]) to gitclaw's
- *     AsyncIterable<GCUserMessage>.
+ *   - Adapting our streaming-input queue (UserMessage[]) to gitclaw's one-shot
+ *     prompt iterables — one per user message.
  *   - Forwarding every GCMessage as `EngineEvent { kind: "sdk_message" }`
  *     verbatim — the harness server emits these as SSE `event: sdk_message`.
  *   - Wiring `preToolUse` to the framework's permission round-trip.
+ *   - Persisting turns to SessionStore when configured (idempotent per turnIndex).
  *
  * Does NOT own:
  *   - GAP → gitclaw options translation (that's identity-gitagentprotocol's adapter).
- *   - Env injection (single-tenant for now: caller sets process.env before boot;
- *     multi-tenant isolation is a Wedge 1.5+ concern handled by substrates).
+ *   - Env injection (single-tenant: caller sets process.env before boot).
  */
 export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { dir?: string }> {
   readonly name = "gitagent";
@@ -54,53 +66,83 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
   async *startSession(
     ctx: EngineContext<GitclawForwardOptions & { dir?: string }>,
   ): AsyncIterable<EngineEvent> {
-    // SessionStore replay: gitclaw has no native sessionStore parameter, so
-    // when one is configured we synthesize resume by loading prior turns and
-    // injecting them via systemPromptSuffix, then writing each new exchange
-    // back. See ./session-replay.ts. A single TurnIndexer is shared between
-    // user and assistant persistence so the document on disk sorts by
-    // turnIndex into true conversation order regardless of write interleaving.
     const store = ctx.sessionStore;
     const storeKey = { projectKey: PROJECT_KEY, sessionId: ctx.sessionId };
-    const prior = store ? (await store.load(storeKey)) ?? [] : [];
-    const priorSuffix = renderPriorContext(prior);
-    const indexer = new TurnIndexer(nextTurnIndex(prior));
+
+    // Load any prior conversation from disk. For a fresh session this is
+    // empty; for a resumed session it carries the previous transcript.
+    // `accumulated` is the in-memory mirror that grows over the lifetime
+    // of this engine invocation, so subsequent in-process turns see prior
+    // turns even when no SessionStore is configured.
+    const accumulated: SessionStoreEntry[] = store ? (await store.load(storeKey)) ?? [] : [];
+    const indexer = new TurnIndexer(nextTurnIndex(accumulated));
 
     const abortController = signalToController(ctx.abortSignal);
-
     const baseSuffix = ctx.options.systemPromptSuffix ?? "";
-    const systemPromptSuffix = priorSuffix
-      ? (baseSuffix ? `${baseSuffix}\n\n${priorSuffix}` : priorSuffix)
-      : (baseSuffix || undefined);
 
-    // Adapter that persists each user message BEFORE forwarding to gitclaw,
-    // so the document records the message in turn-correct order even if the
-    // turn errors out partway through (the prior assistant→user ordering
-    // problem in v1 of this code).
-    const prompt = adaptAndPersistUserMessages(
-      ctx.userMessageQueue,
-      ctx.sessionId,
-      store,
-      indexer,
-    );
-
-    const options: QueryOptions = {
-      prompt,
-      dir: ctx.options.dir ?? ctx.workdir,
-      sessionId: ctx.sessionId,
-      abortController,
-      hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
-      ...stripDir(ctx.options),
-      ...(systemPromptSuffix ? { systemPromptSuffix } : {}),
-    };
-
-    for await (const message of query(options)) {
+    // One outer iteration = one user message = one fresh `query()` call.
+    // The framework keeps `userMessageQueue` open across multiple `agent.chat()`
+    // calls (streamingInput=true at the wire), so this loop only exits when
+    // /end-input is POSTed (agent.dispose()) or the abort signal fires.
+    for await (const userMsg of ctx.userMessageQueue) {
       if (ctx.abortSignal.aborted) break;
-      yield { kind: "sdk_message", payload: message };
+
+      const userText = flattenContent(userMsg.content);
+
+      // Persist + accumulate the user turn BEFORE running query() so that
+      // if the turn errors out partway, the document still records the
+      // message in turn-correct order.
+      const userIndex = indexer.next();
       if (store) {
+        await appendUserTurn(store, ctx.sessionId, userText, userIndex);
+      }
+      accumulated.push({
+        type: "ca_user",
+        uuid: `inproc-user-${ctx.sessionId}-${userIndex}`,
+        timestamp: new Date().toISOString(),
+        turnIndex: userIndex,
+        text: userText,
+      } as SessionStoreEntry);
+
+      // Compose systemPromptSuffix: gitclaw's prompt iterable carries ONLY
+      // this turn's user message; everything before goes via suffix.
+      // We exclude the just-pushed user message from the rendered context —
+      // gitclaw sees it as the live prompt, not as restored history.
+      const priorForSuffix = accumulated.slice(0, -1);
+      const priorSuffix = renderPriorContext(priorForSuffix);
+      const systemPromptSuffix = priorSuffix
+        ? (baseSuffix ? `${baseSuffix}\n\n${priorSuffix}` : priorSuffix)
+        : (baseSuffix || undefined);
+
+      const options: QueryOptions = {
+        prompt: singleMessageIterable(userText),
+        dir: ctx.options.dir ?? ctx.workdir,
+        sessionId: ctx.sessionId,
+        abortController,
+        hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
+        ...stripDir(ctx.options),
+        ...(systemPromptSuffix ? { systemPromptSuffix } : {}),
+      };
+
+      // Stream this turn's messages. Each assistant text turn we observe
+      // gets persisted + accumulated so the next iteration sees it.
+      for await (const message of query(options)) {
+        if (ctx.abortSignal.aborted) break;
+        yield { kind: "sdk_message", payload: message };
+
         const text = extractAssistantText(message);
         if (text) {
-          await appendAssistantTurn(store, ctx.sessionId, text, indexer.next());
+          const assistantIndex = indexer.next();
+          if (store) {
+            await appendAssistantTurn(store, ctx.sessionId, text, assistantIndex);
+          }
+          accumulated.push({
+            type: "ca_assistant",
+            uuid: `inproc-assistant-${ctx.sessionId}-${assistantIndex}`,
+            timestamp: new Date().toISOString(),
+            turnIndex: assistantIndex,
+            text,
+          } as SessionStoreEntry);
         }
       }
     }
@@ -120,24 +162,12 @@ function stripDir<T extends { dir?: string }>(opts: T): Omit<T, "dir"> {
 }
 
 /**
- * Bridge our UserMessage queue to gitclaw's GCUserMessage AsyncIterable.
- * When a SessionStore is configured, each user message is persisted before
- * being forwarded to gitclaw — so the document records turns in true
- * conversation order even if the turn errors out partway through.
+ * One-shot prompt iterable: yields a single user message then terminates.
+ * Used by the per-turn `query()` loop so gitclaw consumes exactly one turn's
+ * worth of input before its own iterator ends.
  */
-async function* adaptAndPersistUserMessages(
-  queue: AsyncIterable<UserMessage>,
-  sessionId: string,
-  store: SessionStore | undefined,
-  indexer: TurnIndexer,
-): AsyncIterable<GCUserMessage> {
-  for await (const m of queue) {
-    const text = flattenContent(m.content);
-    if (store) {
-      await appendUserTurn(store, sessionId, text, indexer.next());
-    }
-    yield { type: "user", content: text };
-  }
+async function* singleMessageIterable(text: string): AsyncIterable<GCUserMessage> {
+  yield { type: "user", content: text };
 }
 
 function flattenContent(content: UserMessage["content"]): string {

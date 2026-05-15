@@ -6919,7 +6919,7 @@ var require_public_api = __commonJS((exports) => {
     }
     return doc2;
   }
-  function parse5(src, reviver, options) {
+  function parse6(src, reviver, options) {
     let _reviver = undefined;
     if (typeof reviver === "function") {
       _reviver = reviver;
@@ -6960,7 +6960,7 @@ var require_public_api = __commonJS((exports) => {
       return value.toString(options);
     return new Document.Document(value, _replacer, options).toString(options);
   }
-  exports.parse = parse5;
+  exports.parse = parse6;
   exports.parseAllDocuments = parseAllDocuments;
   exports.parseDocument = parseDocument;
   exports.stringify = stringify;
@@ -6978,13 +6978,13 @@ var require_ms = __commonJS((exports, module) => {
     options = options || {};
     var type = typeof val;
     if (type === "string" && val.length > 0) {
-      return parse5(val);
+      return parse6(val);
     } else if (type === "number" && isFinite(val)) {
       return options.long ? fmtLong(val) : fmtShort(val);
     }
     throw new Error("val is not a non-empty string or a valid number. val=" + JSON.stringify(val));
   };
-  function parse5(str) {
+  function parse6(str) {
     str = String(str);
     if (str.length > 100) {
       return;
@@ -24276,6 +24276,103 @@ function formatError2(c, err) {
   return c.json({ error: { code: "INTERNAL", message } }, 500);
 }
 
+// ../harness-server/dist/stores/memory-store.js
+class MemorySessionStore {
+  bySession = new Map;
+  async append(key, entries) {
+    const list = this.bySession.get(key.sessionId) ?? [];
+    const seenUuids = new Set(list.map((e) => e.uuid).filter((u) => typeof u === "string"));
+    for (const entry of entries) {
+      if (entry.uuid && seenUuids.has(entry.uuid))
+        continue;
+      list.push(entry);
+      if (entry.uuid)
+        seenUuids.add(entry.uuid);
+    }
+    this.bySession.set(key.sessionId, list);
+  }
+  async load(key) {
+    const list = this.bySession.get(key.sessionId);
+    return list ? [...list] : null;
+  }
+  size(sessionId) {
+    return this.bySession.get(sessionId)?.length ?? 0;
+  }
+}
+
+// ../harness-server/dist/stores/file-store.js
+import { createHash } from "node:crypto";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { resolve as resolvePath, join } from "node:path";
+
+class FileSessionStore {
+  root;
+  constructor(opts) {
+    if (!opts.root)
+      throw new Error("FileSessionStore: root is required");
+    this.root = resolvePath(opts.root);
+  }
+  async append(key, entries) {
+    if (entries.length === 0)
+      return;
+    await mkdir(this.root, { recursive: true });
+    const path = this.fileFor(key.sessionId);
+    const existing = await this.loadRaw(path);
+    const seenUuids = new Set(existing.map((e) => e.uuid).filter((u) => typeof u === "string"));
+    const fresh = entries.filter((e) => !e.uuid || !seenUuids.has(e.uuid));
+    if (fresh.length === 0)
+      return;
+    const payload = fresh.map((e) => JSON.stringify(e)).join(`
+`) + `
+`;
+    await appendFile(path, payload, "utf8");
+  }
+  async load(key) {
+    const entries = await this.loadRaw(this.fileFor(key.sessionId));
+    return entries.length > 0 ? entries : null;
+  }
+  fileFor(sessionId) {
+    const hash2 = createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
+    return join(this.root, `${hash2}.jsonl`);
+  }
+  async loadRaw(path) {
+    let raw2;
+    try {
+      raw2 = await readFile(path, "utf8");
+    } catch (err) {
+      if (err.code === "ENOENT")
+        return [];
+      throw err;
+    }
+    const out = [];
+    for (const line of raw2.split(`
+`)) {
+      const trimmed = line.trim();
+      if (!trimmed)
+        continue;
+      try {
+        out.push(JSON.parse(trimmed));
+      } catch {}
+    }
+    return out;
+  }
+}
+
+// ../harness-server/dist/stores/registry.js
+var DEFAULT_STORE_BUILDERS = {
+  memory: () => new MemorySessionStore,
+  file: (options) => new FileSessionStore(options)
+};
+function resolveStore(registry2, config2) {
+  const builder = registry2[config2.kind];
+  if (!builder) {
+    throw BadRequest("UNKNOWN_STORE", `session store '${config2.kind}' is not registered`, {
+      available: Object.keys(registry2)
+    });
+  }
+  return builder(config2.options);
+}
+
 // ../harness-server/dist/routes/health.js
 var HARNESS_VERSION = "0.1.0";
 function healthRoute(ctx) {
@@ -24317,6 +24414,12 @@ var IdentitySource = exports_external.discriminatedUnion("type", [
   LocalIdentitySource,
   InlineIdentitySource
 ]);
+// ../protocol/dist/session-store-config.js
+var SessionStoreConfig = exports_external.object({
+  kind: exports_external.string().min(1),
+  options: exports_external.unknown().optional()
+});
+
 // ../protocol/dist/harness-rest.js
 var UserMessage = exports_external.object({
   role: exports_external.literal("user"),
@@ -24338,7 +24441,8 @@ var CreateSessionBody = exports_external.object({
   messages: exports_external.array(UserMessage).optional(),
   sessionId: exports_external.string().optional(),
   options: exports_external.record(exports_external.string(), exports_external.unknown()).optional(),
-  streamingInput: exports_external.boolean().optional()
+  streamingInput: exports_external.boolean().optional(),
+  sessionStore: SessionStoreConfig.optional()
 });
 var CreateSessionResponse = exports_external.object({
   sessionId: exports_external.string(),
@@ -24456,9 +24560,9 @@ var HarnessEvent = exports_external.discriminatedUnion("kind", [
   CaSessionEndedEvent
 ]);
 // ../harness-server/dist/services/create-session.js
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir as mkdir2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join as join2 } from "node:path";
 import { randomUUID } from "node:crypto";
 
 // ../harness-server/dist/replay-buffer.js
@@ -24544,6 +24648,7 @@ class Session {
   identity;
   cleanup;
   auditSink;
+  sessionStore;
   status = "pending";
   userQueue = [];
   userResolvers = [];
@@ -24552,7 +24657,7 @@ class Session {
   engineStarted = false;
   abortController = new AbortController;
   events;
-  constructor(sessionId, engineName, loaderName, workdir, engineOptions, envs, capabilities, identity, cleanup, replayBufferSize = 1000, auditSink) {
+  constructor(sessionId, engineName, loaderName, workdir, engineOptions, envs, capabilities, identity, cleanup, replayBufferSize = 1000, auditSink, sessionStore) {
     this.sessionId = sessionId;
     this.engineName = engineName;
     this.loaderName = loaderName;
@@ -24563,6 +24668,7 @@ class Session {
     this.identity = identity;
     this.cleanup = cleanup;
     this.auditSink = auditSink;
+    this.sessionStore = sessionStore;
     this.events = new ReplayBuffer(replayBufferSize);
   }
   claimEngineStart() {
@@ -24654,6 +24760,45 @@ class Session {
   }
 }
 
+// ../harness-server/dist/stores/validating-store.js
+function wrapValidatingStore(inner) {
+  const stats = { droppedCount: 0 };
+  const wrapper = {
+    stats,
+    async load(key) {
+      const raw2 = await inner.load(key);
+      if (!raw2)
+        return raw2;
+      const valid = [];
+      for (const entry of raw2) {
+        if (isValidEntry(entry)) {
+          valid.push(entry);
+        } else {
+          stats.droppedCount += 1;
+        }
+      }
+      return valid;
+    },
+    append(key, entries) {
+      return inner.append(key, entries);
+    }
+  };
+  const innerAny = inner;
+  if (typeof innerAny.listSessions === "function") {
+    wrapper.listSessions = innerAny.listSessions.bind(inner);
+  }
+  if (typeof innerAny.listSessionSummaries === "function") {
+    wrapper.listSessionSummaries = innerAny.listSessionSummaries.bind(inner);
+  }
+  return wrapper;
+}
+function isValidEntry(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const v = value;
+  return typeof v.type === "string" && v.type.length > 0;
+}
+
 // ../harness-server/dist/services/create-session.js
 async function createSession(deps, registry2, body) {
   const engine = deps.engines[body.engine];
@@ -24669,7 +24814,7 @@ async function createSession(deps, registry2, body) {
     });
   }
   const sessionId = body.sessionId ?? `sess_${randomUUID().slice(0, 12)}`;
-  const workdir = await makeWorkdir(sessionId);
+  const workdir = await makeWorkdir(sessionId, Boolean(body.sessionStore));
   const result = await loader.load({
     source: body.identity.source,
     targetEngine: body.engine,
@@ -24677,7 +24822,9 @@ async function createSession(deps, registry2, body) {
   });
   const merged = mergeEngineOptions(result.options, body.options);
   const final = result.harden ? result.harden(merged) : merged;
-  const session = new Session(sessionId, body.engine, body.identity.loader, workdir, final, body.envs ?? {}, engine.capabilities, result.metadata, result.cleanup, 1000, deps.auditSink);
+  const rawStore = body.sessionStore ? resolveStore(deps.sessionStores, body.sessionStore) : undefined;
+  const sessionStore = rawStore && deps.validateStoreEntries ? wrapValidatingStore(rawStore) : rawStore;
+  const session = new Session(sessionId, body.engine, body.identity.loader, workdir, final, body.envs ?? {}, engine.capabilities, result.metadata, result.cleanup, 1000, deps.auditSink, sessionStore);
   if (body.messages) {
     for (const m of body.messages)
       session.pushUserMessage(m);
@@ -24688,10 +24835,15 @@ async function createSession(deps, registry2, body) {
   registry2.add(session);
   return session;
 }
-async function makeWorkdir(sessionId) {
-  const base = join(tmpdir(), "computeragent-sessions");
-  await mkdir(base, { recursive: true });
-  return mkdtemp(join(base, `${sessionId}-`));
+async function makeWorkdir(sessionId, stable) {
+  const base = join2(tmpdir(), "computeragent-sessions");
+  await mkdir2(base, { recursive: true });
+  if (stable) {
+    const dir = join2(base, sessionId);
+    await mkdir2(dir, { recursive: true });
+    return dir;
+  }
+  return mkdtemp(join2(base, `${sessionId}-`));
 }
 function mergeEngineOptions(loaderOpts, bodyOpts) {
   if (!bodyOpts)
@@ -24948,7 +25100,8 @@ async function runSession(engine, session) {
           });
           return session.awaitPermission(req);
         },
-        abortSignal: session.abortController.signal
+        abortSignal: session.abortController.signal,
+        ...session.sessionStore ? { sessionStore: session.sessionStore } : {}
       });
       for await (const event of stream2) {
         if (session.abortController.signal.aborted)
@@ -25025,6 +25178,9 @@ function eventsRoute(ctx) {
     session.attachSubscriber();
     return streamSSE(c, async (stream2) => {
       stream2.onAbort(() => session.detachSubscriber());
+      const keepalive = setInterval(() => {
+        stream2.writeln(":keepalive").catch(() => {});
+      }, 20000);
       try {
         for await (const { id: eventId, event } of session.events.iterate({ since: lastEventId })) {
           await stream2.writeSSE({
@@ -25035,6 +25191,7 @@ function eventsRoute(ctx) {
         }
         await stream2.sleep(50);
       } finally {
+        clearInterval(keepalive);
         session.detachSubscriber();
       }
     });
@@ -25178,8 +25335,8 @@ function isInside(root, candidate) {
 }
 
 // ../harness-server/dist/services/workspace-fs.js
-import { mkdir as mkdir2, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join as join2, relative } from "node:path";
+import { mkdir as mkdir3, readFile as readFile2, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join as join3, relative } from "node:path";
 async function listTree(workdir, relPath, depth) {
   const root = await resolveJailedPath(workdir, relPath || ".");
   return collect(root, root, Math.max(0, depth));
@@ -25190,7 +25347,7 @@ async function collect(root, dir, remaining) {
   const entries = await readdir(dir, { withFileTypes: true });
   const out = [];
   for (const entry of entries) {
-    const abs = join2(dir, entry.name);
+    const abs = join3(dir, entry.name);
     const s = await stat(abs);
     out.push({
       path: relative(root, abs) || entry.name,
@@ -25209,18 +25366,18 @@ async function collect(root, dir, remaining) {
 }
 async function readBytes(workdir, relPath) {
   const abs = await resolveJailedPath(workdir, relPath, { allowNonExistent: false });
-  return readFile(abs);
+  return readFile2(abs);
 }
 async function writeBytes(workdir, relPath, data) {
   const abs = await resolveJailedPath(workdir, relPath);
-  await mkdir2(dirname(abs), { recursive: true });
+  await mkdir3(dirname(abs), { recursive: true });
   await writeFile(abs, data);
   const s = await stat(abs);
   return { size: s.size };
 }
 async function editFile(workdir, relPath, oldString, newString, replaceAll) {
   const abs = await resolveJailedPath(workdir, relPath, { allowNonExistent: false });
-  const original = await readFile(abs, "utf8");
+  const original = await readFile2(abs, "utf8");
   let replacements = 0;
   let updated;
   if (replaceAll) {
@@ -25248,12 +25405,12 @@ async function removePath(workdir, relPath, recursive) {
 }
 async function makeDir(workdir, relPath, recursive) {
   const abs = await resolveJailedPath(workdir, relPath);
-  await mkdir2(abs, { recursive });
+  await mkdir3(abs, { recursive });
 }
 async function movePath(workdir, from, to) {
   const fromAbs = await resolveJailedPath(workdir, from, { allowNonExistent: false });
   const toAbs = await resolveJailedPath(workdir, to);
-  await mkdir2(dirname(toAbs), { recursive: true });
+  await mkdir3(dirname(toAbs), { recursive: true });
   await rename(fromAbs, toAbs);
 }
 function countOccurrences(haystack, needle) {
@@ -25459,7 +25616,9 @@ function createHarnessServer(opts) {
     deps: {
       engines: opts.engines,
       identityLoaders: opts.identityLoaders,
-      ...opts.auditSink ? { auditSink: opts.auditSink } : {}
+      ...opts.auditSink ? { auditSink: opts.auditSink } : {},
+      sessionStores: { ...DEFAULT_STORE_BUILDERS, ...opts.sessionStores ?? {} },
+      validateStoreEntries: opts.validateStoreEntries ?? false
     },
     registry: new SessionRegistry(opts.sessionTtlMs)
   };
@@ -25506,6 +25665,97 @@ function buildCanUseTool(onPermissionRequest) {
 function cryptoRandomId() {
   return Math.random().toString(36).slice(2, 10);
 }
+// ../../node_modules/.pnpm/uuid@11.1.1/node_modules/uuid/dist/esm/sha1.js
+import { createHash as createHash2 } from "crypto";
+function sha1(bytes) {
+  if (Array.isArray(bytes)) {
+    bytes = Buffer.from(bytes);
+  } else if (typeof bytes === "string") {
+    bytes = Buffer.from(bytes, "utf8");
+  }
+  return createHash2("sha1").update(bytes).digest();
+}
+var sha1_default = sha1;
+
+// ../../node_modules/.pnpm/uuid@11.1.1/node_modules/uuid/dist/esm/regex.js
+var regex_default = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/i;
+
+// ../../node_modules/.pnpm/uuid@11.1.1/node_modules/uuid/dist/esm/validate.js
+function validate(uuid3) {
+  return typeof uuid3 === "string" && regex_default.test(uuid3);
+}
+var validate_default = validate;
+
+// ../../node_modules/.pnpm/uuid@11.1.1/node_modules/uuid/dist/esm/parse.js
+function parse5(uuid3) {
+  if (!validate_default(uuid3)) {
+    throw TypeError("Invalid UUID");
+  }
+  let v;
+  return Uint8Array.of((v = parseInt(uuid3.slice(0, 8), 16)) >>> 24, v >>> 16 & 255, v >>> 8 & 255, v & 255, (v = parseInt(uuid3.slice(9, 13), 16)) >>> 8, v & 255, (v = parseInt(uuid3.slice(14, 18), 16)) >>> 8, v & 255, (v = parseInt(uuid3.slice(19, 23), 16)) >>> 8, v & 255, (v = parseInt(uuid3.slice(24, 36), 16)) / 1099511627776 & 255, v / 4294967296 & 255, v >>> 24 & 255, v >>> 16 & 255, v >>> 8 & 255, v & 255);
+}
+var parse_default = parse5;
+
+// ../../node_modules/.pnpm/uuid@11.1.1/node_modules/uuid/dist/esm/stringify.js
+var byteToHex = [];
+for (let i = 0;i < 256; ++i) {
+  byteToHex.push((i + 256).toString(16).slice(1));
+}
+function unsafeStringify(arr, offset = 0) {
+  return (byteToHex[arr[offset + 0]] + byteToHex[arr[offset + 1]] + byteToHex[arr[offset + 2]] + byteToHex[arr[offset + 3]] + "-" + byteToHex[arr[offset + 4]] + byteToHex[arr[offset + 5]] + "-" + byteToHex[arr[offset + 6]] + byteToHex[arr[offset + 7]] + "-" + byteToHex[arr[offset + 8]] + byteToHex[arr[offset + 9]] + "-" + byteToHex[arr[offset + 10]] + byteToHex[arr[offset + 11]] + byteToHex[arr[offset + 12]] + byteToHex[arr[offset + 13]] + byteToHex[arr[offset + 14]] + byteToHex[arr[offset + 15]]).toLowerCase();
+}
+
+// ../../node_modules/.pnpm/uuid@11.1.1/node_modules/uuid/dist/esm/v35.js
+function stringToBytes(str) {
+  str = unescape(encodeURIComponent(str));
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0;i < str.length; ++i) {
+    bytes[i] = str.charCodeAt(i);
+  }
+  return bytes;
+}
+var DNS = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+var URL2 = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
+function v35(version2, hash2, value, namespace, buf, offset) {
+  const valueBytes = typeof value === "string" ? stringToBytes(value) : value;
+  const namespaceBytes = typeof namespace === "string" ? parse_default(namespace) : namespace;
+  if (typeof namespace === "string") {
+    namespace = parse_default(namespace);
+  }
+  if (namespace?.length !== 16) {
+    throw TypeError("Namespace must be array-like (16 iterable integer values, 0-255)");
+  }
+  let bytes = new Uint8Array(16 + valueBytes.length);
+  bytes.set(namespaceBytes);
+  bytes.set(valueBytes, namespaceBytes.length);
+  bytes = hash2(bytes);
+  bytes[6] = bytes[6] & 15 | version2;
+  bytes[8] = bytes[8] & 63 | 128;
+  if (buf) {
+    offset = offset || 0;
+    if (offset < 0 || offset + 16 > buf.length) {
+      throw new RangeError(`UUID byte range ${offset}:${offset + 15} is out of buffer bounds`);
+    }
+    for (let i = 0;i < 16; ++i) {
+      buf[offset + i] = bytes[i];
+    }
+    return buf;
+  }
+  return unsafeStringify(bytes);
+}
+
+// ../../node_modules/.pnpm/uuid@11.1.1/node_modules/uuid/dist/esm/v5.js
+function v5(value, namespace, buf, offset) {
+  return v35(80, sha1_default, value, namespace, buf, offset);
+}
+v5.DNS = DNS;
+v5.URL = URL2;
+var v5_default = v5;
+// ../engine-claude-agent-sdk/dist/derive-uuid.js
+var NAMESPACE_COMPUTERAGENT_SESSION = "f8d9cb1a-3e7e-4d8d-9aa4-1d3f8d7b6c2e";
+function deriveEngineUuid(sessionId) {
+  return v5_default(sessionId, NAMESPACE_COMPUTERAGENT_SESSION);
+}
 
 // ../engine-claude-agent-sdk/dist/engine.js
 var CAPABILITIES = {
@@ -25522,6 +25772,19 @@ class ClaudeAgentEngine {
   async* startSession(ctx) {
     const prompt = adaptUserMessages(ctx.userMessageQueue, ctx.sessionId);
     const abortController = signalToController(ctx.abortSignal);
+    const engineUuid = deriveEngineUuid(ctx.sessionId);
+    let storeOpts = {};
+    if (ctx.sessionStore) {
+      const prior = await ctx.sessionStore.load({
+        projectKey: PROJECT_KEY,
+        sessionId: engineUuid
+      });
+      if (prior && prior.length > 0) {
+        storeOpts = { sessionStore: ctx.sessionStore, resume: engineUuid };
+      } else {
+        storeOpts = { sessionStore: ctx.sessionStore, sessionId: engineUuid };
+      }
+    }
     const options = {
       ...ctx.options,
       cwd: ctx.workdir,
@@ -25529,7 +25792,8 @@ class ClaudeAgentEngine {
       includePartialMessages: true,
       abortController,
       canUseTool: buildCanUseTool(ctx.onPermissionRequest),
-      ...ctx.budget?.maxUsd !== undefined ? { maxBudgetUsd: ctx.budget.maxUsd } : {}
+      ...ctx.budget?.maxUsd !== undefined ? { maxBudgetUsd: ctx.budget.maxUsd } : {},
+      ...storeOpts
     };
     for await (const message of query({ prompt, options })) {
       if (ctx.abortSignal.aborted)
@@ -25538,6 +25802,7 @@ class ClaudeAgentEngine {
     }
   }
 }
+var PROJECT_KEY = "computeragent";
 async function* adaptUserMessages(queue, sessionId = "computeragent-session") {
   for await (const m of queue) {
     yield {
@@ -25585,6 +25850,81 @@ function nonce() {
   return Math.random().toString(36).slice(2, 10);
 }
 
+// ../engine-gitagent/dist/session-replay.js
+import { createHash as createHash3 } from "node:crypto";
+var PROJECT_KEY2 = "computeragent";
+function nextTurnIndex(prior) {
+  let max = -1;
+  for (const e of prior) {
+    if (typeof e.turnIndex === "number" && e.turnIndex > max)
+      max = e.turnIndex;
+  }
+  return max + 1;
+}
+function renderPriorContext(entries) {
+  const replayEntries = entries.filter((e) => (e.type === "ca_user" || e.type === "ca_assistant") && typeof e.text === "string");
+  if (replayEntries.length === 0)
+    return null;
+  const sorted = [...replayEntries].sort((a, b) => {
+    const ai = a.turnIndex ?? -1;
+    const bi = b.turnIndex ?? -1;
+    return ai - bi;
+  });
+  const turns = sorted.map((e) => e.type === "ca_user" ? `user: ${e.text}` : `assistant: ${e.text}`);
+  return `# Prior conversation (restored from session store)
+` + `Treat the following exchange as already part of your conversation history.
+
+` + turns.join(`
+`);
+}
+
+class TurnIndexer {
+  cursor;
+  constructor(cursor) {
+    this.cursor = cursor;
+  }
+  next() {
+    return this.cursor++;
+  }
+  peek() {
+    return this.cursor;
+  }
+}
+async function appendUserTurn(store, sessionId, text, turnIndex) {
+  await store.append({ projectKey: PROJECT_KEY2, sessionId }, [
+    {
+      type: "ca_user",
+      uuid: entryUuid("user", turnIndex, text),
+      timestamp: new Date().toISOString(),
+      turnIndex,
+      text
+    }
+  ]);
+}
+async function appendAssistantTurn(store, sessionId, text, turnIndex) {
+  if (!text)
+    return;
+  await store.append({ projectKey: PROJECT_KEY2, sessionId }, [
+    {
+      type: "ca_assistant",
+      uuid: entryUuid("assistant", turnIndex, text),
+      timestamp: new Date().toISOString(),
+      turnIndex,
+      text
+    }
+  ]);
+}
+function entryUuid(role, turnIndex, text) {
+  const hash2 = createHash3("sha256").update(`${role}:${turnIndex}:${text}`).digest("hex");
+  return [
+    hash2.slice(0, 8),
+    hash2.slice(8, 12),
+    hash2.slice(12, 16),
+    hash2.slice(16, 20),
+    hash2.slice(20, 32)
+  ].join("-");
+}
+
 // ../engine-gitagent/dist/engine.js
 var CAPABILITIES2 = {
   streamingInput: true,
@@ -25598,31 +25938,77 @@ class GitAgentEngine {
   name = "gitagent";
   capabilities = CAPABILITIES2;
   async* startSession(ctx) {
-    const prompt = adaptUserMessages2(ctx.userMessageQueue);
+    const store = ctx.sessionStore;
+    const storeKey = { projectKey: PROJECT_KEY2, sessionId: ctx.sessionId };
+    const accumulated = store ? await store.load(storeKey) ?? [] : [];
+    const indexer = new TurnIndexer(nextTurnIndex(accumulated));
     const abortController = signalToController2(ctx.abortSignal);
-    const options = {
-      prompt,
-      dir: ctx.options.dir ?? ctx.workdir,
-      sessionId: ctx.sessionId,
-      abortController,
-      hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
-      ...stripDir(ctx.options)
-    };
-    for await (const message of query2(options)) {
+    const baseSuffix = ctx.options.systemPromptSuffix ?? "";
+    for await (const userMsg of ctx.userMessageQueue) {
       if (ctx.abortSignal.aborted)
         break;
-      yield { kind: "sdk_message", payload: message };
+      const userText = flattenContent(userMsg.content);
+      const userIndex = indexer.next();
+      if (store) {
+        await appendUserTurn(store, ctx.sessionId, userText, userIndex);
+      }
+      accumulated.push({
+        type: "ca_user",
+        uuid: `inproc-user-${ctx.sessionId}-${userIndex}`,
+        timestamp: new Date().toISOString(),
+        turnIndex: userIndex,
+        text: userText
+      });
+      const priorForSuffix = accumulated.slice(0, -1);
+      const priorSuffix = renderPriorContext(priorForSuffix);
+      const systemPromptSuffix = priorSuffix ? baseSuffix ? `${baseSuffix}
+
+${priorSuffix}` : priorSuffix : baseSuffix || undefined;
+      const options = {
+        prompt: singleMessageIterable(userText),
+        dir: ctx.options.dir ?? ctx.workdir,
+        sessionId: ctx.sessionId,
+        abortController,
+        hooks: { preToolUse: buildPreToolUse(ctx.onPermissionRequest) },
+        ...stripDir(ctx.options),
+        ...systemPromptSuffix ? { systemPromptSuffix } : {}
+      };
+      for await (const message of query2(options)) {
+        if (ctx.abortSignal.aborted)
+          break;
+        yield { kind: "sdk_message", payload: message };
+        const text = extractAssistantText(message);
+        if (text) {
+          const assistantIndex = indexer.next();
+          if (store) {
+            await appendAssistantTurn(store, ctx.sessionId, text, assistantIndex);
+          }
+          accumulated.push({
+            type: "ca_assistant",
+            uuid: `inproc-assistant-${ctx.sessionId}-${assistantIndex}`,
+            timestamp: new Date().toISOString(),
+            turnIndex: assistantIndex,
+            text
+          });
+        }
+      }
     }
   }
+}
+function extractAssistantText(message) {
+  const m = message;
+  if (m?.type === "assistant" && typeof m.content === "string")
+    return m.content;
+  if (m?.type === "assistant" && typeof m.text === "string")
+    return m.text;
+  return "";
 }
 function stripDir(opts) {
   const { dir: _dir, ...rest } = opts;
   return rest;
 }
-async function* adaptUserMessages2(queue) {
-  for await (const m of queue) {
-    yield { type: "user", content: flattenContent(m.content) };
-  }
+async function* singleMessageIterable(text) {
+  yield { type: "user", content: text };
 }
 function flattenContent(content) {
   if (typeof content === "string")
@@ -25642,8 +26028,8 @@ function signalToController2(signal) {
   return ctrl;
 }
 // ../identity-gitagentprotocol/dist/loader.js
-import { readFile as readFile6 } from "node:fs/promises";
-import { join as join9 } from "node:path";
+import { readFile as readFile7 } from "node:fs/promises";
+import { join as join10 } from "node:path";
 
 // ../../node_modules/.pnpm/yaml@2.8.4/node_modules/yaml/dist/index.js
 var composer = require_composer();
@@ -25719,8 +26105,8 @@ var GapManifest = exports_external.object({
 }).passthrough();
 
 // ../identity-gitagentprotocol/dist/source-resolver.js
-import { cp, mkdir as mkdir3, writeFile as writeFile2 } from "node:fs/promises";
-import { join as join3 } from "node:path";
+import { cp, mkdir as mkdir4, writeFile as writeFile2 } from "node:fs/promises";
+import { join as join4 } from "node:path";
 
 // ../../node_modules/.pnpm/simple-git@3.36.0/node_modules/simple-git/dist/esm/index.js
 var import_file_exists = __toESM(require_dist(), 1);
@@ -26573,7 +26959,7 @@ function parseStringResponse(result, parsers12, texts, trim = true) {
         }
         return lines[i2 + offset];
       };
-      parsers12.some(({ parse: parse5 }) => parse5(line, result));
+      parsers12.some(({ parse: parse6 }) => parse6(line, result));
     }
   });
   return result;
@@ -30155,19 +30541,19 @@ async function materialize(source, workdir) {
     if (source.ref)
       opts.push("--branch", source.ref);
     await esm_default().clone(url2, cloneTarget, opts);
-    return source.subdir ? join3(cloneTarget, source.subdir) : cloneTarget;
+    return source.subdir ? join4(cloneTarget, source.subdir) : cloneTarget;
   }
   if (source.type === "inline") {
-    await mkdir3(workdir, { recursive: true });
+    await mkdir4(workdir, { recursive: true });
     if (source.files) {
       for (const [relPath, body] of Object.entries(source.files)) {
-        const target = join3(workdir, relPath);
-        await mkdir3(join3(target, ".."), { recursive: true });
+        const target = join4(workdir, relPath);
+        await mkdir4(join4(target, ".."), { recursive: true });
         await writeFile2(target, body, "utf8");
       }
     }
     if (!source.files?.["agent.yaml"]) {
-      await writeFile2(join3(workdir, "agent.yaml"), defaultManifestYaml(source.manifest), "utf8");
+      await writeFile2(join4(workdir, "agent.yaml"), defaultManifestYaml(source.manifest), "utf8");
     }
     return workdir;
   }
@@ -30185,14 +30571,14 @@ function defaultManifestYaml(manifest) {
 }
 
 // ../identity-gitagentprotocol/dist/skills.js
-import { access, cp as cp2, mkdir as mkdir4 } from "node:fs/promises";
-import { join as join4 } from "node:path";
+import { access, cp as cp2, mkdir as mkdir5 } from "node:fs/promises";
+import { join as join5 } from "node:path";
 async function mirrorSkillsForClaude(workdir) {
-  const src = join4(workdir, "skills");
+  const src = join5(workdir, "skills");
   if (!await exists2(src))
     return;
-  const dest = join4(workdir, ".claude", "skills");
-  await mkdir4(join4(workdir, ".claude"), { recursive: true });
+  const dest = join5(workdir, ".claude", "skills");
+  await mkdir5(join5(workdir, ".claude"), { recursive: true });
   await cp2(src, dest, { recursive: true, force: true });
 }
 async function exists2(path) {
@@ -30205,13 +30591,13 @@ async function exists2(path) {
 }
 
 // ../identity-gitagentprotocol/dist/adapters/claude-agent-sdk.js
-import { readFile as readFile5 } from "node:fs/promises";
-import { join as join8 } from "node:path";
+import { readFile as readFile6 } from "node:fs/promises";
+import { join as join9 } from "node:path";
 
 // ../identity-gitagentprotocol/dist/tools.js
-import { readFile as readFile2, readdir as readdir2 } from "node:fs/promises";
+import { readFile as readFile3, readdir as readdir2 } from "node:fs/promises";
 import { spawn as spawn2 } from "node:child_process";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 var GapTool = exports_external.object({
   name: exports_external.string().min(1),
@@ -30238,7 +30624,7 @@ async function loadGapTools(workdir) {
   const tools = [];
   for (const path of yamlFiles) {
     try {
-      const raw2 = await readFile2(path, "utf8");
+      const raw2 = await readFile3(path, "utf8");
       let yaml;
       try {
         yaml = $parse(raw2);
@@ -30272,14 +30658,14 @@ async function loadGapTools(workdir) {
   return { allowedTools, mcpServer, mcpToolNames };
 }
 async function listToolFiles(workdir) {
-  const dir = join5(workdir, "tools");
+  const dir = join6(workdir, "tools");
   let names;
   try {
     names = await readdir2(dir);
   } catch {
     return [];
   }
-  return names.filter((n) => n.endsWith(".yaml") || n.endsWith(".yml")).map((n) => join5(dir, n));
+  return names.filter((n) => n.endsWith(".yaml") || n.endsWith(".yml")).map((n) => join6(dir, n));
 }
 function buildScriptTool(t2, workdir) {
   const shape = jsonSchemaToZodShape(t2.parameters);
@@ -30295,7 +30681,7 @@ function buildScriptTool(t2, workdir) {
     const { stdout, stderr, code } = await runProcess({
       command: script.command,
       args: script.args ?? [],
-      cwd: script.cwd ? join5(workdir, script.cwd) : workdir,
+      cwd: script.cwd ? join6(workdir, script.cwd) : workdir,
       env,
       timeoutMs: script.timeout_ms ?? 30000,
       stdin: JSON.stringify(args)
@@ -30337,6 +30723,7 @@ function runProcess(opts) {
       const exit = killed ? 124 : code ?? 1;
       resolve2({ stdout, stderr, code: exit });
     });
+    child.stdin.on("error", () => {});
     try {
       child.stdin.write(opts.stdin);
       child.stdin.end();
@@ -30389,8 +30776,8 @@ function stringify(v) {
 }
 
 // ../identity-gitagentprotocol/dist/subagents.js
-import { readdir as readdir3, readFile as readFile3, stat as stat2 } from "node:fs/promises";
-import { join as join6 } from "node:path";
+import { readdir as readdir3, readFile as readFile4, stat as stat2 } from "node:fs/promises";
+import { join as join7 } from "node:path";
 var InlineSubagent = exports_external.object({
   description: exports_external.string().min(1),
   prompt: exports_external.string().min(1),
@@ -30406,7 +30793,7 @@ var NestedSubagentManifest = exports_external.object({
   tools: exports_external.array(exports_external.string()).optional()
 }).passthrough();
 async function loadGapSubagents(workdir) {
-  const dir = join6(workdir, "agents");
+  const dir = join7(workdir, "agents");
   let entries;
   try {
     entries = await readdir3(dir);
@@ -30415,7 +30802,7 @@ async function loadGapSubagents(workdir) {
   }
   const out = {};
   for (const entry of entries) {
-    const abs = join6(dir, entry);
+    const abs = join7(dir, entry);
     const info = await safeStat(abs);
     if (!info)
       continue;
@@ -30458,8 +30845,8 @@ async function loadInlineSubagent(path) {
   return def;
 }
 async function loadNestedSubagent(dir) {
-  const manifestRaw = await readFileSafe(join6(dir, "agent.yaml"));
-  const soul = await readFileSafe(join6(dir, "SOUL.md"));
+  const manifestRaw = await readFileSafe(join7(dir, "agent.yaml"));
+  const soul = await readFileSafe(join7(dir, "SOUL.md"));
   if (!soul)
     return null;
   let description = "Sub-agent";
@@ -30501,7 +30888,7 @@ async function safeStat(path) {
 }
 async function readFileSafe(path) {
   try {
-    return await readFile3(path, "utf8");
+    return await readFile4(path, "utf8");
   } catch {
     return null;
   }
@@ -30509,8 +30896,8 @@ async function readFileSafe(path) {
 
 // ../identity-gitagentprotocol/dist/hooks.js
 import { spawn as spawn3 } from "node:child_process";
-import { readFile as readFile4 } from "node:fs/promises";
-import { join as join7 } from "node:path";
+import { readFile as readFile5 } from "node:fs/promises";
+import { join as join8 } from "node:path";
 var HookEntry = exports_external.object({
   matcher: exports_external.string().optional(),
   command: exports_external.string().min(1),
@@ -30519,7 +30906,7 @@ var HookEntry = exports_external.object({
 var HooksFile = exports_external.record(exports_external.string(), exports_external.array(HookEntry));
 var DEFAULT_TIMEOUT_MS = 30000;
 async function loadGapHooks(workdir) {
-  const path = join7(workdir, "hooks", "hooks.yaml");
+  const path = join8(workdir, "hooks", "hooks.yaml");
   const raw2 = await readFileSafe2(path);
   if (raw2 === null)
     return {};
@@ -30613,6 +31000,7 @@ function runHook(opts) {
       const exit = killed ? 124 : code ?? 1;
       resolve2({ stdout, stderr, code: exit });
     });
+    child.stdin.on("error", () => {});
     try {
       child.stdin.write(opts.input);
       child.stdin.end();
@@ -30621,7 +31009,7 @@ function runHook(opts) {
 }
 async function readFileSafe2(path) {
   try {
-    return await readFile4(path, "utf8");
+    return await readFile5(path, "utf8");
   } catch {
     return null;
   }
@@ -30673,17 +31061,17 @@ name: ${m.name}
 version: ${m.version}`);
   if (m.description)
     sections.push(`description: ${m.description}`);
-  const soul = await readIfPresent(join8(workdir, "SOUL.md"));
+  const soul = await readIfPresent(join9(workdir, "SOUL.md"));
   if (soul)
     sections.push(`# Soul
 
 ${soul.trim()}`);
-  const rules = await readIfPresent(join8(workdir, "RULES.md"));
+  const rules = await readIfPresent(join9(workdir, "RULES.md"));
   if (rules)
     sections.push(`# Rules
 
 ${rules.trim()}`);
-  const agentsMd = await readIfPresent(join8(workdir, "AGENTS.md"));
+  const agentsMd = await readIfPresent(join9(workdir, "AGENTS.md"));
   if (agentsMd)
     sections.push(`# Agents
 
@@ -30694,7 +31082,7 @@ ${agentsMd.trim()}`);
 }
 async function readIfPresent(path) {
   try {
-    return await readFile5(path, "utf8");
+    return await readFile6(path, "utf8");
   } catch {
     return null;
   }
@@ -30739,7 +31127,7 @@ class GitAgentProtocolLoader {
     };
   }
   async readManifest(repoPath) {
-    const raw2 = await readFile6(join9(repoPath, "agent.yaml"), "utf8");
+    const raw2 = await readFile7(join10(repoPath, "agent.yaml"), "utf8");
     const parsed = $parse(raw2);
     return GapManifest.parse(parsed);
   }
