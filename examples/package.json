@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "wedge1": "bun run wedge1-server.ts",
-    "marketing-agent": "bun run marketing-agent.ts"
+    "marketing-agent": "bun run marketing-agent.ts",
+    "security-agent": "bun run security-agent.ts"
   },
   "dependencies": {
     "computeragent": "workspace:*",
