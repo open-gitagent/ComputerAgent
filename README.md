@@ -1,87 +1,107 @@
 # ComputerAgent
 
-> Run any GAP agent, anywhere, with any loop.
+> Run any AI agent, anywhere, with any loop, and any memory backend.
 
 A reference implementation of the **Harness Protocol** — a framework-agnostic standard for executing AI agents over HTTP+SSE, with a complete agent workspace exposed through the same surface.
 
-ComputerAgent decomposes the agent stack into three orthogonal axes — any combination of the three works through the same SDK call:
+ComputerAgent decomposes the agent stack into **four orthogonal axes** — any combination works through the same SDK call:
 
-- **WHAT** — agent identity, in any portable format. Default: [GitAgentProtocol](https://github.com/open-gitagent/gitagent-protocol) repos. Add your own with an `IdentityLoader` plug-in.
-- **HOW** — the agentic loop. Ships with two engines today: `@anthropic-ai/claude-agent-sdk` and `gitclaw` (gitagent). Add your own with an `EngineDriver` plug-in.
-- **WHERE** — the substrate. Ships with three: local subprocess, [E2B](https://e2b.dev) cloud sandbox, and [VZVirtualMachine via Tart](https://tart.run/). Add your own with a `Substrate` implementation.
+- **WHAT** — agent identity. Default loader: [GitAgentProtocol](https://github.com/open-gitagent/gitagent-protocol). Add your own with an `IdentityLoader`.
+- **HOW** — the agentic loop. Two engines today: `@anthropic-ai/claude-agent-sdk` and `gitclaw` (gitagent). Add your own with an `EngineDriver`.
+- **WHERE** — the substrate. Three today: local subprocess, [E2B](https://e2b.dev) cloud sandbox, and [VZVirtualMachine via Tart](https://tart.run/). Add your own with a `Substrate`.
+- **REMEMBER** — session storage. Three today: in-memory, file (JSONL), MongoDB. Add your own with a `SessionStore`.
 
-## Status
+275 tests across 13 packages, all green. End-to-end live demos verified against the real Anthropic API across all three substrates AND all three session stores, for both engines.
 
-| Wedge | What it ships | Status |
-|---|---|---|
-| 1 — The Standard | Harness Protocol + `harness-server` framework + GAP loader + 2 engines | ✅ |
-| 2 — Client SDK | `@computeragent/sdk` — typed TS client | ✅ |
-| 2.1 — CLI | `computeragent run …` | ✅ |
-| 3 — Substrates | `runtime-local`, `runtime-e2b`, `runtime-vzvm` | ✅ |
-| 1.5 — Hardening | Last-Event-ID replay buffer, `AuditSink`, `AuthHandler`, conformance suite | ✅ |
-
-150 tests across 11 packages, all green. End-to-end live demos verified across all three substrates against the real Anthropic API: local subprocess, E2B cloud sandbox, and Apple VZVirtualMachine via Tart. The Wedge 1.5 conformance suite (`@computeragent/testing`) is the portable contract any third-party implementation must pass.
-
-See [`PLAN.md`](./PLAN.md) for the full architecture history.
-
-## Quick start
+## 60-second getting started
 
 Requires [Bun](https://bun.sh) ≥ 1.1 and [pnpm](https://pnpm.io) ≥ 9.
 
 ```bash
+git clone https://github.com/open-gitagent/ComputerAgent
+cd ComputerAgent
 pnpm install
 pnpm build
 ```
 
-### Run an agent in a local subprocess
-
 ```ts
-import { ComputerAgent } from "@computeragent/sdk";
+// my-first-agent.ts
+import { runTask } from "@computeragent/sdk";
 import { LocalSubstrate } from "@computeragent/runtime-local";
 
-const agent = new ComputerAgent({
-  source: { type: "git", url: "github.com/open-gitagent/gitagent-protocol", subdir: "examples/standard" },
+const result = await runTask({
+  source: {
+    type: "inline",
+    manifest: { name: "hello", version: "0.1.0" },
+    files: {
+      "agent.yaml": [
+        'spec_version: "0.1.0"',
+        "name: hello",
+        "version: 0.1.0",
+        "model: { preferred: claude-haiku-4-5-20251001 }",
+        "runtime: { max_turns: 2 }",
+      ].join("\n"),
+      "SOUL.md": "Respond in one short sentence.",
+    },
+  },
   harness: "claude-agent-sdk",
   envs: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
   runtime: new LocalSubstrate(),
+  message: "Say hi.",
 });
 
-for await (const ev of agent.chat("Review the README for inconsistencies")) {
-  // SDKMessage events stream as they arrive
-}
-await agent.dispose();
+console.log(result.ended.reason);   // "complete"
 ```
 
-### Run it in an E2B cloud sandbox — same code, different `runtime`
-
-```ts
-import { E2BSubstrate } from "@computeragent/runtime-e2b";
-// ...everything else the same...
-runtime: new E2BSubstrate({ apiKey: process.env.E2B_API_KEY! }),
+```bash
+ANTHROPIC_API_KEY=sk-... bun run my-first-agent.ts
 ```
 
-### Or in a VZVirtualMachine via Tart (Apple Silicon)
+That's it. No harness server to boot, no session lifecycle to manage — `runTask` handles everything and tears the substrate down before returning.
+
+## Swap the substrate. Same code.
 
 ```ts
-import { VZVMSubstrate } from "@computeragent/runtime-vzvm";
-// brew install cirruslabs/cli/tart && tart pull ghcr.io/cirruslabs/ubuntu:latest
-runtime: new VZVMSubstrate({
+import { E2BSubstrate }   from "@computeragent/runtime-e2b";
+import { VZVMSubstrate }  from "@computeragent/runtime-vzvm";
+import { LocalSubstrate } from "@computeragent/runtime-local";
+
+runtime: new LocalSubstrate(),                                          // host process
+runtime: new E2BSubstrate({ apiKey: process.env.E2B_API_KEY! }),        // cloud sandbox
+runtime: new VZVMSubstrate({                                            // Apple Silicon VM
   baseImage: "ghcr.io/cirruslabs/ubuntu:latest",
-  sshUser: "admin",
-  sshPassword: "admin",
+  sshUser: "admin", sshPassword: "admin",
 }),
 ```
 
-## CLI
+## Swap the memory. Same agent, different backend.
 
-```bash
-computeragent health
-computeragent run github.com/org/my-agent -m "your message" --permission-mode bypassPermissions
+```ts
+// In-process memory (default — no setup):
+sessionStore: { kind: "memory" }
+
+// JSONL on disk:
+sessionStore: { kind: "file", options: { root: "./sessions" } }
+
+// MongoDB — survives across processes / hosts:
+sessionStore: { kind: "mongo" }
+//   ^ resolved server-side via createHarnessServer({
+//       sessionStores: { mongo: mongoSessionStoreBuilder({ url: process.env.MONGO_URL! }) }
+//     })
+```
+
+Pass `sessionId: "<previous>"` to a fresh `runTask` and the agent picks up the conversation from the store — proven for all three engines × backends. See [`examples/wedge16-mongo-resume-demo.ts`](./examples/wedge16-mongo-resume-demo.ts) and [`examples/wedge16-gitagent-mongo-demo.ts`](./examples/wedge16-gitagent-mongo-demo.ts).
+
+## Swap the engine. Same SDK call.
+
+```ts
+harness: "claude-agent-sdk",  // wraps @anthropic-ai/claude-agent-sdk
+harness: "gitagent",          // wraps gitclaw (open-gitagent/gitagent)
 ```
 
 ## Curl works too
 
-The standard is a plain HTTP+SSE protocol. Anything that speaks HTTP can drive it:
+The protocol is plain HTTP+SSE. Anything that speaks HTTP can drive it:
 
 ```bash
 bun run examples/wedge1-server.ts &
@@ -89,28 +109,50 @@ bash examples/wedge1-curl.sh
 bash examples/wedge1-fs-tour.sh    # agent writes a file; curl /fs/* to inspect
 ```
 
+## CLI
+
+```bash
+computeragent health
+computeragent run github.com/org/my-agent -m "your message"
+```
+
+## Status
+
+| Wedge | What it ships | Status |
+|---|---|---|
+| 1 — The Standard | Harness Protocol + `harness-server` framework + GAP loader + 2 engines | ✅ |
+| 1.5 — Hardening | Last-Event-ID replay buffer, `AuditSink`, `AuthHandler`, conformance suite, GAP compliance/tools/sub-agents/hooks | ✅ |
+| 1.6 — Swappable session memory | `SessionStore` port + Memory/File/Mongo/SQLite backends + per-engine replay | ✅ |
+| 2 — Client SDK | `@computeragent/sdk` — typed TS client + `runTask` one-shot helper + `await using` | ✅ |
+| 2.1 — CLI | `computeragent run …` | ✅ |
+| 3 — Substrates | `runtime-local`, `runtime-e2b`, `runtime-vzvm` | ✅ |
+
+See [`PLAN.md`](./PLAN.md) for the full architecture history.
+
 ## Packages
 
 | Package | Role |
 |---|---|
-| `@computeragent/protocol` | Type defs + zod schemas + EngineDriver/IdentityLoader contracts |
-| `@computeragent/harness-server` | Generic HTTP+SSE framework with workspace FS API |
+| `@computeragent/protocol` | Type defs + zod schemas + `EngineDriver` / `IdentityLoader` / `SessionStore` contracts |
+| `@computeragent/harness-server` | Generic HTTP+SSE framework with workspace FS API + built-in stores (Memory, File) |
 | `@computeragent/engine-claude-agent-sdk` | Wraps `@anthropic-ai/claude-agent-sdk` |
-| `@computeragent/engine-gitagent` | Wraps `gitclaw` ([open-gitagent/gitagent](https://github.com/open-gitagent/gitagent)) |
+| `@computeragent/engine-gitagent` | Wraps `gitclaw` ([open-gitagent/gitagent](https://github.com/open-gitagent/gitagent)) — synthesizes resume via `session-replay` |
 | `@computeragent/identity-gitagentprotocol` | Loads GitAgentProtocol repos |
 | `@computeragent/runtime-local` | Subprocess pool on the host |
 | `@computeragent/runtime-e2b` | Cloud sandbox via [E2B](https://e2b.dev) |
 | `@computeragent/runtime-vzvm` | Linux VM on Apple Silicon via [Tart](https://tart.run/) |
-| `@computeragent/sdk` | The user-facing client |
+| `@computeragent/session-store-mongo` | MongoDB-backed `SessionStore` |
+| `@computeragent/session-store-sqlite` | SQLite-backed `SessionStore` |
+| `@computeragent/sdk` | The user-facing client (`ComputerAgent`, `ChatHandle`, `runTask`) |
 | `@computeragent/cli` | `computeragent` binary |
-| `@computeragent/testing` | Mocks + SSE helpers |
+| `@computeragent/testing` | Mocks + SSE helpers + the conformance suite (`conformanceCases`, `runConformanceSuite`) |
 
 ## Architecture in three minutes
 
 ```
 User code
     │
-    │  new ComputerAgent({ source, harness, runtime, envs }).chat(msgs)
+    │  new ComputerAgent({ source, harness, runtime, sessionStore, envs }).chat(msgs)
     ▼
 ┌─────────────────────────────────────────────┐
 │  @computeragent/sdk                         │
@@ -125,17 +167,19 @@ User code
 │  - Routes (Hono on Bun or Node)             │
 │  - Session lifecycle + permission map       │
 │  - Path-jailed workspace FS over HTTP       │
+│  - Pluggable AuditSink + AuthHandler        │
+│  - SessionStore registry (memory/file/...)  │
 └─────────────────────────────────────────────┘
-    │                              │
-    │  EngineDriver port           │  IdentityLoader port
-    ▼                              ▼
-┌──────────────────────┐   ┌──────────────────────────┐
-│ engine-claude-…       │   │ identity-gitagentprotocol │
-│ engine-gitagent       │   │ (your-loader here)        │
-│ (your-engine here)    │   └──────────────────────────┘
-└──────────────────────┘
-    │
-    │ Substrate port: bootHarness({envs}) → {baseUrl, shutdown}
+    │                  │                   │
+    │ EngineDriver     │ IdentityLoader    │ SessionStore
+    ▼                  ▼                   ▼
+┌──────────────────┐ ┌────────────────────────┐ ┌──────────────────────┐
+│ engine-claude-…  │ │ identity-gitagent…     │ │ MemorySessionStore   │
+│ engine-gitagent  │ │ (your-loader here)     │ │ FileSessionStore     │
+│ (your-engine)    │ └────────────────────────┘ │ MongoSessionStore    │
+└──────────────────┘                            │ SqliteSessionStore   │
+    │                                           │ (your-store here)    │
+    │ Substrate: bootHarness({envs}) → {url}    └──────────────────────┘
     ▼
 ┌──────────────────────────────────────────────────────┐
 │ runtime-local   runtime-e2b   runtime-vzvm           │
@@ -144,7 +188,48 @@ User code
 └──────────────────────────────────────────────────────┘
 ```
 
-The protocol is the artifact. Engines, identity loaders, and substrates are plug-ins.
+The protocol is the artifact. Engines, identity loaders, substrates, and session stores are plug-ins.
+
+## Adding your own plug-in
+
+Every port follows the same shape: implement a small interface, register at `createHarnessServer({...})` boot. No fork required.
+
+```ts
+import { createHarnessServer } from "@computeragent/harness-server";
+import { mongoSessionStoreBuilder } from "@computeragent/session-store-mongo";
+
+createHarnessServer({
+  engines: {
+    "claude-agent-sdk": new ClaudeAgentEngine(),
+    "your-engine":      new YourEngine(),     // implements EngineDriver
+  },
+  identityLoaders: {
+    gitagentprotocol: new GitAgentProtocolLoader(),
+    "your-format":    new YourLoader(),       // implements IdentityLoader
+  },
+  sessionStores: {
+    mongo: mongoSessionStoreBuilder({ url: process.env.MONGO_URL! }),
+    redis: (cfg) => new YourRedisStore(cfg),  // implements SessionStore
+  },
+  authHandler: bearerToken(verifyJwt),         // implements AuthHandler
+  auditSink:   new YourS3AuditSink(),          // implements AuditSink
+});
+```
+
+Then drive it with `curl`, the SDK, the CLI — same protocol, same wire shape.
+
+## Conformance
+
+Third-party `EngineDriver` / `IdentityLoader` / `SessionStore` implementations validate against the same suite the reference implementation runs against:
+
+```ts
+import { conformanceCases, runConformanceSuite } from "@computeragent/testing";
+
+const report = await runConformanceSuite(() => yourDriverFor(yourHarness));
+console.log(`${report.passed} passed, ${report.failed.length} failed`);
+```
+
+If your implementation passes the suite, it's a drop-in replacement.
 
 ## License
 

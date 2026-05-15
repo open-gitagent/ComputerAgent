@@ -12,9 +12,13 @@
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "dev": "turbo run dev",
-    "clean": "turbo run clean && rm -rf node_modules"
+    "clean": "turbo run clean && rm -rf node_modules",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "pnpm -r build && changeset publish"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@types/bun": "^1.1.0",
     "@types/node": "^22.0.0",
     "turbo": "^2.0.0",
