@@ -56,6 +56,9 @@ importers:
       '@computeragent/session-store-mongo':
         specifier: workspace:*
         version: link:../packages/session-store-mongo
+      computeragent:
+        specifier: workspace:*
+        version: link:../packages/computeragent
 
   packages/cli:
     dependencies:

@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "wedge1": "bun run wedge1-server.ts"
+    "wedge1": "bun run wedge1-server.ts",
+    "marketing-agent": "bun run marketing-agent.ts"
   },
   "dependencies": {
+    "computeragent": "workspace:*",
     "@computeragent/engine-claude-agent-sdk": "workspace:*",
     "@computeragent/engine-gitagent": "workspace:*",
     "@computeragent/harness-server": "workspace:*",
