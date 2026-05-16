@@ -13,6 +13,7 @@ coverage/
 .cache/
 fixtures/.tmp/
 examples/binary-outputs/
+examples/decks/
 examples/marketing-outputs/
 examples/marketing-real-outputs/
 examples/security-reports/
