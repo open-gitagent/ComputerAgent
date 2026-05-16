@@ -9,7 +9,8 @@
     "marketing-agent": "bun run marketing-agent.ts",
     "security-agent": "bun run security-agent.ts",
     "binary-artifact-demo": "bun run binary-artifact-demo.ts",
-    "ppt-agent": "bun run ppt-agent.ts"
+    "ppt-agent": "bun run ppt-agent.ts",
+    "pdf-agent": "bun run pdf-agent.ts"
   },
   "dependencies": {
     "computeragent": "workspace:*",
