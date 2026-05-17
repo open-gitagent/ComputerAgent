@@ -180909,9 +180909,10 @@ var app = createHarnessServer({
       if (!url3) {
         throw new Error("mongo session store: MONGO_URL env var or options.url is required");
       }
+      const database = o2.database ?? process.env.MONGO_DATABASE;
       return new MongoSessionStore({
         url: url3,
-        ...o2.database ? { database: o2.database } : {}
+        ...database ? { database } : {}
       });
     }
   },

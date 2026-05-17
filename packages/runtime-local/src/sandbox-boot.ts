@@ -39,9 +39,14 @@ const app = createHarnessServer({
           "mongo session store: MONGO_URL env var or options.url is required",
         );
       }
+      // Database resolution precedence:
+      //   per-request options.database  >  MONGO_DATABASE env  >  store's own default
+      // Keeps the database name out of client request bodies for the common
+      // single-database deployment.
+      const database = o.database ?? process.env.MONGO_DATABASE;
       return new MongoSessionStore({
         url,
-        ...(o.database ? { database: o.database } : {}),
+        ...(database ? { database } : {}),
       });
     },
   },
