@@ -10,7 +10,8 @@
     "security-agent": "bun run security-agent.ts",
     "binary-artifact-demo": "bun run binary-artifact-demo.ts",
     "ppt-agent": "bun run ppt-agent.ts",
-    "pdf-agent": "bun run pdf-agent.ts"
+    "pdf-agent": "bun run pdf-agent.ts",
+    "hil-demo": "bun run hil-demo.ts"
   },
   "dependencies": {
     "computeragent": "workspace:*",

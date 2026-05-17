@@ -1,5 +1,6 @@
 import type { GCHookResult, GCPreToolUseContext } from "gitclaw";
 import type { PermissionRequest, PermissionResult } from "@computeragent/protocol";
+import { classifyRisk } from "./risk.js";
 
 /**
  * Bridges gitclaw's `preToolUse` hook to the framework's abstract
@@ -13,10 +14,12 @@ export function buildPreToolUse(
   onPermissionRequest: (req: PermissionRequest) => Promise<PermissionResult>,
 ): (ctx: GCPreToolUseContext) => Promise<GCHookResult> {
   return async (ctx) => {
+    const risk = classifyRisk(ctx.toolName, ctx.args);
     const result = await onPermissionRequest({
       callId: `${ctx.sessionId}:${ctx.toolName}:${nonce()}`,
       toolName: ctx.toolName,
       input: ctx.args,
+      risk,
     });
     return toGCHookResult(result, ctx.args);
   };

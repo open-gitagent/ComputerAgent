@@ -137,6 +137,57 @@ describe("ComputerAgent — permission round-trip", () => {
     await agent.chat("try Bash");
     expect(callsSeen).toEqual(["Bash"]);
   });
+
+  it("onToolCall receives risk in ToolCallContext when engine populates it (Wedge 1.8)", async () => {
+    const engine = new MockEngine([
+      { kind: "ask_permission", toolName: "Bash", risk: "destructive", expect: "deny" },
+      { kind: "emit", payload: { type: "result", text: "blocked" } },
+    ]);
+    serverHandle = await bootServer(engine);
+
+    const riskSeen: (string | undefined)[] = [];
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+      onToolCall: async (c) => {
+        riskSeen.push(c.risk);
+        return { decision: "deny", reason: "destructive blocked" };
+      },
+    });
+
+    await agent.chat("dangerous");
+    expect(riskSeen).toEqual(["destructive"]);
+  });
+
+  it("onToolCall returning modify changes the args delivered to the engine (Wedge 1.8)", async () => {
+    const engine = new MockEngine([
+      { kind: "ask_permission", toolName: "Bash", input: { command: "rm -rf /" }, expect: "allow" },
+      { kind: "emit", payload: { type: "result", text: "done" } },
+    ]);
+    serverHandle = await bootServer(engine);
+
+    const agent = new ComputerAgent({
+      source: { type: "local", path: "/tmp" },
+      harness: "mock",
+      identityLoader: "mock",
+      harnessUrl: serverHandle.url,
+      onToolCall: async () => ({
+        decision: "modify",
+        input: { command: "echo refused" },
+      }),
+    });
+
+    await agent.chat("try dangerous");
+    expect(engine.received.permissionResults).toHaveLength(1);
+    const result = engine.received.permissionResults[0] as {
+      behavior: string;
+      updatedInput?: Record<string, unknown>;
+    };
+    expect(result.behavior).toBe("allow");
+    expect(result.updatedInput).toEqual({ command: "echo refused" });
+  });
 });
 
 describe("ComputerAgent — multi-turn", () => {

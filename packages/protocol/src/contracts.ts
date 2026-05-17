@@ -25,6 +25,13 @@ export interface PermissionRequest {
   readonly callId: string;
   readonly toolName: string;
   readonly input: unknown;
+  /**
+   * Engine-computed risk level — forwarded into `ca_permission_request` SSE
+   * events so callbacks can present meaningful prompts (or auto-gate by
+   * threshold). Optional: engines that can't classify omit it; the field
+   * stays undefined downstream.
+   */
+  readonly risk?: "low" | "medium" | "high" | "destructive";
 }
 
 /** Per-call context the harness server hands to the engine. */

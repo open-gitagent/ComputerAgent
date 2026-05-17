@@ -93,6 +93,67 @@ describe("permission round-trip", () => {
     throw new Error("never reached ca_session_ended");
   });
 
+  it("modify decision delivers updated input back to the engine (Wedge 1.8)", async () => {
+    const engine = new MockEngine([
+      { kind: "ask_permission", toolName: "Bash", input: { command: "ls /tmp" }, expect: "allow" },
+      { kind: "emit", payload: { type: "result", result: "done" } },
+    ]);
+    const app = makeApp(engine);
+
+    const created = await app.request("/v1/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(baseBody),
+    });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+
+    const eventsP = app.request(`/v1/sessions/${sessionId}/events`);
+
+    const decoder = new TextDecoder();
+    const eventsRes = await eventsP;
+    const reader = eventsRes.body!.getReader();
+    const collected: { kind: string; data: Record<string, unknown> }[] = [];
+    let buf = "";
+    let answered = false;
+
+    while (collected.length < 50) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const { events, remainder } = parseSseChunk(buf);
+      buf = remainder;
+      for (const e of events) {
+        collected.push({ kind: e.kind, data: e.data as Record<string, unknown> });
+        if (!answered && e.kind === "ca_permission_request") {
+          answered = true;
+          const callId = (e.data as { callId: string }).callId;
+          // Send a MODIFY decision with completely new input.
+          await app.request(`/v1/sessions/${sessionId}/permission/${callId}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              decision: "modify",
+              input: { command: "echo modified" },
+            }),
+          });
+        }
+        if (e.kind === "ca_session_ended") {
+          // Engine should have received the modified args, not the original.
+          expect(engine.received.permissions).toHaveLength(1);
+          expect(engine.received.permissionResults).toHaveLength(1);
+          const result = engine.received.permissionResults[0] as {
+            behavior: string;
+            updatedInput?: Record<string, unknown>;
+          };
+          expect(result.behavior).toBe("allow");
+          expect(result.updatedInput).toEqual({ command: "echo modified" });
+          return;
+        }
+      }
+    }
+    throw new Error("never reached ca_session_ended");
+  });
+
   it("404s on unknown session", async () => {
     const app = makeApp(new MockEngine([]));
     const res = await app.request("/v1/sessions/sess_nope/permission/call_1", {

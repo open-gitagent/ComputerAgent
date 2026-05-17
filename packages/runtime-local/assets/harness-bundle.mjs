@@ -25097,7 +25097,8 @@ async function runSession(engine, session) {
             sessionId: session.sessionId,
             callId: req.callId,
             toolName: req.toolName,
-            input: req.input
+            input: req.input,
+            ...req.risk !== undefined ? { risk: req.risk } : {}
           });
           return session.awaitPermission(req);
         },
@@ -25659,11 +25660,37 @@ function createHarnessServer(opts) {
 // ../engine-claude-agent-sdk/dist/engine.js
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
+// ../engine-claude-agent-sdk/dist/risk.js
+function classifyRisk(toolName, input) {
+  const t = toolName.toLowerCase();
+  if (t === "bash" || t === "shell") {
+    const cmd = input?.command ?? "";
+    if (/\brm\s+-r[fF]?[a-z]*\s+[/~]/i.test(cmd) || /\brm\s+-rf?\b\s+\*/i.test(cmd) || /\bsudo\s+rm\s+-r[fF]?/i.test(cmd) || /\bdrop\s+(table|database|schema)\b/i.test(cmd) || /\bmkfs\b/i.test(cmd) || /\bdd\s+if=.*of=\/dev\//i.test(cmd) || /\bshutdown\b|\breboot\b|\bhalt\b/i.test(cmd) || />\s*\/dev\/(sd[a-z]|nvme|disk)/i.test(cmd)) {
+      return "destructive";
+    }
+    return "high";
+  }
+  if (t === "write" || t === "edit" || t === "multiedit")
+    return "medium";
+  if (t === "delete" || t === "rm")
+    return "high";
+  if (t === "webfetch" || t === "websearch")
+    return "medium";
+  if (t === "read" || t === "glob" || t === "grep" || t === "ls" || t === "tree")
+    return "low";
+  if (t === "skill" || t === "task" || t === "agent")
+    return "medium";
+  if (t.startsWith("mcp__"))
+    return "medium";
+  return "medium";
+}
+
 // ../engine-claude-agent-sdk/dist/permission-bridge.js
 function buildCanUseTool(onPermissionRequest) {
   return async (toolName, input, opts) => {
     const callId = opts.toolUseID ?? `call_${cryptoRandomId()}`;
-    return onPermissionRequest({ callId, toolName, input });
+    const risk = classifyRisk(toolName, input);
+    return onPermissionRequest({ callId, toolName, input, risk });
   };
 }
 function cryptoRandomId() {
@@ -25861,13 +25888,40 @@ function warnTemperatureUnsupported() {
 // ../engine-gitagent/dist/engine.js
 import { query as query2 } from "gitclaw";
 
+// ../engine-gitagent/dist/risk.js
+function classifyRisk2(toolName, input) {
+  const t = toolName.toLowerCase();
+  if (t === "bash" || t === "shell" || t === "cli") {
+    const cmd = input?.command ?? "";
+    if (/\brm\s+-r[fF]?[a-z]*\s+[/~]/i.test(cmd) || /\brm\s+-rf?\b\s+\*/i.test(cmd) || /\bsudo\s+rm\s+-r[fF]?/i.test(cmd) || /\bdrop\s+(table|database|schema)\b/i.test(cmd) || /\bmkfs\b/i.test(cmd) || /\bdd\s+if=.*of=\/dev\//i.test(cmd) || /\bshutdown\b|\breboot\b|\bhalt\b/i.test(cmd) || />\s*\/dev\/(sd[a-z]|nvme|disk)/i.test(cmd)) {
+      return "destructive";
+    }
+    return "high";
+  }
+  if (t === "write" || t === "edit" || t === "multiedit")
+    return "medium";
+  if (t === "delete" || t === "rm")
+    return "high";
+  if (t === "webfetch" || t === "websearch")
+    return "medium";
+  if (t === "read" || t === "glob" || t === "grep" || t === "ls" || t === "tree")
+    return "low";
+  if (t === "skill" || t === "task" || t === "agent" || t === "memory")
+    return "medium";
+  if (t.startsWith("mcp__"))
+    return "medium";
+  return "medium";
+}
+
 // ../engine-gitagent/dist/permission-bridge.js
 function buildPreToolUse(onPermissionRequest) {
   return async (ctx) => {
+    const risk = classifyRisk2(ctx.toolName, ctx.args);
     const result = await onPermissionRequest({
       callId: `${ctx.sessionId}:${ctx.toolName}:${nonce()}`,
       toolName: ctx.toolName,
-      input: ctx.args
+      input: ctx.args,
+      risk
     });
     return toGCHookResult(result, ctx.args);
   };
@@ -31165,7 +31219,17 @@ async function gapToGitagentOptions(manifest, workdir) {
   if (manifest.model?.constraints?.temperature !== undefined) {
     opts.temperature = manifest.model.constraints.temperature;
   }
-  return { options: opts, harden: (m) => m };
+  const hitl = manifest.compliance?.supervision?.human_in_the_loop;
+  const requireHumanReview = hitl === "always" || hitl === "destructive";
+  return {
+    options: opts,
+    harden: (merged) => {
+      if (requireHumanReview) {
+        return { ...merged, requireHumanReview: true };
+      }
+      return merged;
+    }
+  };
 }
 
 // ../identity-gitagentprotocol/dist/loader.js

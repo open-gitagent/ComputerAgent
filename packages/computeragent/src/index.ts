@@ -17,6 +17,7 @@ export {
   ComputerAgent,
   ChatHandle,
   runTask,
+  ttyApproval,
   HarnessProtocolError,
   UnknownEngineError,
   UnknownLoaderError,

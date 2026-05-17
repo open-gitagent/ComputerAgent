@@ -1,5 +1,6 @@
 import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionRequest } from "@computeragent/protocol";
+import { classifyRisk } from "./risk.js";
 
 /**
  * Bridges the Claude Agent SDK's `canUseTool` callback to the framework's
@@ -13,7 +14,8 @@ export function buildCanUseTool(
 ): CanUseTool {
   return async (toolName, input, opts) => {
     const callId = opts.toolUseID ?? `call_${cryptoRandomId()}`;
-    return onPermissionRequest({ callId, toolName, input });
+    const risk = classifyRisk(toolName, input);
+    return onPermissionRequest({ callId, toolName, input, risk });
   };
 }
 

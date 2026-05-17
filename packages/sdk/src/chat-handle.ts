@@ -10,8 +10,12 @@ interface ChatHandleDeps {
   readonly harnessUrlPromise: Promise<string>;
   readonly fetchImpl: typeof fetch;
   /** Hook fired by the handle for each ca_permission_request, before it auto-decides. */
-  readonly onPermissionRequest?: (callId: string, toolName: string, input: unknown) =>
-    Promise<PermissionDecision> | PermissionDecision;
+  readonly onPermissionRequest?: (
+    callId: string,
+    toolName: string,
+    input: unknown,
+    risk?: "low" | "medium" | "high" | "destructive",
+  ) => Promise<PermissionDecision> | PermissionDecision;
   /** Optional cleanup (e.g. delete the session) when the handle is fully consumed. */
   readonly onComplete?: () => Promise<void> | void;
 }
@@ -65,7 +69,7 @@ export class ChatHandle implements AsyncIterable<HarnessEvent>, PromiseLike<Chat
     for await (const ev of this.deps.events) {
       if (ev.kind === "sdk_message") this.collectedMessages.push(ev.payload);
       if (ev.kind === "ca_permission_request") {
-        await this.handlePermission(ev.callId, ev.toolName, ev.input);
+        await this.handlePermission(ev.callId, ev.toolName, ev.input, ev.risk);
       }
       if (ev.kind === "ca_usage_snapshot") this.absorbUsage(ev);
       yield ev;
@@ -173,9 +177,14 @@ export class ChatHandle implements AsyncIterable<HarnessEvent>, PromiseLike<Chat
     };
   }
 
-  private async handlePermission(callId: string, toolName: string, input: unknown): Promise<void> {
+  private async handlePermission(
+    callId: string,
+    toolName: string,
+    input: unknown,
+    risk?: "low" | "medium" | "high" | "destructive",
+  ): Promise<void> {
     const decision = this.deps.onPermissionRequest
-      ? await this.deps.onPermissionRequest(callId, toolName, input)
+      ? await this.deps.onPermissionRequest(callId, toolName, input, risk)
       : { decision: "allow" as const };
     const [sid, harnessUrl] = await Promise.all([this.deps.sessionIdPromise, this.deps.harnessUrlPromise]);
     await postPermission(this.deps.fetchImpl, harnessUrl, sid, callId, decision);

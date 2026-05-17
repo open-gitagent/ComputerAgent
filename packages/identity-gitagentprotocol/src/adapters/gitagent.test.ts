@@ -48,4 +48,28 @@ describe("gapToGitagentOptions", () => {
     );
     expect((options as { temperature?: number }).temperature).toBeUndefined();
   });
+
+  it("harden() sets requireHumanReview when compliance.supervision.human_in_the_loop is 'always' (Wedge 1.8)", async () => {
+    const { harden } = await gapToGitagentOptions(
+      {
+        name: "x",
+        version: "1.0.0",
+        compliance: { supervision: { human_in_the_loop: "always" } },
+      } as never,
+      "/tmp/agent",
+    );
+    const merged = { dir: "/tmp/agent" };
+    const hardened = harden(merged);
+    expect((hardened as { requireHumanReview?: boolean }).requireHumanReview).toBe(true);
+  });
+
+  it("harden() leaves options untouched when no compliance directive present", async () => {
+    const { harden } = await gapToGitagentOptions(
+      { name: "x", version: "1.0.0" } as never,
+      "/tmp/agent",
+    );
+    const merged = { dir: "/tmp/agent" };
+    const hardened = harden(merged);
+    expect((hardened as { requireHumanReview?: boolean }).requireHumanReview).toBeUndefined();
+  });
 });

@@ -22,7 +22,13 @@ export type MockStep =
       costUsd?: number;
       costSemantic?: "cumulative" | "delta";
     }
-  | { kind: "ask_permission"; toolName: string; input?: unknown; expect: PermissionResult["behavior"] }
+  | {
+      kind: "ask_permission";
+      toolName: string;
+      input?: unknown;
+      expect: PermissionResult["behavior"];
+      risk?: "low" | "medium" | "high" | "destructive";
+    }
   | { kind: "wait_for_user_message" }
   | { kind: "wait_ms"; ms: number };
 
@@ -48,11 +54,18 @@ export class MockEngine implements EngineDriver<unknown> {
   readonly capabilities: EngineCapabilities;
   readonly received: {
     permissions: PermissionRequest[];
+    /**
+     * Permission results returned by the framework for each `ask_permission`
+     * step — in the same order as `permissions`. Lets tests verify modify
+     * decisions actually delivered modified args back to the engine.
+     */
+    permissionResults: unknown[];
     userMessages: unknown[];
     /** Populated on first startSession() call when ctx.sessionStore is present. */
     loadedEntries: unknown[] | null;
   } = {
     permissions: [],
+    permissionResults: [],
     userMessages: [],
     loadedEntries: null,
   };
@@ -109,9 +122,11 @@ export class MockEngine implements EngineDriver<unknown> {
           callId,
           toolName: step.toolName,
           input: step.input ?? {},
+          ...(step.risk !== undefined ? { risk: step.risk } : {}),
         };
         this.received.permissions.push(req);
         const result = await ctx.onPermissionRequest(req);
+        this.received.permissionResults.push(result);
         if (result.behavior !== step.expect) {
           throw new Error(
             `MockEngine: expected permission ${step.expect}, got ${result.behavior}`,

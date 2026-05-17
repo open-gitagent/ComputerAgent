@@ -14,6 +14,13 @@ export interface GitagentOptions {
   dir: string;
   model?: string;
   maxTurns?: number;
+  /**
+   * Compliance-driven permission requirement. When the GAP manifest declares
+   * `compliance.supervision.human_in_the_loop: always` or `destructive`, the
+   * engine MUST gate tool calls through `onPermissionRequest` regardless of
+   * what the caller passes. Set by `harden()` — see Wedge 1.8.
+   */
+  requireHumanReview?: boolean;
 }
 
 export interface GitagentAdapterResult {
@@ -35,7 +42,22 @@ export async function gapToGitagentOptions(
     (opts as GitagentOptions & { temperature?: number }).temperature =
       manifest.model.constraints.temperature;
   }
-  // gitclaw does not yet expose a permission-mode knob through its options
-  // surface; HITL enforcement on this engine is a future-PR concern.
-  return { options: opts, harden: (m) => m };
+  // Compliance enforcement (Wedge 1.8): when `compliance.supervision.human_in_the_loop`
+  // is "always" or "destructive", flip the `requireHumanReview` flag on hardened
+  // options. The engine reads this flag and ensures the preToolUse hook is wired
+  // (it always is today — but the flag signals "no override allowed"). gitclaw
+  // doesn't have a permissionMode equivalent like the Claude SDK, so this is
+  // the canonical lever for gitagent.
+  const hitl = manifest.compliance?.supervision?.human_in_the_loop;
+  const requireHumanReview = hitl === "always" || hitl === "destructive";
+
+  return {
+    options: opts,
+    harden: (merged) => {
+      if (requireHumanReview) {
+        return { ...merged, requireHumanReview: true };
+      }
+      return merged;
+    },
+  };
 }

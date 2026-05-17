@@ -55,6 +55,7 @@ export async function runSession(
             callId: req.callId,
             toolName: req.toolName,
             input: req.input,
+            ...(req.risk !== undefined ? { risk: req.risk } : {}),
           });
           return session.awaitPermission(req);
         },

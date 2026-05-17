@@ -428,8 +428,13 @@ export class ComputerAgent {
   }
 
   private wrapOnToolCall(cb: (c: ToolCallContext) => Promise<PermissionDecision> | PermissionDecision) {
-    return async (callId: string, toolName: string, input: unknown): Promise<PermissionDecision> => {
-      return cb({ callId, toolName, input });
+    return async (
+      callId: string,
+      toolName: string,
+      input: unknown,
+      risk?: "low" | "medium" | "high" | "destructive",
+    ): Promise<PermissionDecision> => {
+      return cb({ callId, toolName, input, ...(risk !== undefined ? { risk } : {}) });
     };
   }
 }
