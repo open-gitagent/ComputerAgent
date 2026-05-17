@@ -1,4 +1,5 @@
 import type {
+  Attachment,
   HarnessEvent,
   IdentitySource,
   PermissionResult,
@@ -126,6 +127,21 @@ export interface ComputerAgentOptions {
    * session.
    */
   readonly sessionStore?: SessionStoreConfig;
+  /**
+   * Files to materialize into the agent's workdir before the engine starts.
+   * Written AFTER the GAP repo is materialized, so attachments overlay on
+   * top of repo files (caller wins on collisions). Path-jailed by the
+   * harness server — `..`, absolute paths, and symlink-outs return 400.
+   *
+   * Use for per-request inputs the agent should operate on: PDFs to
+   * summarize, CSVs to analyze, config overlays, etc.
+   *
+   *   attachments: [
+   *     { path: "input.csv",  content: "name,age\nA,30\n",  encoding: "utf8" },
+   *     { path: "report.pdf", content: <base64>,            encoding: "base64" },
+   *   ]
+   */
+  readonly attachments?: readonly Attachment[];
   /**
    * When true, sets `COMPUTERAGENT_LOG=debug` in the harness env (forcing
    * every engine + framework log line to surface) and emits one client-side

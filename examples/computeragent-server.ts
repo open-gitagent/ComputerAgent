@@ -115,6 +115,21 @@ interface RunBody {
    * Pair with `sessionId` to resume an existing conversation across processes.
    */
   sessionStore?: { kind: string; options?: unknown };
+  /**
+   * Files to land in the agent's workdir BEFORE the engine starts. Written
+   * AFTER the GAP repo is materialized, so attachments overlay on top
+   * (caller wins on path collisions). Path-jailed by the harness server.
+   *
+   *   attachments: [
+   *     { path: "input.csv",  content: "name,age\nA,30\n" },
+   *     { path: "report.pdf", content: "JVBERi0...", encoding: "base64" }
+   *   ]
+   *
+   * The agent's tools (Read, Bash, etc.) see them as regular files in cwd.
+   * Works with any substrate (local/bwrap/e2b) and any harness — files
+   * are written once into the workdir, every engine sees them natively.
+   */
+  attachments?: Array<{ path: string; content: string; encoding?: "utf8" | "base64" }>;
 }
 
 interface ActiveRun {
@@ -213,6 +228,9 @@ export class ComputerAgentServer {
         ...(body.sessionId ? { sessionId: body.sessionId } : {}),
         ...(body.debug ? { debug: true } : {}),
         ...(body.sessionStore ? { sessionStore: body.sessionStore as never } : {}),
+        ...(body.attachments && body.attachments.length > 0
+          ? { attachments: body.attachments }
+          : {}),
       });
 
       // Track the agent so /artifact can find it by sessionId while the run is live.
@@ -451,7 +469,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log("");
   console.log("Endpoints:");
   console.log("  GET  /health                    runtimes + default + active count");
-  console.log("  POST /run                       body: {source, harness, runtime?, message, envs?, options?, gitToken?, model?, sessionStore?, sessionId?, debug?}");
+  console.log("  POST /run                       body: {source, harness, runtime?, message, envs?, options?, gitToken?, model?, sessionStore?, sessionId?, debug?, attachments?}");
   console.log("  GET  /workdir?sessionId=<id>");
   console.log("  GET  /artifact?sessionId=<id>&path=<path>");
   console.log("");

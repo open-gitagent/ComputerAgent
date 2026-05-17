@@ -2,10 +2,12 @@ import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { CreateSessionBody } from "@computeragent/protocol";
+import type { Attachment, CreateSessionBody } from "@computeragent/protocol";
 import { Session } from "../session.js";
 import { SessionRegistry } from "../registry.js";
 import { BadRequest } from "../error-mapper.js";
+import { PathEscapeError } from "../path-jail.js";
+import { writeBytes } from "./workspace-fs.js";
 import type { ServerDeps } from "../app.js";
 import { resolveStore } from "../stores/registry.js";
 import { wrapValidatingStore } from "../stores/validating-store.js";
@@ -42,6 +44,14 @@ export async function createSession(
     targetEngine: body.engine,
     workdir,
   });
+
+  // Materialize caller-supplied attachments on top of the loader's output.
+  // Order matters: loader runs first (GAP repo files), then attachments
+  // overlay — so a per-request file overrides a repo file with the same
+  // name. Path-jailed by writeBytes; out-of-workdir paths → 400.
+  if (body.attachments && body.attachments.length > 0) {
+    await materializeAttachments(workdir, body.attachments, deps.logger);
+  }
 
   const merged = mergeEngineOptions(result.options, body.options);
   const final = result.harden ? result.harden(merged) : merged;
@@ -121,4 +131,38 @@ function mergeEngineOptions(loaderOpts: unknown, bodyOpts: Record<string, unknow
   if (!bodyOpts) return loaderOpts;
   if (!loaderOpts || typeof loaderOpts !== "object" || Array.isArray(loaderOpts)) return bodyOpts;
   return { ...(loaderOpts as Record<string, unknown>), ...bodyOpts };
+}
+
+/**
+ * Write each attachment into the workdir before the engine starts.
+ *
+ * Path-jailed via `writeBytes` — relative paths that resolve outside the
+ * workdir are rejected with 400 PATH_ESCAPE. Binary uploads use
+ * `encoding: "base64"`; text uses `encoding: "utf8"` (default).
+ *
+ * One log line per attachment so the deployment is auditable.
+ */
+async function materializeAttachments(
+  workdir: string,
+  attachments: readonly Attachment[],
+  logger: ServerDeps["logger"],
+): Promise<void> {
+  for (const att of attachments) {
+    const encoding = att.encoding ?? "utf8";
+    const bytes =
+      encoding === "base64" ? Buffer.from(att.content, "base64") : Buffer.from(att.content, "utf8");
+    try {
+      const { size } = await writeBytes(workdir, att.path, bytes);
+      logger.info("session.attachment.written", { path: att.path, bytes: size, encoding });
+    } catch (err) {
+      if (err instanceof PathEscapeError) {
+        throw BadRequest(
+          "PATH_ESCAPE",
+          `attachment path '${err.attempted}' resolves outside the session workdir`,
+          { attempted: err.attempted },
+        );
+      }
+      throw err;
+    }
+  }
 }

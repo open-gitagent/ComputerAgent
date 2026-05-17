@@ -328,6 +328,9 @@ export class ComputerAgent {
     if (this.effectiveOptions) body.options = this.effectiveOptions;
     if (this.opts.sessionId) body.sessionId = this.opts.sessionId;
     if (this.opts.sessionStore) body.sessionStore = this.opts.sessionStore;
+    if (this.opts.attachments && this.opts.attachments.length > 0) {
+      body.attachments = this.opts.attachments;
+    }
 
     const res = await this.fetchImpl(`${harnessUrl}/v1/sessions`, {
       method: "POST",

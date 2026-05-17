@@ -132187,6 +132187,11 @@ var UserMessage = exports_external.object({
     }).passthrough())
   ])
 });
+var Attachment = exports_external.object({
+  path: exports_external.string().min(1),
+  content: exports_external.string(),
+  encoding: exports_external.enum(["utf8", "base64"]).optional()
+});
 var IdentityRef = exports_external.object({
   loader: exports_external.string().min(1),
   source: IdentitySource
@@ -132199,7 +132204,8 @@ var CreateSessionBody = exports_external.object({
   sessionId: exports_external.string().optional(),
   options: exports_external.record(exports_external.string(), exports_external.unknown()).optional(),
   streamingInput: exports_external.boolean().optional(),
-  sessionStore: SessionStoreConfig.optional()
+  sessionStore: SessionStoreConfig.optional(),
+  attachments: exports_external.array(Attachment).optional()
 });
 var CreateSessionResponse = exports_external.object({
   sessionId: exports_external.string(),
@@ -132580,9 +132586,9 @@ function healthRoute(ctx) {
 }
 
 // ../harness-server/dist/services/create-session.js
-import { mkdtemp, mkdir as mkdir2 } from "node:fs/promises";
+import { mkdtemp, mkdir as mkdir3 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 import { randomUUID } from "node:crypto";
 
 // ../harness-server/dist/replay-buffer.js
@@ -132780,6 +132786,161 @@ class Session {
   }
 }
 
+// ../harness-server/dist/path-jail.js
+import { realpath } from "node:fs/promises";
+import { isAbsolute, normalize, resolve, sep } from "node:path";
+
+class PathEscapeError extends Error {
+  attempted;
+  constructor(message, attempted) {
+    super(message);
+    this.attempted = attempted;
+    this.name = "PathEscapeError";
+  }
+}
+var DEFAULTS = { checkSymlinks: true, allowNonExistent: true };
+async function resolveJailedPath(workdir, relPath, opts = {}) {
+  const { checkSymlinks, allowNonExistent } = { ...DEFAULTS, ...opts };
+  if (typeof relPath !== "string" || relPath.trim() === "") {
+    throw new PathEscapeError("path must be a non-empty string", String(relPath));
+  }
+  if (relPath.includes("\x00")) {
+    throw new PathEscapeError("path contains null byte", relPath);
+  }
+  if (isAbsolute(relPath)) {
+    throw new PathEscapeError("absolute paths are not allowed", relPath);
+  }
+  const normalized = normalize(relPath);
+  if (normalized.startsWith("..") || normalized === ".." || normalized.includes(`${sep}..${sep}`)) {
+    throw new PathEscapeError("parent traversal is not allowed", relPath);
+  }
+  const root = checkSymlinks ? await realpathSafe(resolve(workdir)) : resolve(workdir);
+  const candidate = resolve(root, normalized);
+  if (!isInside(root, candidate)) {
+    throw new PathEscapeError("path resolves outside the workdir", relPath);
+  }
+  if (checkSymlinks) {
+    try {
+      const real = await realpath(candidate);
+      if (!isInside(root, real)) {
+        throw new PathEscapeError("symlink target is outside the workdir", relPath);
+      }
+      return real;
+    } catch (err) {
+      if (allowNonExistent && err.code === "ENOENT") {
+        return candidate;
+      }
+      if (err instanceof PathEscapeError)
+        throw err;
+      throw err;
+    }
+  }
+  return candidate;
+}
+async function realpathSafe(p) {
+  try {
+    return await realpath(p);
+  } catch {
+    return p;
+  }
+}
+function isInside(root, candidate) {
+  const r = resolve(root);
+  const c = resolve(candidate);
+  return c === r || c.startsWith(r + sep);
+}
+
+// ../harness-server/dist/services/workspace-fs.js
+import { mkdir as mkdir2, readFile as readFile2, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join as join2, relative } from "node:path";
+async function listTree(workdir, relPath, depth) {
+  const root = await resolveJailedPath(workdir, relPath || ".");
+  return collect(root, root, Math.max(0, depth));
+}
+async function collect(root, dir, remaining) {
+  if (remaining < 0)
+    return [];
+  const entries = await readdir(dir, { withFileTypes: true });
+  const out = [];
+  for (const entry of entries) {
+    const abs = join2(dir, entry.name);
+    const s = await stat(abs);
+    out.push({
+      path: relative(root, abs) || entry.name,
+      type: entry.isDirectory() ? "dir" : "file",
+      size: s.size,
+      mtime: Math.floor(s.mtimeMs),
+      mode: s.mode
+    });
+    if (entry.isDirectory() && remaining > 0) {
+      const nested = await collect(root, abs, remaining - 1);
+      for (const n of nested)
+        out.push(n);
+    }
+  }
+  return out;
+}
+async function readBytes(workdir, relPath) {
+  const abs = await resolveJailedPath(workdir, relPath, { allowNonExistent: false });
+  return readFile2(abs);
+}
+async function writeBytes(workdir, relPath, data) {
+  const abs = await resolveJailedPath(workdir, relPath);
+  await mkdir2(dirname(abs), { recursive: true });
+  await writeFile(abs, data);
+  const s = await stat(abs);
+  return { size: s.size };
+}
+async function editFile(workdir, relPath, oldString, newString, replaceAll) {
+  const abs = await resolveJailedPath(workdir, relPath, { allowNonExistent: false });
+  const original = await readFile2(abs, "utf8");
+  let replacements = 0;
+  let updated;
+  if (replaceAll) {
+    updated = original.split(oldString).join(newString);
+    replacements = original.length - updated.length === 0 && oldString !== newString ? 0 : countOccurrences(original, oldString);
+  } else {
+    const idx = original.indexOf(oldString);
+    if (idx === -1) {
+      updated = original;
+      replacements = 0;
+    } else {
+      updated = original.slice(0, idx) + newString + original.slice(idx + oldString.length);
+      replacements = 1;
+    }
+  }
+  if (replacements === 0) {
+    throw new Error(`old_string not found in ${relPath}`);
+  }
+  await writeFile(abs, updated, "utf8");
+  return { replacements };
+}
+async function removePath(workdir, relPath, recursive) {
+  const abs = await resolveJailedPath(workdir, relPath, { allowNonExistent: false });
+  await rm(abs, { recursive, force: false });
+}
+async function makeDir(workdir, relPath, recursive) {
+  const abs = await resolveJailedPath(workdir, relPath);
+  await mkdir2(abs, { recursive });
+}
+async function movePath(workdir, from, to) {
+  const fromAbs = await resolveJailedPath(workdir, from, { allowNonExistent: false });
+  const toAbs = await resolveJailedPath(workdir, to);
+  await mkdir2(dirname(toAbs), { recursive: true });
+  await rename(fromAbs, toAbs);
+}
+function countOccurrences(haystack, needle) {
+  if (!needle)
+    return 0;
+  let n = 0;
+  let idx = haystack.indexOf(needle);
+  while (idx !== -1) {
+    n++;
+    idx = haystack.indexOf(needle, idx + needle.length);
+  }
+  return n;
+}
+
 // ../harness-server/dist/stores/validating-store.js
 function wrapValidatingStore(inner) {
   const stats = { droppedCount: 0 };
@@ -132840,6 +133001,9 @@ async function createSession(deps, registry2, body) {
     targetEngine: body.engine,
     workdir
   });
+  if (body.attachments && body.attachments.length > 0) {
+    await materializeAttachments(workdir, body.attachments, deps.logger);
+  }
   const merged = mergeEngineOptions(result.options, body.options);
   const final = result.harden ? result.harden(merged) : merged;
   const rawStore = body.sessionStore ? resolveStore(deps.sessionStores, body.sessionStore) : undefined;
@@ -132864,14 +133028,14 @@ async function createSession(deps, registry2, body) {
   return session;
 }
 async function makeWorkdir(sessionId, stable) {
-  const base = join2(tmpdir(), "computeragent-sessions");
-  await mkdir2(base, { recursive: true });
+  const base = join3(tmpdir(), "computeragent-sessions");
+  await mkdir3(base, { recursive: true });
   if (stable) {
-    const dir = join2(base, sessionId);
-    await mkdir2(dir, { recursive: true });
+    const dir = join3(base, sessionId);
+    await mkdir3(dir, { recursive: true });
     return dir;
   }
-  return mkdtemp(join2(base, `${sessionId}-`));
+  return mkdtemp(join3(base, `${sessionId}-`));
 }
 function mergeEngineOptions(loaderOpts, bodyOpts) {
   if (!bodyOpts)
@@ -132879,6 +133043,21 @@ function mergeEngineOptions(loaderOpts, bodyOpts) {
   if (!loaderOpts || typeof loaderOpts !== "object" || Array.isArray(loaderOpts))
     return bodyOpts;
   return { ...loaderOpts, ...bodyOpts };
+}
+async function materializeAttachments(workdir, attachments, logger) {
+  for (const att of attachments) {
+    const encoding = att.encoding ?? "utf8";
+    const bytes = encoding === "base64" ? Buffer.from(att.content, "base64") : Buffer.from(att.content, "utf8");
+    try {
+      const { size } = await writeBytes(workdir, att.path, bytes);
+      logger.info("session.attachment.written", { path: att.path, bytes: size, encoding });
+    } catch (err) {
+      if (err instanceof PathEscapeError) {
+        throw BadRequest("PATH_ESCAPE", `attachment path '${err.attempted}' resolves outside the session workdir`, { attempted: err.attempted });
+      }
+      throw err;
+    }
+  }
 }
 
 // ../harness-server/dist/routes/sessions.js
@@ -133093,7 +133272,7 @@ class EventChannel {
           return Promise.resolve({ value: v, done: false });
         if (this.closed)
           return Promise.resolve({ value: undefined, done: true });
-        return new Promise((resolve) => this.waiters.push(resolve));
+        return new Promise((resolve2) => this.waiters.push(resolve2));
       }
     };
   }
@@ -133338,161 +133517,6 @@ function cancelRoute(ctx) {
     return c.json({ ok: true });
   });
   return app;
-}
-
-// ../harness-server/dist/path-jail.js
-import { realpath } from "node:fs/promises";
-import { isAbsolute, normalize, resolve, sep } from "node:path";
-
-class PathEscapeError extends Error {
-  attempted;
-  constructor(message, attempted) {
-    super(message);
-    this.attempted = attempted;
-    this.name = "PathEscapeError";
-  }
-}
-var DEFAULTS = { checkSymlinks: true, allowNonExistent: true };
-async function resolveJailedPath(workdir, relPath, opts = {}) {
-  const { checkSymlinks, allowNonExistent } = { ...DEFAULTS, ...opts };
-  if (typeof relPath !== "string" || relPath.trim() === "") {
-    throw new PathEscapeError("path must be a non-empty string", String(relPath));
-  }
-  if (relPath.includes("\x00")) {
-    throw new PathEscapeError("path contains null byte", relPath);
-  }
-  if (isAbsolute(relPath)) {
-    throw new PathEscapeError("absolute paths are not allowed", relPath);
-  }
-  const normalized = normalize(relPath);
-  if (normalized.startsWith("..") || normalized === ".." || normalized.includes(`${sep}..${sep}`)) {
-    throw new PathEscapeError("parent traversal is not allowed", relPath);
-  }
-  const root = checkSymlinks ? await realpathSafe(resolve(workdir)) : resolve(workdir);
-  const candidate = resolve(root, normalized);
-  if (!isInside(root, candidate)) {
-    throw new PathEscapeError("path resolves outside the workdir", relPath);
-  }
-  if (checkSymlinks) {
-    try {
-      const real = await realpath(candidate);
-      if (!isInside(root, real)) {
-        throw new PathEscapeError("symlink target is outside the workdir", relPath);
-      }
-      return real;
-    } catch (err) {
-      if (allowNonExistent && err.code === "ENOENT") {
-        return candidate;
-      }
-      if (err instanceof PathEscapeError)
-        throw err;
-      throw err;
-    }
-  }
-  return candidate;
-}
-async function realpathSafe(p) {
-  try {
-    return await realpath(p);
-  } catch {
-    return p;
-  }
-}
-function isInside(root, candidate) {
-  const r = resolve(root);
-  const c = resolve(candidate);
-  return c === r || c.startsWith(r + sep);
-}
-
-// ../harness-server/dist/services/workspace-fs.js
-import { mkdir as mkdir3, readFile as readFile2, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join as join3, relative } from "node:path";
-async function listTree(workdir, relPath, depth) {
-  const root = await resolveJailedPath(workdir, relPath || ".");
-  return collect(root, root, Math.max(0, depth));
-}
-async function collect(root, dir, remaining) {
-  if (remaining < 0)
-    return [];
-  const entries = await readdir(dir, { withFileTypes: true });
-  const out = [];
-  for (const entry of entries) {
-    const abs = join3(dir, entry.name);
-    const s = await stat(abs);
-    out.push({
-      path: relative(root, abs) || entry.name,
-      type: entry.isDirectory() ? "dir" : "file",
-      size: s.size,
-      mtime: Math.floor(s.mtimeMs),
-      mode: s.mode
-    });
-    if (entry.isDirectory() && remaining > 0) {
-      const nested = await collect(root, abs, remaining - 1);
-      for (const n of nested)
-        out.push(n);
-    }
-  }
-  return out;
-}
-async function readBytes(workdir, relPath) {
-  const abs = await resolveJailedPath(workdir, relPath, { allowNonExistent: false });
-  return readFile2(abs);
-}
-async function writeBytes(workdir, relPath, data) {
-  const abs = await resolveJailedPath(workdir, relPath);
-  await mkdir3(dirname(abs), { recursive: true });
-  await writeFile(abs, data);
-  const s = await stat(abs);
-  return { size: s.size };
-}
-async function editFile(workdir, relPath, oldString, newString, replaceAll) {
-  const abs = await resolveJailedPath(workdir, relPath, { allowNonExistent: false });
-  const original = await readFile2(abs, "utf8");
-  let replacements = 0;
-  let updated;
-  if (replaceAll) {
-    updated = original.split(oldString).join(newString);
-    replacements = original.length - updated.length === 0 && oldString !== newString ? 0 : countOccurrences(original, oldString);
-  } else {
-    const idx = original.indexOf(oldString);
-    if (idx === -1) {
-      updated = original;
-      replacements = 0;
-    } else {
-      updated = original.slice(0, idx) + newString + original.slice(idx + oldString.length);
-      replacements = 1;
-    }
-  }
-  if (replacements === 0) {
-    throw new Error(`old_string not found in ${relPath}`);
-  }
-  await writeFile(abs, updated, "utf8");
-  return { replacements };
-}
-async function removePath(workdir, relPath, recursive) {
-  const abs = await resolveJailedPath(workdir, relPath, { allowNonExistent: false });
-  await rm(abs, { recursive, force: false });
-}
-async function makeDir(workdir, relPath, recursive) {
-  const abs = await resolveJailedPath(workdir, relPath);
-  await mkdir3(abs, { recursive });
-}
-async function movePath(workdir, from, to) {
-  const fromAbs = await resolveJailedPath(workdir, from, { allowNonExistent: false });
-  const toAbs = await resolveJailedPath(workdir, to);
-  await mkdir3(dirname(toAbs), { recursive: true });
-  await rename(fromAbs, toAbs);
-}
-function countOccurrences(haystack, needle) {
-  if (!needle)
-    return 0;
-  let n = 0;
-  let idx = haystack.indexOf(needle);
-  while (idx !== -1) {
-    n++;
-    idx = haystack.indexOf(needle, idx + needle.length);
-  }
-  return n;
 }
 
 // ../harness-server/dist/routes/fs.js

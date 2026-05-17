@@ -22,6 +22,22 @@ export const UserMessage = z.object({
 });
 export type UserMessage = z.infer<typeof UserMessage>;
 
+/**
+ * File the caller wants to land in the session workdir before the engine starts.
+ *
+ * - `path` is relative to the workdir. Path-jailed: `..`, absolute paths, and
+ *   symlink-outs are rejected with 400 PATH_ESCAPE.
+ * - `content` is the file body. UTF-8 strings (default) or base64 for binary.
+ * - Written AFTER the identity loader materializes the GAP repo, so attachments
+ *   overlay on top of repo files (caller wins on collisions).
+ */
+export const Attachment = z.object({
+  path: z.string().min(1),
+  content: z.string(),
+  encoding: z.enum(["utf8", "base64"]).optional(),
+});
+export type Attachment = z.infer<typeof Attachment>;
+
 /** Identity reference: which loader, with which source. */
 export const IdentityRef = z.object({
   loader: z.string().min(1),
@@ -51,6 +67,14 @@ export const CreateSessionBody = z.object({
    * `sessionId` IS the resume signal — no separate flag.
    */
   sessionStore: SessionStoreConfig.optional(),
+  /**
+   * Files to materialize into the session workdir before the engine starts.
+   * Written AFTER the identity loader populates the workdir, so an
+   * attachment with the same name as a repo file overwrites it (caller
+   * wins). Common uses: passing PDFs for analysis, CSVs for processing,
+   * config overlays per request.
+   */
+  attachments: z.array(Attachment).optional(),
 });
 export type CreateSessionBody = z.infer<typeof CreateSessionBody>;
 
