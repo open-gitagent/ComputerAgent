@@ -1,6 +1,25 @@
 import type { GapManifest } from "../manifest.js";
 
 /**
+ * Gitclaw requires model strings in `provider:modelId` form (e.g.
+ * `anthropic:claude-sonnet-4-5-20250929`). Most GAP repos in the wild use
+ * the Claude Agent SDK's bare form (`claude-sonnet-4-5-20250929`). Normalize
+ * here so the same `agent.yaml` works across engines.
+ *
+ * Heuristic: a bare `claude-*` / `claude-3-*` etc. string gets `anthropic:`
+ * prefixed. `gpt-*` and `o*` get `openai:`. Strings that already contain
+ * `:` are passed through unchanged. Everything else is passed through and
+ * gitclaw will surface its own error if the provider is unknown.
+ */
+function normalizeGitclawModel(model: string): string {
+  if (model.includes(":")) return model;
+  if (/^claude-/i.test(model)) return `anthropic:${model}`;
+  if (/^(gpt-|o[13]-|o4-)/i.test(model)) return `openai:${model}`;
+  if (/^gemini-/i.test(model)) return `google:${model}`;
+  return model;
+}
+
+/**
  * GAP → gitagent options translator.
  *
  * Gitagent (the bot) natively reads GAP repos: it auto-discovers `agent.yaml`,
@@ -33,7 +52,7 @@ export async function gapToGitagentOptions(
   workdir: string,
 ): Promise<GitagentAdapterResult> {
   const opts: GitagentOptions = { dir: workdir };
-  if (manifest.model?.preferred) opts.model = manifest.model.preferred;
+  if (manifest.model?.preferred) opts.model = normalizeGitclawModel(manifest.model.preferred);
   if (manifest.runtime?.max_turns) opts.maxTurns = manifest.runtime.max_turns;
   // Pass GAP's declared temperature as a flat field; the engine folds it
   // into gitclaw's `constraints.temperature`. Caller-supplied `temperature`

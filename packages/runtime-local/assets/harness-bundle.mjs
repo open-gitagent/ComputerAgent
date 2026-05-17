@@ -139190,10 +139190,21 @@ async function readIfPresent(path4) {
 }
 
 // ../identity-gitagentprotocol/dist/adapters/gitagent.js
+function normalizeGitclawModel(model) {
+  if (model.includes(":"))
+    return model;
+  if (/^claude-/i.test(model))
+    return `anthropic:${model}`;
+  if (/^(gpt-|o[13]-|o4-)/i.test(model))
+    return `openai:${model}`;
+  if (/^gemini-/i.test(model))
+    return `google:${model}`;
+  return model;
+}
 async function gapToGitagentOptions(manifest, workdir) {
   const opts = { dir: workdir };
   if (manifest.model?.preferred)
-    opts.model = manifest.model.preferred;
+    opts.model = normalizeGitclawModel(manifest.model.preferred);
   if (manifest.runtime?.max_turns)
     opts.maxTurns = manifest.runtime.max_turns;
   if (manifest.model?.constraints?.temperature !== undefined) {
