@@ -73,10 +73,18 @@ export async function gapToGitagentOptions(
   return {
     options: opts,
     harden: (merged) => {
-      if (requireHumanReview) {
-        return { ...merged, requireHumanReview: true };
+      // Re-normalize the model AFTER merge so caller-supplied bare names
+      // (e.g. options.model="claude-haiku-4-5-20251001") get the gitclaw
+      // "provider:modelId" prefix. Without this, gitclaw's parseModelString
+      // throws "Invalid model format" inside query() and the error is
+      // swallowed — query() returns 0 messages, the engine looks healthy
+      // but actually died at init. See issue #6.
+      const out: GitagentOptions = { ...merged };
+      if (typeof out.model === "string") {
+        out.model = normalizeGitclawModel(out.model);
       }
-      return merged;
+      if (requireHumanReview) out.requireHumanReview = true;
+      return out;
     },
   };
 }

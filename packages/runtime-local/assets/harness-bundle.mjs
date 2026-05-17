@@ -180713,10 +180713,13 @@ async function gapToGitagentOptions(manifest, workdir) {
   return {
     options: opts,
     harden: (merged) => {
-      if (requireHumanReview) {
-        return { ...merged, requireHumanReview: true };
+      const out = { ...merged };
+      if (typeof out.model === "string") {
+        out.model = normalizeGitclawModel(out.model);
       }
-      return merged;
+      if (requireHumanReview)
+        out.requireHumanReview = true;
+      return out;
     }
   };
 }
