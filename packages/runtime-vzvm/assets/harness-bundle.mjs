@@ -133956,7 +133956,7 @@ class ClaudeAgentEngine {
     const options = {
       ...stripFlatTemperature(ctx.options),
       cwd: ctx.workdir,
-      env: { ...ctx.envs },
+      env: { ...inheritEssentialHostEnv(), ...ctx.envs },
       includePartialMessages: true,
       abortController,
       canUseTool: buildCanUseTool(ctx.onPermissionRequest),
@@ -134048,6 +134048,25 @@ function signalToController(signal) {
   else
     signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   return ctrl;
+}
+function inheritEssentialHostEnv() {
+  const out = {};
+  for (const k of [
+    "HOME",
+    "PATH",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME"
+  ]) {
+    const v = process.env[k];
+    if (v)
+      out[k] = v;
+  }
+  return out;
 }
 function stripFlatTemperature(opts) {
   const { temperature: _t, ...rest } = opts;

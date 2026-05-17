@@ -95,7 +95,14 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
     const options: ClaudeAgentOptions = {
       ...stripFlatTemperature(ctx.options),
       cwd: ctx.workdir,
-      env: { ...ctx.envs },
+      // Merge essential host envs (HOME, PATH, ...) with caller-supplied envs.
+      // The Claude CLI subprocess writes transcript-mirror JSONL files to
+      // $HOME/.claude/projects/<projectKey>/<sessionId>.jsonl, and the SDK's
+      // mirror watcher reads them back to call sessionStore.append(). If HOME
+      // isn't in the env we pass to query(), the subprocess can't resolve the
+      // write path and silently drops every mirror frame. ctx.envs alone
+      // typically only carries API keys — that's not enough.
+      env: { ...inheritEssentialHostEnv(), ...ctx.envs },
       includePartialMessages: true,
       abortController,
       canUseTool: buildCanUseTool(ctx.onPermissionRequest),
@@ -243,6 +250,34 @@ function signalToController(signal: AbortSignal): AbortController {
   if (signal.aborted) ctrl.abort();
   else signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   return ctrl;
+}
+
+/**
+ * Forward the essential host environment so the Claude CLI subprocess can
+ * resolve standard paths ($HOME, PATH, ...). Without these, the SDK's
+ * transcript-mirror writes silently drop because the CLI can't find
+ * $HOME/.claude/projects/ to write JSONL files into, which means
+ * sessionStore.append() never fires for any session entry.
+ *
+ * Caller envs (api keys, etc.) override these on conflict.
+ */
+function inheritEssentialHostEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of [
+    "HOME",
+    "PATH",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+  ]) {
+    const v = process.env[k];
+    if (v) out[k] = v;
+  }
+  return out;
 }
 
 /**
