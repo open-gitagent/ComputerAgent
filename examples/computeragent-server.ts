@@ -31,6 +31,7 @@
  */
 
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { serve, type ServerType } from "@hono/node-server";
 import { ComputerAgent, LocalSubstrate } from "computeragent";
@@ -170,6 +171,22 @@ export class ComputerAgentServer {
   }
 
   private wire(): void {
+    // CORS: this is an unauthenticated public API; the same callers that
+    // can curl it from anywhere should be able to fetch() it from a browser
+    // (test.html, dashboards, etc.). origin:"*" is consistent with the
+    // server's existing no-auth posture. Add a proper auth layer first if
+    // you want to restrict cross-origin browser access.
+    this.app.use(
+      "*",
+      cors({
+        origin: "*",
+        allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allowHeaders: ["content-type", "accept", "last-event-id"],
+        exposeHeaders: ["content-type"],
+        maxAge: 86400,
+      }),
+    );
+
     this.app.get("/health", (c) =>
       c.json({
         ok: true,
