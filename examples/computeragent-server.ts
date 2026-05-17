@@ -34,7 +34,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { serve, type ServerType } from "@hono/node-server";
 import { ComputerAgent, LocalSubstrate } from "computeragent";
-import type { IdentitySource } from "computeragent";
+import type { IdentitySource, Substrate } from "computeragent";
 
 export interface ComputerAgentServerOptions {
   /** Bind host. Default "127.0.0.1" (loopback only). Pass "0.0.0.0" for LAN-accessible. */
@@ -48,9 +48,10 @@ export interface ComputerAgentServerOptions {
   readonly defaultEnvs?: Readonly<Record<string, string>>;
   /**
    * Substrate factory — if absent, every request boots a fresh LocalSubstrate.
-   * Override to share an E2B template, a long-lived VM, or a test mock.
+   * Override to swap in `BwrapSubstrate` for namespace-isolated agents, an
+   * E2B template, a long-lived VM, or a test mock. Any `Substrate` works.
    */
-  readonly substrate?: () => InstanceType<typeof LocalSubstrate>;
+  readonly substrate?: () => Substrate;
   /**
    * Hard cap on concurrent agent runs. Beyond this, /run returns 429.
    * Default: 4 (LocalSubstrate spawns a Node process per agent).

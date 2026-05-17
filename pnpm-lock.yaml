@@ -41,6 +41,9 @@ importers:
       '@computeragent/identity-gitagentprotocol':
         specifier: workspace:*
         version: link:../packages/identity-gitagentprotocol
+      '@computeragent/runtime-bwrap':
+        specifier: workspace:*
+        version: link:../packages/runtime-bwrap
       '@computeragent/runtime-e2b':
         specifier: workspace:*
         version: link:../packages/runtime-e2b
@@ -231,6 +234,25 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.19.18)
+
+  packages/runtime-bwrap:
+    dependencies:
+      '@computeragent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@computeragent/runtime-local':
+        specifier: workspace:*
+        version: link:../runtime-local
+      '@computeragent/sdk':
+        specifier: workspace:*
+        version: link:../sdk
     devDependencies:
       typescript:
         specifier: ^5.5.0
