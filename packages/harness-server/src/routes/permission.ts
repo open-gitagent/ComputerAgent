@@ -23,6 +23,7 @@ export function permissionRoute(ctx: ServerContext): Hono {
   app.post("/sessions/:id/permission/:callId", async (c) => {
     const id = c.req.param("id");
     const callId = c.req.param("callId");
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/sessions/:id/permission/:callId", sessionId: id, callId });
     const session = ctx.registry.get(id);
     if (!session) throw NotFound("session", id);
 
@@ -35,6 +36,7 @@ export function permissionRoute(ctx: ServerContext): Hono {
         `no pending permission request for callId '${callId}' on session '${id}'`,
       );
     }
+    ctx.deps.logger.info("session.permission_decision", { sessionId: id, callId, decision: body.decision });
     return c.json({ ok: true });
   });
 

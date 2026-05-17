@@ -1,4 +1,5 @@
-import type { HarnessEvent } from "@computeragent/protocol";
+import type { HarnessEvent, Logger } from "@computeragent/protocol";
+import { nopLogger } from "@computeragent/protocol";
 import type { ChatResult, PermissionDecision, UsageRollup } from "./types.js";
 import { decisionToBody } from "./types.js";
 
@@ -18,6 +19,11 @@ interface ChatHandleDeps {
   ) => Promise<PermissionDecision> | PermissionDecision;
   /** Optional cleanup (e.g. delete the session) when the handle is fully consumed. */
   readonly onComplete?: () => Promise<void> | void;
+  /**
+   * Optional client-side logger. When set, emits a one-line summary per
+   * consumed HarnessEvent — useful for the `debug: true` constructor flag.
+   */
+  readonly logger?: Logger;
 }
 
 /**
@@ -66,7 +72,9 @@ export class ChatHandle implements AsyncIterable<HarnessEvent>, PromiseLike<Chat
 
   /** Iterate raw events. Yields once per HarnessEvent the server emits. */
   async *[Symbol.asyncIterator](): AsyncIterator<HarnessEvent> {
+    const log = this.deps.logger ?? nopLogger;
     for await (const ev of this.deps.events) {
+      logHarnessEvent(log, ev);
       if (ev.kind === "sdk_message") this.collectedMessages.push(ev.payload);
       if (ev.kind === "ca_permission_request") {
         await this.handlePermission(ev.callId, ev.toolName, ev.input, ev.risk);
@@ -188,6 +196,37 @@ export class ChatHandle implements AsyncIterable<HarnessEvent>, PromiseLike<Chat
       : { decision: "allow" as const };
     const [sid, harnessUrl] = await Promise.all([this.deps.sessionIdPromise, this.deps.harnessUrlPromise]);
     await postPermission(this.deps.fetchImpl, harnessUrl, sid, callId, decision);
+  }
+}
+
+/**
+ * Surface one log line per HarnessEvent the client consumes. Keep it terse:
+ * the harness-side logs already give per-step detail; this is for the SDK
+ * caller to see at a glance what's coming across the wire.
+ */
+function logHarnessEvent(log: Logger, ev: HarnessEvent): void {
+  switch (ev.kind) {
+    case "ca_session_started":
+      log.info("event.session_started", { sessionId: ev.sessionId, engine: ev.engine });
+      break;
+    case "ca_session_ended":
+      log.info("event.session_ended", { sessionId: ev.sessionId, reason: ev.reason });
+      break;
+    case "ca_permission_request":
+      log.info("event.permission_request", { sessionId: ev.sessionId, callId: ev.callId, toolName: ev.toolName, risk: ev.risk });
+      break;
+    case "ca_usage_snapshot":
+      log.debug("event.usage", { sessionId: ev.sessionId, inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, costUsd: ev.costUsd });
+      break;
+    case "sdk_message": {
+      const p = ev.payload as { type?: string; toolName?: string };
+      log.debug("event.sdk_message", { sessionId: ev.sessionId, type: p?.type, toolName: p?.toolName });
+      break;
+    }
+    default:
+      // Fallthrough: ev is `never` here because the union is exhausted. Cast
+      // for forward-compat — when new event kinds land we log them generically.
+      log.debug("event.unknown", { kind: (ev as { kind: string }).kind });
   }
 }
 

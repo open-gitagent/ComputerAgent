@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { Sandbox } from "e2b";
 import type { BootHarnessOptions, BootedHarness, Substrate } from "@computeragent/sdk";
+import { createLogger } from "@computeragent/protocol";
 
 /** Default port the harness server listens on inside the sandbox. */
 const HARNESS_PORT = 7700;
@@ -56,16 +57,23 @@ export class E2BSubstrate implements Substrate {
     const apiKey = this.opts.apiKey ?? process.env.E2B_API_KEY;
     if (!apiKey) throw new Error("E2BSubstrate: missing apiKey (set E2B_API_KEY or pass apiKey)");
 
-    const log = this.opts.onLog ?? (() => {});
-    log(`creating sandbox`);
+    // Default onLog: forward to OUR stderr unchanged. The harness child writes
+    // structured logs there (gated by COMPUTERAGENT_LOG in its env), so we
+    // relay verbatim. Callers can opt out by passing `onLog: () => {}`.
+    const log = this.opts.onLog ?? defaultOnLog;
+    const logger = createLogger({ component: "substrate.e2b" });
+
+    const createStart = Date.now();
+    logger.info("create", { runtime: "e2b", template: this.opts.template });
     const sandbox = await Sandbox.create({
       apiKey,
       ...(this.opts.template ? { template: this.opts.template } : {}),
       ...(this.opts.timeoutMs ? { timeoutMs: this.opts.timeoutMs } : {}),
     });
+    logger.info("create.ok", { runtime: "e2b", durationMs: Date.now() - createStart });
 
     try {
-      log(`uploading harness bundle + package.json`);
+      const uploadStart = Date.now();
       const bundlePath = this.opts.bundlePath ?? BUNDLE_PATH;
       const bundle = await readFile(bundlePath);
       const pkgJson = await readFile(SANDBOX_PKG_PATH, "utf8");
@@ -75,32 +83,44 @@ export class E2BSubstrate implements Substrate {
       await sandbox.commands.run(`mkdir -p ${SANDBOX_DIR}`);
       await sandbox.files.write(`${SANDBOX_DIR}/harness.mjs`, ab);
       await sandbox.files.write(`${SANDBOX_DIR}/package.json`, pkgJson);
+      logger.info("upload", { runtime: "e2b", bytes: bundle.byteLength, durationMs: Date.now() - uploadStart });
 
-      log(`npm install (Claude Agent SDK + native binary)`);
+      const installStart = Date.now();
       const install = await sandbox.commands.run(
         // --include=optional so the platform-specific native CLI binary lands.
         `cd ${SANDBOX_DIR} && npm install --include=optional --no-fund --no-audit`,
         { timeoutMs: 180_000 },
       );
       if (install.exitCode !== 0) {
+        logger.error("install.failed", { runtime: "e2b", exitCode: install.exitCode });
         throw new Error(`npm install failed (exit ${install.exitCode}): ${install.stderr.slice(0, 1000)}`);
       }
-      log(`npm install complete`);
+      logger.info("install.ok", { runtime: "e2b", durationMs: Date.now() - installStart });
 
-      log(`spawning node harness.mjs`);
+      logger.info("spawn", { runtime: "e2b", cmd: "node harness.mjs" });
       void sandbox.commands.run(
         `cd ${SANDBOX_DIR} && node harness.mjs`,
         {
           envs: { ...opts.envs, PORT: String(HARNESS_PORT) },
           background: true,
-          onStdout: (data) => log(`[harness:stdout] ${data.trimEnd()}`),
-          onStderr: (data) => log(`[harness:stderr] ${data.trimEnd()}`),
+          // Relay each stdout/stderr line through the user's onLog (which
+          // defaults to our stderr). The harness child's structured log lines
+          // come through stderr verbatim.
+          onStdout: (data) => {
+            const t = data.trimEnd();
+            if (t) log(`[harness:stdout] ${t}`);
+          },
+          onStderr: (data) => {
+            // Preserve format — don't prefix structured lines.
+            const t = data.endsWith("\n") ? data.slice(0, -1) : data;
+            if (t) log(t);
+          },
         },
       );
 
       const host = sandbox.getHost(HARNESS_PORT);
       const baseUrl = `https://${host}`;
-      log(`port-forwarded ${HARNESS_PORT} → ${baseUrl}`);
+      logger.info("port_forward", { runtime: "e2b", internalPort: HARNESS_PORT, url: baseUrl });
 
       await waitForHealth(
         baseUrl,
@@ -108,6 +128,7 @@ export class E2BSubstrate implements Substrate {
         this.opts.readinessTimeoutMs ?? 60_000,
         log,
       );
+      logger.info("harness.ready", { runtime: "e2b", url: baseUrl });
 
       let killed = false;
       return {
@@ -115,11 +136,15 @@ export class E2BSubstrate implements Substrate {
         shutdown: async () => {
           if (killed) return;
           killed = true;
-          log(`shutting down sandbox`);
+          logger.info("dispose", { runtime: "e2b" });
           await sandbox.kill();
         },
       };
     } catch (err) {
+      logger.error("boot_failed", {
+        runtime: "e2b",
+        error: err instanceof Error ? err.message : String(err),
+      });
       try {
         await sandbox.kill();
       } catch {
@@ -127,6 +152,19 @@ export class E2BSubstrate implements Substrate {
       }
       throw err;
     }
+  }
+}
+
+/**
+ * Default onLog: forward every captured line to OUR stderr unchanged. The
+ * harness child writes structured logs to its stderr (gated by
+ * COMPUTERAGENT_LOG); relaying preserves the format. Callers can override.
+ */
+function defaultOnLog(line: string): void {
+  try {
+    process.stderr.write(line + "\n");
+  } catch {
+    /* swallow */
   }
 }
 

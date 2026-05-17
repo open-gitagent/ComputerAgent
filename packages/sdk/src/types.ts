@@ -126,6 +126,16 @@ export interface ComputerAgentOptions {
    * session.
    */
   readonly sessionStore?: SessionStoreConfig;
+  /**
+   * When true, sets `COMPUTERAGENT_LOG=debug` in the harness env (forcing
+   * every engine + framework log line to surface) and emits one client-side
+   * log line per harness event consumed.
+   *
+   * Override the level with `COMPUTERAGENT_LOG=info|warn|error|silent` in the
+   * caller's env; the flag only changes the default for the spawned harness.
+   * Off by default — examples, tests, and CI stay quiet.
+   */
+  readonly debug?: boolean;
 }
 
 /**

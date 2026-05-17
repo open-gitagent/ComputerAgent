@@ -14,6 +14,7 @@ export function sessionsRoute(ctx: ServerContext): Hono {
   const app = new Hono();
 
   app.post("/sessions", async (c) => {
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/sessions" });
     const body = CreateSessionBody.parse(await c.req.json());
     const session = await createSession(ctx.deps, ctx.registry, body);
     const response: CreateSessionResponse = {
@@ -28,6 +29,7 @@ export function sessionsRoute(ctx: ServerContext): Hono {
 
   app.get("/sessions/:id", (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "GET", path: "/v1/sessions/:id", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session) throw NotFound("session", id);
     return c.json({
@@ -40,6 +42,7 @@ export function sessionsRoute(ctx: ServerContext): Hono {
 
   app.delete("/sessions/:id", async (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "DELETE", path: "/v1/sessions/:id", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session) throw NotFound("session", id);
     session.cancel();

@@ -14,6 +14,7 @@ export function messagesRoute(ctx: ServerContext): Hono {
 
   app.post("/sessions/:id/messages", async (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/sessions/:id/messages", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session) throw NotFound("session", id);
 

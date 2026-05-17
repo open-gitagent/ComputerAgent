@@ -22,8 +22,10 @@ import { ClaudeAgentEngine } from "@computeragent/engine-claude-agent-sdk";
 import { GitAgentEngine } from "@computeragent/engine-gitagent";
 import { DeepAgentsEngine } from "@computeragent/engine-deepagents";
 import { GitAgentProtocolLoader } from "@computeragent/identity-gitagentprotocol";
+import { createLogger } from "@computeragent/protocol";
 
 const PORT = Number(process.env.PORT ?? 7700);
+const logger = createLogger({ component: "harness" });
 
 const app = createHarnessServer({
   engines: {
@@ -32,8 +34,10 @@ const app = createHarnessServer({
     "deepagents": new DeepAgentsEngine(),
   },
   identityLoaders: { gitagentprotocol: new GitAgentProtocolLoader() },
+  logger,
 });
 
 serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, ({ port }) => {
+  logger.info("ready", { url: `http://0.0.0.0:${port}` });
   process.stdout.write(`harness-server listening on 0.0.0.0:${port}\n`);
 });

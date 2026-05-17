@@ -26,6 +26,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo assets/harness-bundle.mjs"
   },
   "dependencies": {
+    "@computeragent/protocol": "workspace:*",
     "@computeragent/sdk": "workspace:*",
     "node-ssh": "^13.2.0"
   },

@@ -18,6 +18,7 @@ export function chatRoute(ctx: ServerContext): Hono {
   const app = new Hono();
 
   app.post("/chat", async (c) => {
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/chat" });
     const body = CreateSessionBody.parse(await c.req.json());
     const session = await createSession(ctx.deps, ctx.registry, body);
 
@@ -26,7 +27,7 @@ export function chatRoute(ctx: ServerContext): Hono {
     if (!engine) throw new Error("engine vanished after createSession");
 
     session.claimEngineStart();
-    void runSession(engine, session);
+    void runSession(engine, session, ctx.deps.logger);
     session.attachSubscriber();
 
     return streamSSE(c, async (stream) => {

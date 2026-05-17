@@ -14,6 +14,7 @@ export function cancelRoute(ctx: ServerContext): Hono {
 
   app.post("/sessions/:id/cancel", (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.info("session.cancel", { sessionId: id });
     const session = ctx.registry.get(id);
     if (!session) throw NotFound("session", id);
     session.cancel();

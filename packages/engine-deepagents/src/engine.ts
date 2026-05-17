@@ -3,8 +3,10 @@ import type {
   EngineContext,
   EngineDriver,
   EngineEvent,
+  Logger,
   UserMessage,
 } from "@computeragent/protocol";
+import { nopLogger } from "@computeragent/protocol";
 
 const CAPABILITIES: EngineCapabilities = {
   streamingInput: true,
@@ -52,6 +54,7 @@ export class DeepAgentsEngine implements EngineDriver<DeepAgentsOptions> {
   async *startSession(
     ctx: EngineContext<DeepAgentsOptions>,
   ): AsyncIterable<EngineEvent> {
+    const log = ctx.logger ?? nopLogger;
     // Lazy import — deepagents pulls in a heavy LangChain dep tree (~150MB).
     // Loading it inside startSession means importers of @computeragent/engine-deepagents
     // only pay the cost when the engine actually runs.
@@ -97,12 +100,26 @@ export class DeepAgentsEngine implements EngineDriver<DeepAgentsOptions> {
       ...(ctx.options.systemPrompt ? { systemPrompt: ctx.options.systemPrompt } : {}),
     });
 
+    log.info("engine.start", {
+      engine: "deepagents",
+      sessionId: ctx.sessionId,
+      model: stripProviderPrefix(modelName),
+      workdir: ctx.workdir,
+      backend: "local-shell",
+    });
+
     // One outer iteration = one user message = one fresh stream call.
     // The checkpointer + threadId carry conversation state across turns.
     for await (const userMsg of ctx.userMessageQueue) {
       if (ctx.abortSignal.aborted) break;
 
       const userText = flattenContent(userMsg.content);
+      const turnStartedAt = Date.now();
+      log.info("engine.turn.start", {
+        engine: "deepagents",
+        sessionId: ctx.sessionId,
+        userTextLen: userText.length,
+      });
       const input = { messages: [{ role: "user" as const, content: userText }] };
       const config = {
         configurable: { thread_id: threadId },
@@ -111,32 +128,52 @@ export class DeepAgentsEngine implements EngineDriver<DeepAgentsOptions> {
 
       let lastUsage: { input_tokens?: number; output_tokens?: number } | undefined;
       let finalText = "";
+      let priorMsgCount = 0;
 
-      // Stream LangGraph events in "values" mode — emits the full state on each
-      // step. We forward every chunk so downstream tools can inspect the state.
-      const stream = await agent.stream(input, { ...config, streamMode: "values" });
-      for await (const chunk of stream as AsyncIterable<unknown>) {
-        if (ctx.abortSignal.aborted) break;
-        yield { kind: "sdk_message", payload: chunk };
+      try {
+        // Stream LangGraph events in "values" mode — emits the full state on each
+        // step. We forward every chunk so downstream tools can inspect the state.
+        const stream = await agent.stream(input, { ...config, streamMode: "values" });
+        for await (const chunk of stream as AsyncIterable<unknown>) {
+          if (ctx.abortSignal.aborted) break;
+          yield { kind: "sdk_message", payload: chunk };
 
-        // Inspect the latest message for usage metadata + assistant text.
-        const messages = extractMessagesFromChunk(chunk);
-        const last = messages[messages.length - 1];
-        if (last) {
-          if (typeof last.content === "string" && last.content.trim()) {
-            finalText = last.content;
-          } else if (Array.isArray(last.content)) {
-            const textParts = last.content
-              .filter((b): b is { type: "text"; text: string } => (b as { type?: string }).type === "text")
-              .map((b) => b.text);
-            if (textParts.length > 0) finalText = textParts.join("");
+          // Inspect the latest message for usage metadata + assistant text.
+          const messages = extractMessagesFromChunk(chunk);
+          // Log only NEW messages per chunk so each tool_use/tool_result lands once.
+          const newMsgs = messages.slice(priorMsgCount);
+          priorMsgCount = messages.length;
+          for (const m of newMsgs) logDeepAgentMessage(log, ctx.sessionId, m);
+
+          const last = messages[messages.length - 1];
+          if (last) {
+            if (typeof last.content === "string" && last.content.trim()) {
+              finalText = last.content;
+            } else if (Array.isArray(last.content)) {
+              const textParts = last.content
+                .filter((b): b is { type: "text"; text: string } => (b as { type?: string }).type === "text")
+                .map((b) => b.text);
+              if (textParts.length > 0) finalText = textParts.join("");
+            }
+            if (last.usage_metadata) lastUsage = last.usage_metadata;
           }
-          if (last.usage_metadata) lastUsage = last.usage_metadata;
         }
+      } catch (err) {
+        log.error("engine.error", {
+          engine: "deepagents",
+          sessionId: ctx.sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
       }
 
       // Emit usage snapshot BEFORE the result terminator (per issue #2 ordering).
       if (lastUsage && (lastUsage.input_tokens !== undefined || lastUsage.output_tokens !== undefined)) {
+        log.debug("engine.usage", {
+          sessionId: ctx.sessionId,
+          inputTokens: lastUsage.input_tokens,
+          outputTokens: lastUsage.output_tokens,
+        });
         yield {
           kind: "ca_usage_snapshot",
           ...(lastUsage.input_tokens !== undefined ? { inputTokens: lastUsage.input_tokens } : {}),
@@ -158,6 +195,46 @@ export class DeepAgentsEngine implements EngineDriver<DeepAgentsOptions> {
           ...(lastUsage ? { usage: lastUsage } : {}),
         },
       };
+      log.info("engine.turn.end", {
+        engine: "deepagents",
+        sessionId: ctx.sessionId,
+        durationMs: Date.now() - turnStartedAt,
+        finalTextLen: finalText.length,
+      });
+    }
+  }
+}
+
+/**
+ * Pure log emission for a single LangChain BaseMessage (already destructured
+ * from a `messages[]` array). LangChain messages expose `_getType()` for role
+ * and `tool_calls` (when assistant chose to call tools).
+ */
+function logDeepAgentMessage(
+  log: Logger,
+  sessionId: string,
+  msg: { content?: unknown; _getType?: () => string; tool_calls?: Array<{ name: string; id?: string }>; name?: string; tool_call_id?: string },
+): void {
+  const role = typeof msg._getType === "function" ? msg._getType() : "?";
+  if (msg.tool_calls && msg.tool_calls.length > 0) {
+    for (const tc of msg.tool_calls) {
+      log.debug("engine.tool_use", { sessionId, name: tc.name, callId: tc.id });
+    }
+    return;
+  }
+  if (role === "tool") {
+    const bytes = typeof msg.content === "string" ? msg.content.length : JSON.stringify(msg.content ?? "").length;
+    log.debug("engine.tool_result", { sessionId, name: msg.name, callId: msg.tool_call_id, bytes });
+    return;
+  }
+  if (role === "ai" || role === "assistant") {
+    if (typeof msg.content === "string" && msg.content.trim()) {
+      log.debug("engine.assistant_text", { sessionId, textLen: msg.content.length });
+    } else if (Array.isArray(msg.content)) {
+      const textLen = msg.content
+        .filter((b): b is { type: string; text: string } => (b as { type?: string }).type === "text")
+        .reduce((n, b) => n + (b.text?.length ?? 0), 0);
+      if (textLen > 0) log.debug("engine.assistant_text", { sessionId, textLen });
     }
   }
 }

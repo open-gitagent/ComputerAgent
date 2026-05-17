@@ -21,6 +21,7 @@ export function eventsRoute(ctx: ServerContext): Hono {
 
   app.get("/sessions/:id/events", (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "GET", path: "/v1/sessions/:id/events", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session) throw NotFound("session", id);
 
@@ -30,7 +31,7 @@ export function eventsRoute(ctx: ServerContext): Hono {
     const lastEventId = parseLastEventId(c.req.header("Last-Event-ID"), c.req.query("lastEventId"));
 
     if (session.claimEngineStart()) {
-      void runSession(engine, session);
+      void runSession(engine, session, ctx.deps.logger);
     }
     session.attachSubscriber();
 

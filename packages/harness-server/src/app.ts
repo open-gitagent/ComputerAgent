@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import type { EngineDriver, IdentityLoader } from "@computeragent/protocol";
+import type { EngineDriver, IdentityLoader, Logger } from "@computeragent/protocol";
+import { nopLogger } from "@computeragent/protocol";
 import type { AuditSink } from "./audit.js";
 import type { AuthHandler } from "./auth.js";
 import { onError, ProtocolError } from "./error-mapper.js";
@@ -45,6 +46,12 @@ export interface CreateHarnessServerOptions {
    * framework to enforce the contract at the boundary.
    */
   readonly validateStoreEntries?: boolean;
+  /**
+   * Optional structured logger. When absent, the server defaults to `nopLogger`
+   * (silent). Pass the result of `createLogger({ component: "harness" })` from
+   * `@computeragent/protocol` to surface lifecycle + per-route events on stderr.
+   */
+  readonly logger?: Logger;
 }
 
 /** Plug-in references — handed to route modules that need engines/loaders. */
@@ -54,6 +61,7 @@ export interface ServerDeps {
   readonly auditSink?: AuditSink;
   readonly sessionStores: SessionStoreRegistry;
   readonly validateStoreEntries: boolean;
+  readonly logger: Logger;
 }
 
 /** Full per-server context — deps plus the (mutable) session registry. */
@@ -76,6 +84,7 @@ export function createHarnessServer(opts: CreateHarnessServerOptions): Hono {
     throw new Error("createHarnessServer: at least one identity loader must be registered");
   }
 
+  const logger = opts.logger ?? nopLogger;
   const ctx: ServerContext = {
     deps: {
       engines: opts.engines,
@@ -83,12 +92,31 @@ export function createHarnessServer(opts: CreateHarnessServerOptions): Hono {
       ...(opts.auditSink ? { auditSink: opts.auditSink } : {}),
       sessionStores: { ...DEFAULT_STORE_BUILDERS, ...(opts.sessionStores ?? {}) },
       validateStoreEntries: opts.validateStoreEntries ?? false,
+      logger,
     },
     registry: new SessionRegistry(opts.sessionTtlMs),
   };
 
+  logger.info("boot", {
+    engines: Object.keys(opts.engines),
+    loaders: Object.keys(opts.identityLoaders),
+    auth: opts.authHandler ? "enabled" : "off",
+    audit: opts.auditSink ? "enabled" : "off",
+  });
+
   const app = new Hono();
-  app.onError(onError);
+  app.onError((err, c) => {
+    const code = err instanceof ProtocolError ? err.code : err instanceof Error ? err.name : "INTERNAL";
+    const status = err instanceof ProtocolError ? err.status : 500;
+    logger.warn("http.error", {
+      method: c.req.method,
+      path: c.req.path,
+      code,
+      status,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return onError(err, c);
+  });
 
   if (opts.authHandler) {
     const handler = opts.authHandler;

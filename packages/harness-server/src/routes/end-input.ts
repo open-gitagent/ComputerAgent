@@ -14,6 +14,7 @@ export function endInputRoute(ctx: ServerContext): Hono {
 
   app.post("/sessions/:id/end-input", (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/sessions/:id/end-input", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session) throw NotFound("session", id);
     session.endUserMessages();

@@ -82,6 +82,14 @@ export async function createSession(
   }
 
   registry.add(session);
+  deps.logger.info("session.create", {
+    sessionId,
+    engine: body.engine,
+    loader: body.identity.loader,
+    identity: result.metadata.name,
+    streamingInput: Boolean(body.streamingInput),
+    sessionStore: body.sessionStore?.kind,
+  });
   return session;
 }
 

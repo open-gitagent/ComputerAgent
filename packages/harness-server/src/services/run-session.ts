@@ -1,4 +1,5 @@
-import type { EngineDriver, HarnessEvent } from "@computeragent/protocol";
+import type { EngineDriver, HarnessEvent, Logger } from "@computeragent/protocol";
+import { nopLogger } from "@computeragent/protocol";
 import type { Session } from "../session.js";
 import { EventChannel } from "../event-channel.js";
 
@@ -23,6 +24,7 @@ import { EventChannel } from "../event-channel.js";
 export async function runSession(
   engine: EngineDriver,
   session: Session,
+  logger: Logger = nopLogger,
 ): Promise<void> {
   const push = (ev: HarnessEvent): void => {
     session.emit(ev);
@@ -34,6 +36,13 @@ export async function runSession(
     engine: session.engineName,
     identity: session.identity,
     capabilities: session.capabilities,
+  });
+
+  const startedAt = Date.now();
+  logger.info("session.start", {
+    sessionId: session.sessionId,
+    engine: session.engineName,
+    identity: session.identity.name,
   });
 
   session.status = "running";
@@ -49,6 +58,12 @@ export async function runSession(
         envs: session.envs,
         userMessageQueue: session.userMessages(),
         onPermissionRequest: async (req) => {
+          logger.info("session.permission_request", {
+            sessionId: session.sessionId,
+            callId: req.callId,
+            toolName: req.toolName,
+            risk: req.risk,
+          });
           channel.push({
             kind: "ca_permission_request",
             sessionId: session.sessionId,
@@ -61,6 +76,7 @@ export async function runSession(
         },
         abortSignal: session.abortController.signal,
         ...(session.sessionStore ? { sessionStore: session.sessionStore } : {}),
+        logger,
       });
 
       for await (const event of stream) {
@@ -91,12 +107,19 @@ export async function runSession(
 
       const wasCancelled = session.abortController.signal.aborted;
       if (!wasCancelled) session.status = "completed";
+      const reason = wasCancelled ? "cancelled" : "complete";
       channel.push({
         kind: "ca_session_ended",
         sessionId: session.sessionId,
-        reason: wasCancelled ? "cancelled" : "complete",
+        reason,
+      });
+      logger.info("session.end", {
+        sessionId: session.sessionId,
+        reason,
+        durationMs: Date.now() - startedAt,
       });
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       if (session.abortController.signal.aborted) {
         session.status = "cancelled";
         channel.push({
@@ -104,13 +127,24 @@ export async function runSession(
           sessionId: session.sessionId,
           reason: "cancelled",
         });
+        logger.info("session.end", {
+          sessionId: session.sessionId,
+          reason: "cancelled",
+          durationMs: Date.now() - startedAt,
+        });
       } else {
         session.status = "errored";
         channel.push({
           kind: "ca_session_ended",
           sessionId: session.sessionId,
           reason: "error",
-          errorMessage: err instanceof Error ? err.message : String(err),
+          errorMessage: errMsg,
+        });
+        logger.error("session.end", {
+          sessionId: session.sessionId,
+          reason: "error",
+          error: errMsg,
+          durationMs: Date.now() - startedAt,
         });
       }
     } finally {

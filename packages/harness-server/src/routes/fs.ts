@@ -28,17 +28,21 @@ export function fsRoute(ctx: ServerContext): Hono {
   const app = new Hono();
 
   app.get("/sessions/:id/fs/tree", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const path = c.req.query("path") ?? "";
     const depth = parseDepth(c.req.query("depth"));
+    ctx.deps.logger.debug("fs.tree", { sessionId: id, path, depth });
     const entries = await catchEscape(() => listTree(session.workdir, path, depth));
     return c.json({ entries });
   });
 
   app.get("/sessions/:id/fs/file", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const path = c.req.query("path");
     if (!path) throw BadRequest("MISSING_PATH", "query param 'path' is required");
+    ctx.deps.logger.debug("fs.read", { sessionId: id, path });
     const buf = await catchEscape(() => readBytes(session.workdir, path));
     return new Response(new Uint8Array(buf), {
       headers: { "Content-Type": "application/octet-stream" },
@@ -46,26 +50,32 @@ export function fsRoute(ctx: ServerContext): Hono {
   });
 
   app.put("/sessions/:id/fs/file", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const path = c.req.query("path");
     if (!path) throw BadRequest("MISSING_PATH", "query param 'path' is required");
     const body = Buffer.from(await c.req.arrayBuffer());
+    ctx.deps.logger.debug("fs.write", { sessionId: id, path, bytes: body.length });
     const { size } = await catchEscape(() => writeBytes(session.workdir, path, body));
     return c.json({ ok: true, size });
   });
 
   app.delete("/sessions/:id/fs/file", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const path = c.req.query("path");
     if (!path) throw BadRequest("MISSING_PATH", "query param 'path' is required");
     const recursive = c.req.query("recursive") === "true";
+    ctx.deps.logger.debug("fs.delete", { sessionId: id, path, recursive });
     await catchEscape(() => removePath(session.workdir, path, recursive));
     return c.json({ ok: true });
   });
 
   app.post("/sessions/:id/fs/edit", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const body = FsEditBody.parse(await c.req.json());
+    ctx.deps.logger.debug("fs.edit", { sessionId: id, path: body.path, replaceAll: body.replaceAll });
     const { replacements } = await catchEscape(() =>
       editFile(session.workdir, body.path, body.oldString, body.newString, body.replaceAll ?? false),
     );
@@ -73,15 +83,19 @@ export function fsRoute(ctx: ServerContext): Hono {
   });
 
   app.post("/sessions/:id/fs/mkdir", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const body = FsMkdirBody.parse(await c.req.json());
+    ctx.deps.logger.debug("fs.mkdir", { sessionId: id, path: body.path, recursive: body.recursive });
     await catchEscape(() => makeDir(session.workdir, body.path, body.recursive ?? false));
     return c.json({ ok: true });
   });
 
   app.post("/sessions/:id/fs/move", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const body = FsMoveBody.parse(await c.req.json());
+    ctx.deps.logger.debug("fs.move", { sessionId: id, from: body.from, to: body.to });
     await catchEscape(() => movePath(session.workdir, body.from, body.to));
     return c.json({ ok: true });
   });

@@ -7,6 +7,7 @@ import type {
   EngineEvent,
   UserMessage,
 } from "@computeragent/protocol";
+import { nopLogger } from "@computeragent/protocol";
 import { buildCanUseTool } from "./permission-bridge.js";
 import { deriveEngineUuid } from "./derive-uuid.js";
 
@@ -39,6 +40,15 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
   async *startSession(
     ctx: EngineContext<ClaudeAgentOptions>,
   ): AsyncIterable<EngineEvent> {
+    const log = ctx.logger ?? nopLogger;
+    const turnStartedAt = Date.now();
+    const model = (ctx.options as { model?: string }).model;
+    log.info("engine.start", {
+      engine: "claude-agent-sdk",
+      sessionId: ctx.sessionId,
+      model,
+      workdir: ctx.workdir,
+    });
     const prompt = adaptUserMessages(ctx.userMessageQueue, ctx.sessionId);
     const abortController = signalToController(ctx.abortSignal);
 
@@ -93,19 +103,70 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
       ...storeOpts,
     };
 
-    for await (const message of query({ prompt, options })) {
-      if (ctx.abortSignal.aborted) break;
+    try {
+      for await (const message of query({ prompt, options })) {
+        if (ctx.abortSignal.aborted) break;
 
-      // Surface token/cost telemetry BEFORE the message itself. SDKResultMessage
-      // is the turn terminator — once the SDK consumer sees it, my issue #2
-      // fix synthesizes a `ca_session_ended` and stops reading. So usage has
-      // to land on the wire BEFORE the result, otherwise it's dropped. The
-      // consumer (SDK aggregator) uses costSemantic="cumulative" to take the
-      // max and sums the per-turn tokens. Never compute cost client-side — see #5.
-      const snapshot = toUsageSnapshot(message);
-      if (snapshot) yield snapshot;
+        logSdkMessage(log, ctx.sessionId, message);
 
-      yield { kind: "sdk_message", payload: message };
+        // Surface token/cost telemetry BEFORE the message itself. SDKResultMessage
+        // is the turn terminator — once the SDK consumer sees it, my issue #2
+        // fix synthesizes a `ca_session_ended` and stops reading. So usage has
+        // to land on the wire BEFORE the result, otherwise it's dropped. The
+        // consumer (SDK aggregator) uses costSemantic="cumulative" to take the
+        // max and sums the per-turn tokens. Never compute cost client-side — see #5.
+        const snapshot = toUsageSnapshot(message);
+        if (snapshot) {
+          log.debug("engine.usage", {
+            sessionId: ctx.sessionId,
+            inputTokens: snapshot.kind === "ca_usage_snapshot" ? snapshot.inputTokens : undefined,
+            outputTokens: snapshot.kind === "ca_usage_snapshot" ? snapshot.outputTokens : undefined,
+            costUsd: snapshot.kind === "ca_usage_snapshot" ? snapshot.costUsd : undefined,
+          });
+          yield snapshot;
+        }
+
+        yield { kind: "sdk_message", payload: message };
+      }
+      log.info("engine.turn.end", {
+        engine: "claude-agent-sdk",
+        sessionId: ctx.sessionId,
+        durationMs: Date.now() - turnStartedAt,
+      });
+    } catch (err) {
+      log.error("engine.error", {
+        engine: "claude-agent-sdk",
+        sessionId: ctx.sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+}
+
+/**
+ * Extract tool_use, tool_result, and assistant_text events from each
+ * SDKMessage as it flows through. Pure log emission — no transformation.
+ */
+function logSdkMessage(log: { debug: (e: string, f?: Record<string, unknown>) => void }, sessionId: string, message: unknown): void {
+  const m = message as {
+    type?: string;
+    message?: { content?: Array<{ type: string; name?: string; id?: string; text?: string; tool_use_id?: string; is_error?: boolean; content?: unknown }> };
+  };
+  if (m?.type === "assistant" && Array.isArray(m.message?.content)) {
+    for (const block of m.message.content) {
+      if (block.type === "tool_use") {
+        log.debug("engine.tool_use", { sessionId, name: block.name, callId: block.id });
+      } else if (block.type === "text" && typeof block.text === "string") {
+        log.debug("engine.assistant_text", { sessionId, textLen: block.text.length });
+      }
+    }
+  } else if (m?.type === "user" && Array.isArray(m.message?.content)) {
+    for (const block of m.message.content) {
+      if (block.type === "tool_result") {
+        const bytes = typeof block.content === "string" ? block.content.length : JSON.stringify(block.content ?? "").length;
+        log.debug("engine.tool_result", { sessionId, callId: block.tool_use_id, isError: block.is_error, bytes });
+      }
     }
   }
 }

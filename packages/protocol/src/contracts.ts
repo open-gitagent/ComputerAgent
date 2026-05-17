@@ -1,5 +1,6 @@
 import type { IdentitySource } from "./identity-source.js";
 import type { UserMessage } from "./harness-rest.js";
+import type { Logger } from "./logger.js";
 import type { PermissionResult, SessionStore } from "./sdk-passthrough.js";
 
 /**
@@ -59,6 +60,13 @@ export interface EngineContext<TOptions = unknown> {
    * signal; the engine decides based on what `load()` returns.
    */
   readonly sessionStore?: SessionStore;
+  /**
+   * Optional structured logger. When absent, engines should use the exported
+   * `nopLogger` from `@computeragent/protocol`. Wire one log call per
+   * lifecycle step — boot, turn start, every tool_use / tool_result, every
+   * assistant text, usage snapshot, turn end, error.
+   */
+  readonly logger?: Logger;
 }
 
 /** Discriminated union of events an engine can emit. */

@@ -4,8 +4,10 @@ import type {
   FsTreeResponse,
   HarnessEvent,
   IdentitySource,
+  Logger,
   UserMessage,
 } from "@computeragent/protocol";
+import { createLogger, nopLogger } from "@computeragent/protocol";
 import { ChatHandle } from "./chat-handle.js";
 import { asHarnessError } from "./errors.js";
 import { consumeSseEvents } from "./sse-client.js";
@@ -66,6 +68,13 @@ export class ComputerAgent {
    * (the typed field is the high-level lever).
    */
   private readonly effectiveOptions: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Client-side logger. nopLogger when `debug` is off; pretty-print to stderr
+   * when `debug: true`. Used to surface a 1-line summary per HarnessEvent the
+   * agent consumes — the harness's own structured logs (engine.tool_use,
+   * session.start, etc.) come from the substrate stderr relay.
+   */
+  private readonly logger: Logger;
 
   constructor(private readonly opts: ComputerAgentOptions) {
     this.source = normalizeSource(opts.source);
@@ -88,11 +97,24 @@ export class ComputerAgent {
       }
     }
     const baseEnvs = opts.envs ?? {};
-    if (opts.baseUrl && baseEnvs.ANTHROPIC_BASE_URL === undefined) {
-      this.effectiveEnvs = { ...baseEnvs, ANTHROPIC_BASE_URL: opts.baseUrl };
-    } else {
-      this.effectiveEnvs = baseEnvs;
+    let envs: Record<string, string> = { ...baseEnvs };
+    if (opts.baseUrl && envs.ANTHROPIC_BASE_URL === undefined) {
+      envs.ANTHROPIC_BASE_URL = opts.baseUrl;
     }
+    // debug: surface every step in the spawned harness by defaulting
+    // COMPUTERAGENT_LOG=debug + a pretty format. Caller's explicit value wins.
+    if (opts.debug) {
+      if (envs.COMPUTERAGENT_LOG === undefined) envs.COMPUTERAGENT_LOG = "debug";
+      if (envs.COMPUTERAGENT_LOG_FORMAT === undefined) envs.COMPUTERAGENT_LOG_FORMAT = "pretty";
+    }
+    this.effectiveEnvs = envs;
+
+    // Client-side logger — separate from the harness's. Prints one line per
+    // HarnessEvent consumed by ChatHandle. Use a fixed pretty level for debug,
+    // honor env otherwise. Off by default.
+    this.logger = opts.debug
+      ? createLogger({ component: "client", level: "info", format: "pretty" })
+      : nopLogger;
 
     // ── Bake model + temperature shortcuts into options ─────────────────────
     const baseOptions = opts.options ?? {};
@@ -269,6 +291,7 @@ export class ComputerAgent {
       harnessUrlPromise,
       fetchImpl: this.fetchImpl,
       onPermissionRequest: onPerm,
+      logger: this.logger,
     });
   }
 

@@ -7,6 +7,7 @@ import type {
   SessionStoreEntry,
   UserMessage,
 } from "@computeragent/protocol";
+import { nopLogger } from "@computeragent/protocol";
 import { buildPreToolUse } from "./permission-bridge.js";
 import {
   appendAssistantTurn,
@@ -66,6 +67,13 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
   async *startSession(
     ctx: EngineContext<GitclawForwardOptions & { dir?: string }>,
   ): AsyncIterable<EngineEvent> {
+    const log = ctx.logger ?? nopLogger;
+    log.info("engine.start", {
+      engine: "gitagent",
+      sessionId: ctx.sessionId,
+      model: (ctx.options as { model?: string }).model,
+      workdir: ctx.workdir,
+    });
     const store = ctx.sessionStore;
     const storeKey = { projectKey: PROJECT_KEY, sessionId: ctx.sessionId };
 
@@ -88,11 +96,18 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
       if (ctx.abortSignal.aborted) break;
 
       const userText = flattenContent(userMsg.content);
+      const turnStartedAt = Date.now();
 
       // Persist + accumulate the user turn BEFORE running query() so that
       // if the turn errors out partway, the document still records the
       // message in turn-correct order.
       const userIndex = indexer.next();
+      log.info("engine.turn.start", {
+        engine: "gitagent",
+        sessionId: ctx.sessionId,
+        turnIndex: userIndex,
+        userTextLen: userText.length,
+      });
       if (store) {
         await appendUserTurn(store, ctx.sessionId, userText, userIndex);
       }
@@ -141,34 +156,88 @@ export class GitAgentEngine implements EngineDriver<GitclawForwardOptions & { di
 
       // Stream this turn's messages. Each assistant text turn we observe
       // gets persisted + accumulated so the next iteration sees it.
-      for await (const message of query(options)) {
-        if (ctx.abortSignal.aborted) break;
+      try {
+        for await (const message of query(options)) {
+          if (ctx.abortSignal.aborted) break;
 
-        // Emit usage BEFORE the message itself. gitclaw's session_end is
-        // the turn terminator on the SDK side; if usage rides on the wire
-        // after the terminator, the SDK consumer's already bailed and the
-        // snapshot is dropped. (Same constraint as engine-claude-agent-sdk.)
-        const snapshot = toUsageSnapshot(message);
-        if (snapshot) yield snapshot;
+          logGitclawMessage(log, ctx.sessionId, message);
 
-        yield { kind: "sdk_message", payload: message };
-
-        const text = extractAssistantText(message);
-        if (text) {
-          const assistantIndex = indexer.next();
-          if (store) {
-            await appendAssistantTurn(store, ctx.sessionId, text, assistantIndex);
+          // Emit usage BEFORE the message itself. gitclaw's session_end is
+          // the turn terminator on the SDK side; if usage rides on the wire
+          // after the terminator, the SDK consumer's already bailed and the
+          // snapshot is dropped. (Same constraint as engine-claude-agent-sdk.)
+          const snapshot = toUsageSnapshot(message);
+          if (snapshot) {
+            log.debug("engine.usage", {
+              sessionId: ctx.sessionId,
+              inputTokens: snapshot.kind === "ca_usage_snapshot" ? snapshot.inputTokens : undefined,
+              outputTokens: snapshot.kind === "ca_usage_snapshot" ? snapshot.outputTokens : undefined,
+              costUsd: snapshot.kind === "ca_usage_snapshot" ? snapshot.costUsd : undefined,
+            });
+            yield snapshot;
           }
-          accumulated.push({
-            type: "ca_assistant",
-            uuid: `inproc-assistant-${ctx.sessionId}-${assistantIndex}`,
-            timestamp: new Date().toISOString(),
-            turnIndex: assistantIndex,
-            text,
-          } as SessionStoreEntry);
+
+          yield { kind: "sdk_message", payload: message };
+
+          const text = extractAssistantText(message);
+          if (text) {
+            const assistantIndex = indexer.next();
+            if (store) {
+              await appendAssistantTurn(store, ctx.sessionId, text, assistantIndex);
+            }
+            accumulated.push({
+              type: "ca_assistant",
+              uuid: `inproc-assistant-${ctx.sessionId}-${assistantIndex}`,
+              timestamp: new Date().toISOString(),
+              turnIndex: assistantIndex,
+              text,
+            } as SessionStoreEntry);
+          }
         }
+        log.info("engine.turn.end", {
+          engine: "gitagent",
+          sessionId: ctx.sessionId,
+          turnIndex: userIndex,
+          durationMs: Date.now() - turnStartedAt,
+        });
+      } catch (err) {
+        log.error("engine.error", {
+          engine: "gitagent",
+          sessionId: ctx.sessionId,
+          turnIndex: userIndex,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
       }
     }
+  }
+}
+
+/**
+ * Pure log emission for gitclaw messages. gitclaw uses top-level
+ * `type: "tool_use"` / `"tool_result"` (not nested inside assistant.content
+ * like the Claude Agent SDK does), so the shape is simpler.
+ */
+function logGitclawMessage(
+  log: { debug: (e: string, f?: Record<string, unknown>) => void },
+  sessionId: string,
+  message: unknown,
+): void {
+  const m = message as {
+    type?: string;
+    toolName?: string;
+    toolCallId?: string;
+    isError?: boolean;
+    content?: unknown;
+    args?: unknown;
+  };
+  if (m?.type === "tool_use") {
+    log.debug("engine.tool_use", { sessionId, name: m.toolName, callId: m.toolCallId });
+  } else if (m?.type === "tool_result") {
+    const bytes = typeof m.content === "string" ? m.content.length : JSON.stringify(m.content ?? "").length;
+    log.debug("engine.tool_result", { sessionId, callId: m.toolCallId, isError: m.isError, bytes });
+  } else if (m?.type === "assistant" && typeof m.content === "string") {
+    log.debug("engine.assistant_text", { sessionId, textLen: m.content.length });
   }
 }
 

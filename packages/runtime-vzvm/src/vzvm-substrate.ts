@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { NodeSSH } from "node-ssh";
 import type { BootHarnessOptions, BootedHarness, Substrate } from "@computeragent/sdk";
+import { createLogger } from "@computeragent/protocol";
 import { tartClone, tartDelete, tartIp, tartRunBackground, tartStop } from "./tart.js";
 
 const HARNESS_PORT = 7700;
@@ -57,21 +58,23 @@ export class VZVMSubstrate implements Substrate {
   constructor(private readonly opts: VZVMSubstrateOptions) {}
 
   async bootHarness(opts: BootHarnessOptions): Promise<BootedHarness> {
-    const log = this.opts.onLog ?? (() => {});
+    const log = this.opts.onLog ?? defaultOnLog;
+    const logger = createLogger({ component: "substrate.vzvm" });
     const sshUser = this.opts.sshUser ?? "admin";
     const remoteWorkdir = this.opts.remoteWorkdir ?? `/home/${sshUser}/harness`;
     const tartBin = { tartBin: this.opts.tartBin };
     const name = `ca-${randomBytes(4).toString("hex")}`;
 
-    log(`tart clone ${this.opts.baseImage} ${name}`);
+    logger.info("vm.clone", { runtime: "vzvm", baseImage: this.opts.baseImage, newVm: name });
     await tartClone(this.opts.baseImage, name, tartBin);
 
+    logger.info("vm.start", { runtime: "vzvm", vm: name });
     let vmProcess = tartRunBackground(name, tartBin);
     let shutdownCalled = false;
     const cleanup = async () => {
       if (shutdownCalled) return;
       shutdownCalled = true;
-      log(`tart stop + delete ${name}`);
+      logger.info("dispose", { runtime: "vzvm", vm: name });
       try {
         await tartStop(name, tartBin);
       } catch (err) {
@@ -90,34 +93,36 @@ export class VZVMSubstrate implements Substrate {
     };
 
     try {
-      log(`waiting for VM IP`);
       const ip = await waitForIp(name, tartBin, this.opts.readinessPollMs ?? 1_000, this.opts.readinessTimeoutMs ?? 120_000);
-      log(`VM up at ${ip}`);
+      logger.info("vm.ip", { runtime: "vzvm", vm: name, ip });
 
       const ssh = new NodeSSH();
       await waitForSsh(ssh, ip, sshUser, this.opts, log, this.opts.readinessTimeoutMs ?? 60_000);
+      logger.info("ssh.ready", { runtime: "vzvm", ip });
 
       const bundlePath = this.opts.bundlePath ?? BUNDLE_PATH;
-      log(`mkdir + scp bundle + package.json → ${remoteWorkdir}`);
+      const uploadStart = Date.now();
       await ssh.execCommand(`mkdir -p ${shellEscape(remoteWorkdir)}`);
       await ssh.putFiles([
         { local: bundlePath, remote: `${remoteWorkdir}/harness.mjs` },
         { local: SANDBOX_PKG_PATH, remote: `${remoteWorkdir}/package.json` },
       ]);
+      logger.info("upload", { runtime: "vzvm", remoteWorkdir, durationMs: Date.now() - uploadStart });
 
-      log(`ensure node 20 is installed`);
       await ensureNode(ssh, log);
 
-      log(`npm install (Claude Agent SDK + native binary)`);
+      const installStart = Date.now();
       const install = await ssh.execCommand(
         `cd ${shellEscape(remoteWorkdir)} && npm install --include=optional --no-fund --no-audit`,
         { execOptions: { pty: false } },
       );
       if (install.code !== 0) {
+        logger.error("install.failed", { runtime: "vzvm", code: install.code });
         throw new Error(`npm install failed (code ${install.code}): ${install.stderr.slice(0, 800)}`);
       }
+      logger.info("install.ok", { runtime: "vzvm", durationMs: Date.now() - installStart });
 
-      log(`spawning node harness.mjs`);
+      logger.info("spawn", { runtime: "vzvm", cmd: "node harness.mjs" });
       const envExports = renderEnvExports(opts.envs);
       // `setsid -f` forks before calling setsid(2): the parent (visible to
       // ssh.execCommand) returns immediately, while the child becomes a new
@@ -133,6 +138,7 @@ export class VZVMSubstrate implements Substrate {
 
       const baseUrl = `http://${ip}:${HARNESS_PORT}`;
       await waitForHealth(baseUrl, this.opts.readinessPollMs ?? 500, this.opts.readinessTimeoutMs ?? 60_000, log);
+      logger.info("harness.ready", { runtime: "vzvm", url: baseUrl });
 
       ssh.dispose();
       return {
@@ -140,9 +146,26 @@ export class VZVMSubstrate implements Substrate {
         shutdown: cleanup,
       };
     } catch (err) {
+      logger.error("boot_failed", {
+        runtime: "vzvm",
+        vm: name,
+        error: err instanceof Error ? err.message : String(err),
+      });
       await cleanup();
       throw err;
     }
+  }
+}
+
+/**
+ * Default onLog: forward every captured line to OUR stderr unchanged. The
+ * VZ VM streams harness logs over SSH stderr — relaying preserves structure.
+ */
+function defaultOnLog(line: string): void {
+  try {
+    process.stderr.write(line + "\n");
+  } catch {
+    /* swallow */
   }
 }
 

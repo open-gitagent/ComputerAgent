@@ -241,6 +241,9 @@ importers:
 
   packages/runtime-e2b:
     dependencies:
+      '@computeragent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@computeragent/sdk':
         specifier: workspace:*
         version: link:../sdk
@@ -290,6 +293,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.132
         version: 0.2.136(@cfworker/json-schema@4.1.1)(zod@4.4.3)
+      '@computeragent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@computeragent/sdk':
         specifier: workspace:*
         version: link:../sdk
@@ -336,6 +342,9 @@ importers:
 
   packages/runtime-vzvm:
     dependencies:
+      '@computeragent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@computeragent/sdk':
         specifier: workspace:*
         version: link:../sdk

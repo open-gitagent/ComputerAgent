@@ -132145,155 +132145,6 @@ var Hono2 = class extends Hono {
   }
 };
 
-// ../harness-server/dist/error-mapper.js
-init_zod();
-
-class ProtocolError extends Error {
-  status;
-  code;
-  details;
-  constructor(status, code, message, details) {
-    super(message);
-    this.status = status;
-    this.code = code;
-    this.details = details;
-    this.name = "ProtocolError";
-  }
-}
-var NotFound = (resource, id) => new ProtocolError(404, "NOT_FOUND", `${resource} ${id} not found`);
-var BadRequest = (code, message, details) => new ProtocolError(400, code, message, details);
-var onError = (err, c) => formatError2(c, err);
-function formatError2(c, err) {
-  if (err instanceof ProtocolError) {
-    return c.json({ error: { code: err.code, message: err.message, details: err.details } }, err.status);
-  }
-  if (err instanceof HTTPException) {
-    return c.json({ error: { code: "HTTP_EXCEPTION", message: err.message } }, err.status);
-  }
-  if (err instanceof ZodError) {
-    return c.json({ error: { code: "VALIDATION", message: "Request body failed validation", details: err.issues } }, 400);
-  }
-  const message = err instanceof Error ? err.message : "unknown error";
-  return c.json({ error: { code: "INTERNAL", message } }, 500);
-}
-
-// ../harness-server/dist/stores/memory-store.js
-class MemorySessionStore {
-  bySession = new Map;
-  async append(key, entries) {
-    const list = this.bySession.get(key.sessionId) ?? [];
-    const seenUuids = new Set(list.map((e) => e.uuid).filter((u) => typeof u === "string"));
-    for (const entry of entries) {
-      if (entry.uuid && seenUuids.has(entry.uuid))
-        continue;
-      list.push(entry);
-      if (entry.uuid)
-        seenUuids.add(entry.uuid);
-    }
-    this.bySession.set(key.sessionId, list);
-  }
-  async load(key) {
-    const list = this.bySession.get(key.sessionId);
-    return list ? [...list] : null;
-  }
-  size(sessionId) {
-    return this.bySession.get(sessionId)?.length ?? 0;
-  }
-}
-
-// ../harness-server/dist/stores/file-store.js
-import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { resolve as resolvePath, join } from "node:path";
-
-class FileSessionStore {
-  root;
-  constructor(opts) {
-    if (!opts.root)
-      throw new Error("FileSessionStore: root is required");
-    this.root = resolvePath(opts.root);
-  }
-  async append(key, entries) {
-    if (entries.length === 0)
-      return;
-    await mkdir(this.root, { recursive: true });
-    const path = this.fileFor(key.sessionId);
-    const existing = await this.loadRaw(path);
-    const seenUuids = new Set(existing.map((e) => e.uuid).filter((u) => typeof u === "string"));
-    const fresh = entries.filter((e) => !e.uuid || !seenUuids.has(e.uuid));
-    if (fresh.length === 0)
-      return;
-    const payload = fresh.map((e) => JSON.stringify(e)).join(`
-`) + `
-`;
-    await appendFile(path, payload, "utf8");
-  }
-  async load(key) {
-    const entries = await this.loadRaw(this.fileFor(key.sessionId));
-    return entries.length > 0 ? entries : null;
-  }
-  fileFor(sessionId) {
-    const hash2 = createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
-    return join(this.root, `${hash2}.jsonl`);
-  }
-  async loadRaw(path) {
-    let raw2;
-    try {
-      raw2 = await readFile(path, "utf8");
-    } catch (err) {
-      if (err.code === "ENOENT")
-        return [];
-      throw err;
-    }
-    const out = [];
-    for (const line of raw2.split(`
-`)) {
-      const trimmed = line.trim();
-      if (!trimmed)
-        continue;
-      try {
-        out.push(JSON.parse(trimmed));
-      } catch {}
-    }
-    return out;
-  }
-}
-
-// ../harness-server/dist/stores/registry.js
-var DEFAULT_STORE_BUILDERS = {
-  memory: () => new MemorySessionStore,
-  file: (options) => new FileSessionStore(options)
-};
-function resolveStore(registry2, config2) {
-  const builder = registry2[config2.kind];
-  if (!builder) {
-    throw BadRequest("UNKNOWN_STORE", `session store '${config2.kind}' is not registered`, {
-      available: Object.keys(registry2)
-    });
-  }
-  return builder(config2.options);
-}
-
-// ../harness-server/dist/routes/health.js
-var HARNESS_VERSION = "0.1.0";
-function healthRoute(ctx) {
-  const app = new Hono2;
-  app.get("/health", (c) => {
-    const engines = {};
-    for (const [name, engine] of Object.entries(ctx.deps.engines)) {
-      engines[name] = { ...engine.capabilities };
-    }
-    const body = {
-      ok: true,
-      version: HARNESS_VERSION,
-      engines,
-      loaders: Object.keys(ctx.deps.identityLoaders)
-    };
-    return c.json(body, 200);
-  });
-  return app;
-}
-
 // ../protocol/dist/identity-source.js
 init_zod();
 var GitIdentitySource = exports_external.object({
@@ -132467,6 +132318,267 @@ var HarnessEvent = exports_external.discriminatedUnion("kind", [
   CaUsageSnapshotEvent,
   CaSessionEndedEvent
 ]);
+// ../protocol/dist/logger.js
+var LEVEL_ORDER = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+  silent: 99
+};
+function createLogger(opts = {}) {
+  const level = opts.level ?? resolveLevelFromEnv() ?? "info";
+  const minOrder = LEVEL_ORDER[level];
+  const format = opts.format ?? resolveFormatFromEnv() ?? defaultFormat();
+  const component = opts.component;
+  const emit = (lvl, event, fields) => {
+    if (LEVEL_ORDER[lvl] < minOrder)
+      return;
+    const line = format === "json" ? formatJson(lvl, event, component, fields) : formatPretty(lvl, event, component, fields);
+    try {
+      process.stderr.write(line + `
+`);
+    } catch {}
+  };
+  return {
+    debug: (event, fields) => emit("debug", event, fields),
+    info: (event, fields) => emit("info", event, fields),
+    warn: (event, fields) => emit("warn", event, fields),
+    error: (event, fields) => emit("error", event, fields)
+  };
+}
+var nopLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {}
+};
+function resolveLevelFromEnv() {
+  const raw2 = (typeof process !== "undefined" ? process.env.COMPUTERAGENT_LOG : undefined)?.toLowerCase();
+  if (raw2 && raw2 in LEVEL_ORDER)
+    return raw2;
+  return;
+}
+function resolveFormatFromEnv() {
+  const raw2 = (typeof process !== "undefined" ? process.env.COMPUTERAGENT_LOG_FORMAT : undefined)?.toLowerCase();
+  if (raw2 === "pretty" || raw2 === "json")
+    return raw2;
+  return;
+}
+function defaultFormat() {
+  if (typeof process === "undefined" || !process.stderr)
+    return "json";
+  return process.stderr.isTTY ? "pretty" : "json";
+}
+function formatJson(level, event, component, fields) {
+  const payload = { t: new Date().toISOString(), level, event };
+  if (component)
+    payload.component = component;
+  if (fields) {
+    for (const [k, v] of Object.entries(fields)) {
+      if (v !== undefined)
+        payload[k] = serializableValue(v);
+    }
+  }
+  return JSON.stringify(payload);
+}
+function formatPretty(level, event, component, fields) {
+  const now = new Date;
+  const stamp = String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0") + "." + String(now.getMilliseconds()).padStart(3, "0");
+  const lvl = LEVEL_LABEL[level] ?? level.toUpperCase().padEnd(5);
+  const head = component ? `${component}.${event}` : event;
+  const tail = fields ? formatFields(fields) : "";
+  return `[${stamp}] ${lvl} ${head}${tail ? "  " + tail : ""}`;
+}
+var LEVEL_LABEL = {
+  debug: "DEBUG",
+  info: "INFO ",
+  warn: "WARN ",
+  error: "ERROR"
+};
+function formatFields(fields) {
+  const parts = [];
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined)
+      continue;
+    parts.push(`${k}=${formatValue(v)}`);
+  }
+  return parts.join(" ");
+}
+function formatValue(v) {
+  if (v === null)
+    return "null";
+  if (typeof v === "string")
+    return v.includes(" ") ? JSON.stringify(v) : v;
+  if (typeof v === "number" || typeof v === "boolean")
+    return String(v);
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+function serializableValue(v) {
+  if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+    return v;
+  if (v instanceof Error)
+    return { message: v.message, name: v.name };
+  try {
+    JSON.stringify(v);
+    return v;
+  } catch {
+    return String(v);
+  }
+}
+// ../harness-server/dist/error-mapper.js
+init_zod();
+
+class ProtocolError extends Error {
+  status;
+  code;
+  details;
+  constructor(status, code, message, details) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.details = details;
+    this.name = "ProtocolError";
+  }
+}
+var NotFound = (resource, id) => new ProtocolError(404, "NOT_FOUND", `${resource} ${id} not found`);
+var BadRequest = (code, message, details) => new ProtocolError(400, code, message, details);
+var onError = (err, c) => formatError2(c, err);
+function formatError2(c, err) {
+  if (err instanceof ProtocolError) {
+    return c.json({ error: { code: err.code, message: err.message, details: err.details } }, err.status);
+  }
+  if (err instanceof HTTPException) {
+    return c.json({ error: { code: "HTTP_EXCEPTION", message: err.message } }, err.status);
+  }
+  if (err instanceof ZodError) {
+    return c.json({ error: { code: "VALIDATION", message: "Request body failed validation", details: err.issues } }, 400);
+  }
+  const message = err instanceof Error ? err.message : "unknown error";
+  return c.json({ error: { code: "INTERNAL", message } }, 500);
+}
+
+// ../harness-server/dist/stores/memory-store.js
+class MemorySessionStore {
+  bySession = new Map;
+  async append(key, entries) {
+    const list = this.bySession.get(key.sessionId) ?? [];
+    const seenUuids = new Set(list.map((e) => e.uuid).filter((u) => typeof u === "string"));
+    for (const entry of entries) {
+      if (entry.uuid && seenUuids.has(entry.uuid))
+        continue;
+      list.push(entry);
+      if (entry.uuid)
+        seenUuids.add(entry.uuid);
+    }
+    this.bySession.set(key.sessionId, list);
+  }
+  async load(key) {
+    const list = this.bySession.get(key.sessionId);
+    return list ? [...list] : null;
+  }
+  size(sessionId) {
+    return this.bySession.get(sessionId)?.length ?? 0;
+  }
+}
+
+// ../harness-server/dist/stores/file-store.js
+import { createHash } from "node:crypto";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { resolve as resolvePath, join } from "node:path";
+
+class FileSessionStore {
+  root;
+  constructor(opts) {
+    if (!opts.root)
+      throw new Error("FileSessionStore: root is required");
+    this.root = resolvePath(opts.root);
+  }
+  async append(key, entries) {
+    if (entries.length === 0)
+      return;
+    await mkdir(this.root, { recursive: true });
+    const path = this.fileFor(key.sessionId);
+    const existing = await this.loadRaw(path);
+    const seenUuids = new Set(existing.map((e) => e.uuid).filter((u) => typeof u === "string"));
+    const fresh = entries.filter((e) => !e.uuid || !seenUuids.has(e.uuid));
+    if (fresh.length === 0)
+      return;
+    const payload = fresh.map((e) => JSON.stringify(e)).join(`
+`) + `
+`;
+    await appendFile(path, payload, "utf8");
+  }
+  async load(key) {
+    const entries = await this.loadRaw(this.fileFor(key.sessionId));
+    return entries.length > 0 ? entries : null;
+  }
+  fileFor(sessionId) {
+    const hash2 = createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
+    return join(this.root, `${hash2}.jsonl`);
+  }
+  async loadRaw(path) {
+    let raw2;
+    try {
+      raw2 = await readFile(path, "utf8");
+    } catch (err) {
+      if (err.code === "ENOENT")
+        return [];
+      throw err;
+    }
+    const out = [];
+    for (const line of raw2.split(`
+`)) {
+      const trimmed = line.trim();
+      if (!trimmed)
+        continue;
+      try {
+        out.push(JSON.parse(trimmed));
+      } catch {}
+    }
+    return out;
+  }
+}
+
+// ../harness-server/dist/stores/registry.js
+var DEFAULT_STORE_BUILDERS = {
+  memory: () => new MemorySessionStore,
+  file: (options) => new FileSessionStore(options)
+};
+function resolveStore(registry2, config2) {
+  const builder = registry2[config2.kind];
+  if (!builder) {
+    throw BadRequest("UNKNOWN_STORE", `session store '${config2.kind}' is not registered`, {
+      available: Object.keys(registry2)
+    });
+  }
+  return builder(config2.options);
+}
+
+// ../harness-server/dist/routes/health.js
+var HARNESS_VERSION = "0.1.0";
+function healthRoute(ctx) {
+  const app = new Hono2;
+  app.get("/health", (c) => {
+    const engines = {};
+    for (const [name, engine] of Object.entries(ctx.deps.engines)) {
+      engines[name] = { ...engine.capabilities };
+    }
+    const body = {
+      ok: true,
+      version: HARNESS_VERSION,
+      engines,
+      loaders: Object.keys(ctx.deps.identityLoaders)
+    };
+    return c.json(body, 200);
+  });
+  return app;
+}
+
 // ../harness-server/dist/services/create-session.js
 import { mkdtemp, mkdir as mkdir2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -132741,6 +132853,14 @@ async function createSession(deps, registry2, body) {
     session.endUserMessages();
   }
   registry2.add(session);
+  deps.logger.info("session.create", {
+    sessionId,
+    engine: body.engine,
+    loader: body.identity.loader,
+    identity: result.metadata.name,
+    streamingInput: Boolean(body.streamingInput),
+    sessionStore: body.sessionStore?.kind
+  });
   return session;
 }
 async function makeWorkdir(sessionId, stable) {
@@ -132765,6 +132885,7 @@ function mergeEngineOptions(loaderOpts, bodyOpts) {
 function sessionsRoute(ctx) {
   const app = new Hono2;
   app.post("/sessions", async (c) => {
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/sessions" });
     const body = CreateSessionBody.parse(await c.req.json());
     const session = await createSession(ctx.deps, ctx.registry, body);
     const response = {
@@ -132778,6 +132899,7 @@ function sessionsRoute(ctx) {
   });
   app.get("/sessions/:id", (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "GET", path: "/v1/sessions/:id", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session)
       throw NotFound("session", id);
@@ -132790,6 +132912,7 @@ function sessionsRoute(ctx) {
   });
   app.delete("/sessions/:id", async (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "DELETE", path: "/v1/sessions/:id", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session)
       throw NotFound("session", id);
@@ -132977,7 +133100,7 @@ class EventChannel {
 }
 
 // ../harness-server/dist/services/run-session.js
-async function runSession(engine, session) {
+async function runSession(engine, session, logger = nopLogger) {
   const push = (ev) => {
     session.emit(ev);
   };
@@ -132987,6 +133110,12 @@ async function runSession(engine, session) {
     engine: session.engineName,
     identity: session.identity,
     capabilities: session.capabilities
+  });
+  const startedAt = Date.now();
+  logger.info("session.start", {
+    sessionId: session.sessionId,
+    engine: session.engineName,
+    identity: session.identity.name
   });
   session.status = "running";
   const channel = new EventChannel;
@@ -132999,6 +133128,12 @@ async function runSession(engine, session) {
         envs: session.envs,
         userMessageQueue: session.userMessages(),
         onPermissionRequest: async (req) => {
+          logger.info("session.permission_request", {
+            sessionId: session.sessionId,
+            callId: req.callId,
+            toolName: req.toolName,
+            risk: req.risk
+          });
           channel.push({
             kind: "ca_permission_request",
             sessionId: session.sessionId,
@@ -133010,7 +133145,8 @@ async function runSession(engine, session) {
           return session.awaitPermission(req);
         },
         abortSignal: session.abortController.signal,
-        ...session.sessionStore ? { sessionStore: session.sessionStore } : {}
+        ...session.sessionStore ? { sessionStore: session.sessionStore } : {},
+        logger
       });
       for await (const event of stream2) {
         if (session.abortController.signal.aborted)
@@ -133037,12 +133173,19 @@ async function runSession(engine, session) {
       const wasCancelled = session.abortController.signal.aborted;
       if (!wasCancelled)
         session.status = "completed";
+      const reason = wasCancelled ? "cancelled" : "complete";
       channel.push({
         kind: "ca_session_ended",
         sessionId: session.sessionId,
-        reason: wasCancelled ? "cancelled" : "complete"
+        reason
+      });
+      logger.info("session.end", {
+        sessionId: session.sessionId,
+        reason,
+        durationMs: Date.now() - startedAt
       });
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       if (session.abortController.signal.aborted) {
         session.status = "cancelled";
         channel.push({
@@ -133050,13 +133193,24 @@ async function runSession(engine, session) {
           sessionId: session.sessionId,
           reason: "cancelled"
         });
+        logger.info("session.end", {
+          sessionId: session.sessionId,
+          reason: "cancelled",
+          durationMs: Date.now() - startedAt
+        });
       } else {
         session.status = "errored";
         channel.push({
           kind: "ca_session_ended",
           sessionId: session.sessionId,
           reason: "error",
-          errorMessage: err instanceof Error ? err.message : String(err)
+          errorMessage: errMsg
+        });
+        logger.error("session.end", {
+          sessionId: session.sessionId,
+          reason: "error",
+          error: errMsg,
+          durationMs: Date.now() - startedAt
         });
       }
     } finally {
@@ -133077,6 +133231,7 @@ function eventsRoute(ctx) {
   const app = new Hono2;
   app.get("/sessions/:id/events", (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "GET", path: "/v1/sessions/:id/events", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session)
       throw NotFound("session", id);
@@ -133085,7 +133240,7 @@ function eventsRoute(ctx) {
       throw NotFound("engine", session.engineName);
     const lastEventId = parseLastEventId(c.req.header("Last-Event-ID"), c.req.query("lastEventId"));
     if (session.claimEngineStart()) {
-      runSession(engine, session);
+      runSession(engine, session, ctx.deps.logger);
     }
     session.attachSubscriber();
     return streamSSE(c, async (stream2) => {
@@ -133122,13 +133277,14 @@ function parseLastEventId(header, query) {
 function chatRoute(ctx) {
   const app = new Hono2;
   app.post("/chat", async (c) => {
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/chat" });
     const body = CreateSessionBody.parse(await c.req.json());
     const session = await createSession(ctx.deps, ctx.registry, body);
     const engine = ctx.deps.engines[session.engineName];
     if (!engine)
       throw new Error("engine vanished after createSession");
     session.claimEngineStart();
-    runSession(engine, session);
+    runSession(engine, session, ctx.deps.logger);
     session.attachSubscriber();
     return streamSSE(c, async (stream2) => {
       stream2.onAbort(() => {
@@ -133158,6 +133314,7 @@ function messagesRoute(ctx) {
   const app = new Hono2;
   app.post("/sessions/:id/messages", async (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/sessions/:id/messages", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session)
       throw NotFound("session", id);
@@ -133173,6 +133330,7 @@ function cancelRoute(ctx) {
   const app = new Hono2;
   app.post("/sessions/:id/cancel", (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.info("session.cancel", { sessionId: id });
     const session = ctx.registry.get(id);
     if (!session)
       throw NotFound("session", id);
@@ -133341,55 +133499,69 @@ function countOccurrences(haystack, needle) {
 function fsRoute(ctx) {
   const app = new Hono2;
   app.get("/sessions/:id/fs/tree", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const path = c.req.query("path") ?? "";
     const depth = parseDepth(c.req.query("depth"));
+    ctx.deps.logger.debug("fs.tree", { sessionId: id, path, depth });
     const entries = await catchEscape(() => listTree(session.workdir, path, depth));
     return c.json({ entries });
   });
   app.get("/sessions/:id/fs/file", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const path = c.req.query("path");
     if (!path)
       throw BadRequest("MISSING_PATH", "query param 'path' is required");
+    ctx.deps.logger.debug("fs.read", { sessionId: id, path });
     const buf = await catchEscape(() => readBytes(session.workdir, path));
     return new Response(new Uint8Array(buf), {
       headers: { "Content-Type": "application/octet-stream" }
     });
   });
   app.put("/sessions/:id/fs/file", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const path = c.req.query("path");
     if (!path)
       throw BadRequest("MISSING_PATH", "query param 'path' is required");
     const body = Buffer.from(await c.req.arrayBuffer());
+    ctx.deps.logger.debug("fs.write", { sessionId: id, path, bytes: body.length });
     const { size } = await catchEscape(() => writeBytes(session.workdir, path, body));
     return c.json({ ok: true, size });
   });
   app.delete("/sessions/:id/fs/file", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const path = c.req.query("path");
     if (!path)
       throw BadRequest("MISSING_PATH", "query param 'path' is required");
     const recursive = c.req.query("recursive") === "true";
+    ctx.deps.logger.debug("fs.delete", { sessionId: id, path, recursive });
     await catchEscape(() => removePath(session.workdir, path, recursive));
     return c.json({ ok: true });
   });
   app.post("/sessions/:id/fs/edit", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const body = FsEditBody.parse(await c.req.json());
+    ctx.deps.logger.debug("fs.edit", { sessionId: id, path: body.path, replaceAll: body.replaceAll });
     const { replacements } = await catchEscape(() => editFile(session.workdir, body.path, body.oldString, body.newString, body.replaceAll ?? false));
     return c.json({ ok: true, replacements });
   });
   app.post("/sessions/:id/fs/mkdir", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const body = FsMkdirBody.parse(await c.req.json());
+    ctx.deps.logger.debug("fs.mkdir", { sessionId: id, path: body.path, recursive: body.recursive });
     await catchEscape(() => makeDir(session.workdir, body.path, body.recursive ?? false));
     return c.json({ ok: true });
   });
   app.post("/sessions/:id/fs/move", async (c) => {
-    const session = requireSession(ctx, c.req.param("id"));
+    const id = c.req.param("id");
+    const session = requireSession(ctx, id);
     const body = FsMoveBody.parse(await c.req.json());
+    ctx.deps.logger.debug("fs.move", { sessionId: id, from: body.from, to: body.to });
     await catchEscape(() => movePath(session.workdir, body.from, body.to));
     return c.json({ ok: true });
   });
@@ -133427,6 +133599,7 @@ function permissionRoute(ctx) {
   app.post("/sessions/:id/permission/:callId", async (c) => {
     const id = c.req.param("id");
     const callId = c.req.param("callId");
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/sessions/:id/permission/:callId", sessionId: id, callId });
     const session = ctx.registry.get(id);
     if (!session)
       throw NotFound("session", id);
@@ -133435,6 +133608,7 @@ function permissionRoute(ctx) {
     if (!ok) {
       throw BadRequest("UNKNOWN_CALL_ID", `no pending permission request for callId '${callId}' on session '${id}'`);
     }
+    ctx.deps.logger.info("session.permission_decision", { sessionId: id, callId, decision: body.decision });
     return c.json({ ok: true });
   });
   return app;
@@ -133460,6 +133634,7 @@ function endInputRoute(ctx) {
   const app = new Hono2;
   app.post("/sessions/:id/end-input", (c) => {
     const id = c.req.param("id");
+    ctx.deps.logger.debug("http.request", { method: "POST", path: "/v1/sessions/:id/end-input", sessionId: id });
     const session = ctx.registry.get(id);
     if (!session)
       throw NotFound("session", id);
@@ -133524,18 +133699,37 @@ function createHarnessServer(opts) {
   if (Object.keys(opts.identityLoaders).length === 0) {
     throw new Error("createHarnessServer: at least one identity loader must be registered");
   }
+  const logger = opts.logger ?? nopLogger;
   const ctx = {
     deps: {
       engines: opts.engines,
       identityLoaders: opts.identityLoaders,
       ...opts.auditSink ? { auditSink: opts.auditSink } : {},
       sessionStores: { ...DEFAULT_STORE_BUILDERS, ...opts.sessionStores ?? {} },
-      validateStoreEntries: opts.validateStoreEntries ?? false
+      validateStoreEntries: opts.validateStoreEntries ?? false,
+      logger
     },
     registry: new SessionRegistry(opts.sessionTtlMs)
   };
+  logger.info("boot", {
+    engines: Object.keys(opts.engines),
+    loaders: Object.keys(opts.identityLoaders),
+    auth: opts.authHandler ? "enabled" : "off",
+    audit: opts.auditSink ? "enabled" : "off"
+  });
   const app = new Hono2;
-  app.onError(onError);
+  app.onError((err, c) => {
+    const code = err instanceof ProtocolError ? err.code : err instanceof Error ? err.name : "INTERNAL";
+    const status = err instanceof ProtocolError ? err.status : 500;
+    logger.warn("http.error", {
+      method: c.req.method,
+      path: c.req.path,
+      code,
+      status,
+      message: err instanceof Error ? err.message : String(err)
+    });
+    return onError(err, c);
+  });
   if (opts.authHandler) {
     const handler = opts.authHandler;
     const publicPaths = new Set(opts.authPublicPaths ?? ["/v1/health"]);
@@ -133708,6 +133902,15 @@ class ClaudeAgentEngine {
   name = "claude-agent-sdk";
   capabilities = CAPABILITIES;
   async* startSession(ctx) {
+    const log = ctx.logger ?? nopLogger;
+    const turnStartedAt = Date.now();
+    const model = ctx.options.model;
+    log.info("engine.start", {
+      engine: "claude-agent-sdk",
+      sessionId: ctx.sessionId,
+      model,
+      workdir: ctx.workdir
+    });
     const prompt = adaptUserMessages(ctx.userMessageQueue, ctx.sessionId);
     const abortController = signalToController(ctx.abortSignal);
     const engineUuid = deriveEngineUuid(ctx.sessionId);
@@ -133736,13 +133939,54 @@ class ClaudeAgentEngine {
       ...ctx.budget?.maxUsd !== undefined ? { maxBudgetUsd: ctx.budget.maxUsd } : {},
       ...storeOpts
     };
-    for await (const message of query({ prompt, options })) {
-      if (ctx.abortSignal.aborted)
-        break;
-      const snapshot = toUsageSnapshot(message);
-      if (snapshot)
-        yield snapshot;
-      yield { kind: "sdk_message", payload: message };
+    try {
+      for await (const message of query({ prompt, options })) {
+        if (ctx.abortSignal.aborted)
+          break;
+        logSdkMessage(log, ctx.sessionId, message);
+        const snapshot = toUsageSnapshot(message);
+        if (snapshot) {
+          log.debug("engine.usage", {
+            sessionId: ctx.sessionId,
+            inputTokens: snapshot.kind === "ca_usage_snapshot" ? snapshot.inputTokens : undefined,
+            outputTokens: snapshot.kind === "ca_usage_snapshot" ? snapshot.outputTokens : undefined,
+            costUsd: snapshot.kind === "ca_usage_snapshot" ? snapshot.costUsd : undefined
+          });
+          yield snapshot;
+        }
+        yield { kind: "sdk_message", payload: message };
+      }
+      log.info("engine.turn.end", {
+        engine: "claude-agent-sdk",
+        sessionId: ctx.sessionId,
+        durationMs: Date.now() - turnStartedAt
+      });
+    } catch (err) {
+      log.error("engine.error", {
+        engine: "claude-agent-sdk",
+        sessionId: ctx.sessionId,
+        error: err instanceof Error ? err.message : String(err)
+      });
+      throw err;
+    }
+  }
+}
+function logSdkMessage(log, sessionId, message) {
+  const m = message;
+  if (m?.type === "assistant" && Array.isArray(m.message?.content)) {
+    for (const block of m.message.content) {
+      if (block.type === "tool_use") {
+        log.debug("engine.tool_use", { sessionId, name: block.name, callId: block.id });
+      } else if (block.type === "text" && typeof block.text === "string") {
+        log.debug("engine.assistant_text", { sessionId, textLen: block.text.length });
+      }
+    }
+  } else if (m?.type === "user" && Array.isArray(m.message?.content)) {
+    for (const block of m.message.content) {
+      if (block.type === "tool_result") {
+        const bytes = typeof block.content === "string" ? block.content.length : JSON.stringify(block.content ?? "").length;
+        log.debug("engine.tool_result", { sessionId, callId: block.tool_use_id, isError: block.is_error, bytes });
+      }
     }
   }
 }
@@ -133936,6 +134180,13 @@ class GitAgentEngine {
   name = "gitagent";
   capabilities = CAPABILITIES2;
   async* startSession(ctx) {
+    const log = ctx.logger ?? nopLogger;
+    log.info("engine.start", {
+      engine: "gitagent",
+      sessionId: ctx.sessionId,
+      model: ctx.options.model,
+      workdir: ctx.workdir
+    });
     const store = ctx.sessionStore;
     const storeKey = { projectKey: PROJECT_KEY2, sessionId: ctx.sessionId };
     const accumulated = store ? await store.load(storeKey) ?? [] : [];
@@ -133946,7 +134197,14 @@ class GitAgentEngine {
       if (ctx.abortSignal.aborted)
         break;
       const userText = flattenContent(userMsg.content);
+      const turnStartedAt = Date.now();
       const userIndex = indexer.next();
+      log.info("engine.turn.start", {
+        engine: "gitagent",
+        sessionId: ctx.sessionId,
+        turnIndex: userIndex,
+        userTextLen: userText.length
+      });
       if (store) {
         await appendUserTurn(store, ctx.sessionId, userText, userIndex);
       }
@@ -133975,29 +134233,64 @@ ${priorSuffix}` : priorSuffix : baseSuffix || undefined;
         ...Object.keys(constraints).length > 0 ? { constraints } : {},
         ...systemPromptSuffix ? { systemPromptSuffix } : {}
       };
-      for await (const message of query2(options)) {
-        if (ctx.abortSignal.aborted)
-          break;
-        const snapshot = toUsageSnapshot2(message);
-        if (snapshot)
-          yield snapshot;
-        yield { kind: "sdk_message", payload: message };
-        const text = extractAssistantText(message);
-        if (text) {
-          const assistantIndex = indexer.next();
-          if (store) {
-            await appendAssistantTurn(store, ctx.sessionId, text, assistantIndex);
+      try {
+        for await (const message of query2(options)) {
+          if (ctx.abortSignal.aborted)
+            break;
+          logGitclawMessage(log, ctx.sessionId, message);
+          const snapshot = toUsageSnapshot2(message);
+          if (snapshot) {
+            log.debug("engine.usage", {
+              sessionId: ctx.sessionId,
+              inputTokens: snapshot.kind === "ca_usage_snapshot" ? snapshot.inputTokens : undefined,
+              outputTokens: snapshot.kind === "ca_usage_snapshot" ? snapshot.outputTokens : undefined,
+              costUsd: snapshot.kind === "ca_usage_snapshot" ? snapshot.costUsd : undefined
+            });
+            yield snapshot;
           }
-          accumulated.push({
-            type: "ca_assistant",
-            uuid: `inproc-assistant-${ctx.sessionId}-${assistantIndex}`,
-            timestamp: new Date().toISOString(),
-            turnIndex: assistantIndex,
-            text
-          });
+          yield { kind: "sdk_message", payload: message };
+          const text = extractAssistantText(message);
+          if (text) {
+            const assistantIndex = indexer.next();
+            if (store) {
+              await appendAssistantTurn(store, ctx.sessionId, text, assistantIndex);
+            }
+            accumulated.push({
+              type: "ca_assistant",
+              uuid: `inproc-assistant-${ctx.sessionId}-${assistantIndex}`,
+              timestamp: new Date().toISOString(),
+              turnIndex: assistantIndex,
+              text
+            });
+          }
         }
+        log.info("engine.turn.end", {
+          engine: "gitagent",
+          sessionId: ctx.sessionId,
+          turnIndex: userIndex,
+          durationMs: Date.now() - turnStartedAt
+        });
+      } catch (err) {
+        log.error("engine.error", {
+          engine: "gitagent",
+          sessionId: ctx.sessionId,
+          turnIndex: userIndex,
+          error: err instanceof Error ? err.message : String(err)
+        });
+        throw err;
       }
     }
+  }
+}
+function logGitclawMessage(log, sessionId, message) {
+  const m = message;
+  if (m?.type === "tool_use") {
+    log.debug("engine.tool_use", { sessionId, name: m.toolName, callId: m.toolCallId });
+  } else if (m?.type === "tool_result") {
+    const bytes = typeof m.content === "string" ? m.content.length : JSON.stringify(m.content ?? "").length;
+    log.debug("engine.tool_result", { sessionId, callId: m.toolCallId, isError: m.isError, bytes });
+  } else if (m?.type === "assistant" && typeof m.content === "string") {
+    log.debug("engine.assistant_text", { sessionId, textLen: m.content.length });
   }
 }
 function toUsageSnapshot2(message) {
@@ -134062,6 +134355,7 @@ class DeepAgentsEngine {
   name = "deepagents";
   capabilities = CAPABILITIES3;
   async* startSession(ctx) {
+    const log2 = ctx.logger ?? nopLogger;
     const [{ createDeepAgent: createDeepAgent2, LocalShellBackend: LocalShellBackend3 }, { ChatAnthropic: ChatAnthropic2 }, { MemorySaver: MemorySaver2 }] = await Promise.all([
       Promise.resolve().then(() => (init_dist8(), exports_dist2)),
       Promise.resolve().then(() => (init_dist9(), exports_dist3)),
@@ -134087,10 +134381,23 @@ class DeepAgentsEngine {
       backend,
       ...ctx.options.systemPrompt ? { systemPrompt: ctx.options.systemPrompt } : {}
     });
+    log2.info("engine.start", {
+      engine: "deepagents",
+      sessionId: ctx.sessionId,
+      model: stripProviderPrefix(modelName),
+      workdir: ctx.workdir,
+      backend: "local-shell"
+    });
     for await (const userMsg of ctx.userMessageQueue) {
       if (ctx.abortSignal.aborted)
         break;
       const userText = flattenContent2(userMsg.content);
+      const turnStartedAt = Date.now();
+      log2.info("engine.turn.start", {
+        engine: "deepagents",
+        sessionId: ctx.sessionId,
+        userTextLen: userText.length
+      });
       const input = { messages: [{ role: "user", content: userText }] };
       const config3 = {
         configurable: { thread_id: threadId },
@@ -134098,26 +134405,45 @@ class DeepAgentsEngine {
       };
       let lastUsage;
       let finalText = "";
-      const stream2 = await agent.stream(input, { ...config3, streamMode: "values" });
-      for await (const chunk of stream2) {
-        if (ctx.abortSignal.aborted)
-          break;
-        yield { kind: "sdk_message", payload: chunk };
-        const messages = extractMessagesFromChunk(chunk);
-        const last = messages[messages.length - 1];
-        if (last) {
-          if (typeof last.content === "string" && last.content.trim()) {
-            finalText = last.content;
-          } else if (Array.isArray(last.content)) {
-            const textParts = last.content.filter((b) => b.type === "text").map((b) => b.text);
-            if (textParts.length > 0)
-              finalText = textParts.join("");
+      let priorMsgCount = 0;
+      try {
+        const stream2 = await agent.stream(input, { ...config3, streamMode: "values" });
+        for await (const chunk of stream2) {
+          if (ctx.abortSignal.aborted)
+            break;
+          yield { kind: "sdk_message", payload: chunk };
+          const messages = extractMessagesFromChunk(chunk);
+          const newMsgs = messages.slice(priorMsgCount);
+          priorMsgCount = messages.length;
+          for (const m of newMsgs)
+            logDeepAgentMessage(log2, ctx.sessionId, m);
+          const last = messages[messages.length - 1];
+          if (last) {
+            if (typeof last.content === "string" && last.content.trim()) {
+              finalText = last.content;
+            } else if (Array.isArray(last.content)) {
+              const textParts = last.content.filter((b) => b.type === "text").map((b) => b.text);
+              if (textParts.length > 0)
+                finalText = textParts.join("");
+            }
+            if (last.usage_metadata)
+              lastUsage = last.usage_metadata;
           }
-          if (last.usage_metadata)
-            lastUsage = last.usage_metadata;
         }
+      } catch (err) {
+        log2.error("engine.error", {
+          engine: "deepagents",
+          sessionId: ctx.sessionId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+        throw err;
       }
       if (lastUsage && (lastUsage.input_tokens !== undefined || lastUsage.output_tokens !== undefined)) {
+        log2.debug("engine.usage", {
+          sessionId: ctx.sessionId,
+          inputTokens: lastUsage.input_tokens,
+          outputTokens: lastUsage.output_tokens
+        });
         yield {
           kind: "ca_usage_snapshot",
           ...lastUsage.input_tokens !== undefined ? { inputTokens: lastUsage.input_tokens } : {},
@@ -134134,6 +134460,35 @@ class DeepAgentsEngine {
           ...lastUsage ? { usage: lastUsage } : {}
         }
       };
+      log2.info("engine.turn.end", {
+        engine: "deepagents",
+        sessionId: ctx.sessionId,
+        durationMs: Date.now() - turnStartedAt,
+        finalTextLen: finalText.length
+      });
+    }
+  }
+}
+function logDeepAgentMessage(log2, sessionId, msg) {
+  const role = typeof msg._getType === "function" ? msg._getType() : "?";
+  if (msg.tool_calls && msg.tool_calls.length > 0) {
+    for (const tc of msg.tool_calls) {
+      log2.debug("engine.tool_use", { sessionId, name: tc.name, callId: tc.id });
+    }
+    return;
+  }
+  if (role === "tool") {
+    const bytes = typeof msg.content === "string" ? msg.content.length : JSON.stringify(msg.content ?? "").length;
+    log2.debug("engine.tool_result", { sessionId, name: msg.name, callId: msg.tool_call_id, bytes });
+    return;
+  }
+  if (role === "ai" || role === "assistant") {
+    if (typeof msg.content === "string" && msg.content.trim()) {
+      log2.debug("engine.assistant_text", { sessionId, textLen: msg.content.length });
+    } else if (Array.isArray(msg.content)) {
+      const textLen = msg.content.filter((b) => b.type === "text").reduce((n4, b) => n4 + (b.text?.length ?? 0), 0);
+      if (textLen > 0)
+        log2.debug("engine.assistant_text", { sessionId, textLen });
     }
   }
 }
@@ -135698,14 +136053,14 @@ function childLoggerName(name, childDebugger, { namespace: parentNamespace }) {
   }
   return childNamespace || parentNamespace;
 }
-function createLogger(label, verbose, initialStep, infoDebugger = createLog()) {
+function createLogger2(label, verbose, initialStep, infoDebugger = createLog()) {
   const labelPrefix = label && `[${label}]` || "";
   const spawned = [];
   const debugDebugger = typeof verbose === "string" ? infoDebugger.extend(verbose) : verbose;
   const key = childLoggerName(filterType(verbose, filterString), debugDebugger, infoDebugger);
   return step(initialStep);
   function sibling(name, initial) {
-    return append(spawned, createLogger(label, key.replace(/^[^:]+/, name), initial, infoDebugger));
+    return append(spawned, createLogger2(label, key.replace(/^[^:]+/, name), initial, infoDebugger));
   }
   function step(phase) {
     const stepPrefix = phase && `[${phase}]` || "";
@@ -135746,7 +136101,7 @@ var init_tasks_pending_queue = __esm2({
       }
       createProgress(task3) {
         const name = _TasksPendingQueue.getName(task3.commands[0]);
-        const logger = createLogger(this.logLabel, name);
+        const logger = createLogger2(this.logLabel, name);
         return {
           task: task3,
           logger,
@@ -137382,7 +137737,7 @@ var init_scheduler = __esm2({
     Scheduler = class {
       constructor(concurrency = 2) {
         this.concurrency = concurrency;
-        this.logger = createLogger("", "scheduler");
+        this.logger = createLogger2("", "scheduler");
         this.pending = [];
         this.running = [];
         this.logger(`Constructed, concurrency=%s`, concurrency);
@@ -139321,15 +139676,18 @@ class GitAgentProtocolLoader {
 }
 // src/sandbox-boot.ts
 var PORT = Number(process.env.PORT ?? 7700);
+var logger = createLogger({ component: "harness" });
 var app = createHarnessServer({
   engines: {
     "claude-agent-sdk": new ClaudeAgentEngine,
     gitagent: new GitAgentEngine,
     deepagents: new DeepAgentsEngine
   },
-  identityLoaders: { gitagentprotocol: new GitAgentProtocolLoader }
+  identityLoaders: { gitagentprotocol: new GitAgentProtocolLoader },
+  logger
 });
 serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, ({ port }) => {
+  logger.info("ready", { url: `http://127.0.0.1:${port}` });
   process.stdout.write(`harness-server listening on 127.0.0.1:${port}
 `);
 });
