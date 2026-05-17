@@ -51,7 +51,11 @@ Inside the sandbox the agent sees:
 ```bash
 # Debian/Ubuntu
 sudo apt-get update
-sudo apt-get install -y bubblewrap unzip curl ca-certificates
+sudo apt-get install -y \
+  bubblewrap                  `# the sandbox itself` \
+  unzip curl ca-certificates  `# build/install prereqs` \
+  poppler-utils               `# PDF rendering — Claude Code's Read tool shells out to pdftoppm` \
+  git                         `# for git-source GAP repos`
 
 # Node 22 (NodeSource)
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
@@ -63,11 +67,28 @@ curl -fsSL https://bun.sh/install | bash
 echo 'export PATH="$HOME/.bun/bin:$PATH"' >> ~/.bashrc
 
 # Verify
-bwrap --version    # >= 0.11
-node --version     # >= 22
-pnpm --version     # 9.x
+bwrap --version       # >= 0.11
+node --version        # >= 22
+pnpm --version        # 9.x
 ~/.bun/bin/bun --version
+pdftoppm -v 2>&1 | head -1   # >= 23.x (any recent poppler is fine)
 ```
+
+### Why poppler-utils?
+
+The `claude-agent-sdk` engine spawns the Claude Code CLI binary inside the
+bwrap sandbox. Claude Code's `Read` tool, when given a `.pdf` file path,
+calls `pdftoppm` from `poppler-utils` to rasterize each page to a PNG, then
+ships those PNGs to the Anthropic API as image content blocks. **Without
+`pdftoppm` on PATH, every PDF read fails with "pdftoppm is not installed".**
+
+Because we bind `/usr` read-only into every sandbox (see `bwrap-args.ts`),
+installing `poppler-utils` once on the host makes it visible to every
+current and future bwrap session — no per-session staging needed.
+
+The same applies to any other host-side CLI tool an agent might need at
+runtime (`unzip`, `jq`, `ffmpeg`, `sqlite3`, etc.). Install on the host,
+they show up in `/usr/bin` inside the sandbox automatically.
 
 ### Get the code
 
