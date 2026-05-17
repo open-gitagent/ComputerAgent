@@ -7,6 +7,7 @@ import { materialize } from "./source-resolver.js";
 import { mirrorSkillsForClaude } from "./skills.js";
 import { gapToClaudeAgentOptions } from "./adapters/claude-agent-sdk.js";
 import { gapToGitagentOptions } from "./adapters/gitagent.js";
+import { gapToDeepAgentsOptions } from "./adapters/deepagents.js";
 
 interface AdapterResult {
   options: unknown;
@@ -17,6 +18,7 @@ type AdapterFn = (manifest: GapManifest, workdir: string) => Promise<AdapterResu
 const ADAPTERS: Record<string, AdapterFn> = {
   "claude-agent-sdk": gapToClaudeAgentOptions as AdapterFn,
   "gitagent": gapToGitagentOptions as AdapterFn,
+  "deepagents": gapToDeepAgentsOptions as AdapterFn,
 };
 
 /**

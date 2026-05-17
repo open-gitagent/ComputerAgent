@@ -8,6 +8,7 @@ import { serve } from "@hono/node-server";
 import { createHarnessServer } from "@computeragent/harness-server";
 import { ClaudeAgentEngine } from "@computeragent/engine-claude-agent-sdk";
 import { GitAgentEngine } from "@computeragent/engine-gitagent";
+import { DeepAgentsEngine } from "@computeragent/engine-deepagents";
 import { GitAgentProtocolLoader } from "@computeragent/identity-gitagentprotocol";
 
 const PORT = Number(process.env.PORT ?? 7700);
@@ -16,6 +17,7 @@ const app = createHarnessServer({
   engines: {
     "claude-agent-sdk": new ClaudeAgentEngine(),
     "gitagent": new GitAgentEngine(),
+    "deepagents": new DeepAgentsEngine(),
   },
   identityLoaders: { gitagentprotocol: new GitAgentProtocolLoader() },
 });
