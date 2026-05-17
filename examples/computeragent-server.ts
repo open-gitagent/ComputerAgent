@@ -47,9 +47,33 @@ export interface ComputerAgentServerOptions {
    */
   readonly defaultEnvs?: Readonly<Record<string, string>>;
   /**
-   * Substrate factory — if absent, every request boots a fresh LocalSubstrate.
-   * Override to swap in `BwrapSubstrate` for namespace-isolated agents, an
-   * E2B template, a long-lived VM, or a test mock. Any `Substrate` works.
+   * Registry of substrate factories keyed by wire-side `runtime` name.
+   * Clients pick which to use per-request via the `runtime` field in the
+   * /run body. Built-ins shipped with examples:
+   *   - "local" → LocalSubstrate (process boundary, no security boundary)
+   *   - "bwrap" → BwrapSubstrate (Linux namespace isolation, recommended)
+   *   - "e2b"   → E2BSubstrate (Firecracker VMs, external service)
+   *
+   * Register the ones your deployment supports:
+   *
+   *   substrates: {
+   *     local: () => new LocalSubstrate(),
+   *     bwrap: () => new BwrapSubstrate({ extraRoBinds: [...] }),
+   *   }
+   *
+   * If only one is registered, it's used regardless of what the client asks for.
+   * If both `substrates` and the legacy `substrate` are absent, requests use a
+   * fresh LocalSubstrate per call (matches the v0 default).
+   */
+  readonly substrates?: Readonly<Record<string, () => Substrate>>;
+  /**
+   * Default `runtime` when the request body omits it. Must be a key in
+   * `substrates`. If unset, the first registered key wins.
+   */
+  readonly defaultRuntime?: string;
+  /**
+   * @deprecated Pass via `substrates: { default: () => ... }` and `defaultRuntime: "default"` instead.
+   * Kept for backward compatibility with the singular-substrate v0 shape.
    */
   readonly substrate?: () => Substrate;
   /**
@@ -62,6 +86,13 @@ export interface ComputerAgentServerOptions {
 interface RunBody {
   source: IdentitySource | string;
   harness: string;
+  /**
+   * Which substrate to spawn the agent inside. Names come from the server's
+   * `substrates` registry (e.g. "local", "bwrap", "e2b"). If omitted, the
+   * server uses its `defaultRuntime`. Unknown values → 400 UNKNOWN_RUNTIME
+   * with the list of available names.
+   */
+  runtime?: string;
   message: string | Array<{ role: "user"; content: string }>;
   envs?: Record<string, string>;
   options?: Record<string, unknown>;
@@ -125,7 +156,13 @@ export class ComputerAgentServer {
 
   private wire(): void {
     this.app.get("/health", (c) =>
-      c.json({ ok: true, activeRuns: this.runs.size, max: this.opts.maxConcurrentRuns ?? 4 }),
+      c.json({
+        ok: true,
+        activeRuns: this.runs.size,
+        max: this.opts.maxConcurrentRuns ?? 4,
+        runtimes: this.availableRuntimes(),
+        defaultRuntime: this.resolveDefaultRuntime(),
+      }),
     );
 
     this.app.post("/run", async (c) => {
@@ -144,6 +181,15 @@ export class ComputerAgentServer {
       const validation = validateRunBody(body);
       if (validation) return c.json({ error: validation }, 400);
 
+      // Resolve which substrate factory to use for this request.
+      // Precedence: body.runtime → defaultRuntime → first registered → legacy
+      // singular `substrate` → fresh LocalSubstrate.
+      const runtimeResult = this.resolveRuntime(body.runtime);
+      if (!runtimeResult.ok) {
+        return c.json({ error: runtimeResult.error }, 400);
+      }
+      const buildSubstrate = runtimeResult.factory;
+
       const source = applyGitToken(normalizeSource(body.source), body.gitToken);
       const envs = {
         ...this.opts.defaultEnvs,
@@ -158,7 +204,7 @@ export class ComputerAgentServer {
       const agent = new ComputerAgent({
         source,
         harness: body.harness as never,
-        runtime: this.opts.substrate ? this.opts.substrate() : new LocalSubstrate(),
+        runtime: buildSubstrate(),
         envs,
         ...(body.options ? { options: body.options } : {}),
         ...(body.model ? { model: body.model } : {}),
@@ -252,6 +298,61 @@ export class ComputerAgentServer {
       return c.json({ entries: tree });
     });
   }
+
+  /**
+   * Map a per-request `runtime` name to the registered substrate factory.
+   * Returns a discriminated result so the route handler can convert "unknown
+   * runtime" into a clean 400 with the available list.
+   */
+  private resolveRuntime(
+    requested: string | undefined,
+  ):
+    | { ok: true; factory: () => Substrate }
+    | { ok: false; error: { code: string; message: string; available: string[] } } {
+    const registry = this.opts.substrates;
+    const fallback = this.opts.substrate;
+    const available = this.availableRuntimes();
+
+    // Explicit request: must match a registered key.
+    if (requested) {
+      const factory = registry?.[requested];
+      if (factory) return { ok: true, factory };
+      // If only the legacy singular substrate is set, accept whatever the
+      // client asked for (one-substrate deployment — the name is informational).
+      if (!registry && fallback) return { ok: true, factory: fallback };
+      return {
+        ok: false,
+        error: {
+          code: "UNKNOWN_RUNTIME",
+          message: `runtime '${requested}' not registered on this server`,
+          available,
+        },
+      };
+    }
+
+    // No explicit request: use defaultRuntime, then the first registered, then
+    // the legacy singular factory, then a fresh LocalSubstrate.
+    if (registry) {
+      const defaultName = this.opts.defaultRuntime ?? Object.keys(registry)[0];
+      const factory = defaultName ? registry[defaultName] : undefined;
+      if (factory) return { ok: true, factory };
+    }
+    if (fallback) return { ok: true, factory: fallback };
+    return { ok: true, factory: () => new LocalSubstrate() };
+  }
+
+  private availableRuntimes(): string[] {
+    if (this.opts.substrates) return Object.keys(this.opts.substrates);
+    if (this.opts.substrate) return ["<legacy-singleton>"];
+    return ["local"];
+  }
+
+  private resolveDefaultRuntime(): string | undefined {
+    if (this.opts.substrates) {
+      return this.opts.defaultRuntime ?? Object.keys(this.opts.substrates)[0];
+    }
+    return undefined;
+  }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -317,13 +418,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }
       : undefined,
     maxConcurrentRuns: 4,
+    // Register every substrate the deployment supports. Clients pick which
+    // via `"runtime": "local" | "bwrap" | ...` in the /run body.
+    substrates: {
+      local: () => new LocalSubstrate(),
+      // Add others as needed:
+      //   bwrap: () => new BwrapSubstrate({ extraRoBinds: [...] }),
+      //   e2b:   () => new E2BSubstrate({ apiKey: process.env.E2B_API_KEY! }),
+    },
+    defaultRuntime: "local",
   });
   const { host, port } = await server.listen();
   console.log(`ComputerAgentServer listening on http://${host}:${port}`);
   console.log("");
   console.log("Endpoints:");
-  console.log("  GET  /health");
-  console.log("  POST /run        body: {source, harness, message, envs?, options?, gitToken?, model?, debug?}");
+  console.log("  GET  /health                    runtimes + default + active count");
+  console.log("  POST /run                       body: {source, harness, runtime?, message, envs?, options?, gitToken?, model?, sessionStore?, sessionId?, debug?}");
   console.log("  GET  /workdir?sessionId=<id>");
   console.log("  GET  /artifact?sessionId=<id>&path=<path>");
   console.log("");
@@ -333,6 +443,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log("    -d '{");
   console.log('      "source": "github.com/shreyas-lyzr/pdf-agent",');
   console.log('      "harness": "claude-agent-sdk",');
+  console.log('      "runtime": "local",');
   console.log('      "options": { "permissionMode": "bypassPermissions", "settingSources": ["project"] },');
   console.log('      "message": "Write hello.pdf with one line of text"');
   console.log("    }'");
