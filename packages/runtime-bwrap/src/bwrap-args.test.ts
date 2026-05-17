@@ -42,13 +42,16 @@ describe("buildBwrapArgs", () => {
     expect(argv[bundleIdx + 2]).toBe("/harness/harness.mjs");
   });
 
-  it("binds the node binary at /usr/local/bin/node read-only", () => {
+  it("binds the node binary at /opt/node/bin/node read-only", () => {
+    // We deliberately don't bind into /usr/local/bin because /usr is mounted
+    // read-only via --ro-bind-try; bwrap can't create new files under a path
+    // that's already been bound read-only.
     const argv = buildBwrapArgs(baseInput);
     const nodeIdx = argv.findIndex(
       (v, i) => v === "--ro-bind" && argv[i + 1] === baseInput.nodePath,
     );
     expect(nodeIdx).toBeGreaterThan(-1);
-    expect(argv[nodeIdx + 2]).toBe("/usr/local/bin/node");
+    expect(argv[nodeIdx + 2]).toBe("/opt/node/bin/node");
   });
 
   it("forwards every env var via --setenv", () => {
@@ -70,10 +73,10 @@ describe("buildBwrapArgs", () => {
     expect(argv[homeIdx + 2]).toBe("/workdir");
   });
 
-  it("ends with -- /usr/local/bin/node /harness/harness.mjs", () => {
+  it("ends with -- /opt/node/bin/node /harness/harness.mjs", () => {
     const argv = buildBwrapArgs(baseInput);
     const tail = argv.slice(-3);
-    expect(tail).toEqual(["--", "/usr/local/bin/node", "/harness/harness.mjs"]);
+    expect(tail).toEqual(["--", "/opt/node/bin/node", "/harness/harness.mjs"]);
   });
 
   it("includes the read-only system + TLS bindings", () => {

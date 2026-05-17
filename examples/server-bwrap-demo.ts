@@ -26,7 +26,19 @@ const server = new ComputerAgentServer({
   maxConcurrentRuns: 4,
   // The one-line swap: every /run gets a fresh BwrapSubstrate, which
   // namespace-isolates the spawned harness child.
-  substrate: () => new BwrapSubstrate(),
+  //
+  // The bundle externalizes @anthropic-ai/claude-agent-sdk and gitclaw —
+  // node needs to find them at runtime. Stage them once on the host via
+  //
+  //   mkdir -p /tmp/bwrap-runtime
+  //   cp packages/runtime-e2b/assets/sandbox-package.json /tmp/bwrap-runtime/package.json
+  //   cd /tmp/bwrap-runtime && npm install --include=optional --no-fund --no-audit
+  //
+  // then bind that flat node_modules into every sandbox at /harness/node_modules
+  // so node's module resolver finds @anthropic-ai/* from the bundle's location.
+  substrate: () => new BwrapSubstrate({
+    extraRoBinds: [{ src: "/tmp/bwrap-runtime/node_modules", dest: "/harness/node_modules" }],
+  }),
 });
 await server.listen();
 const base = `http://127.0.0.1:${port}`;
@@ -46,12 +58,13 @@ try {
       model: "claude-haiku-4-5-20251001",
       message: [
         "Run each of these shell commands via the Bash tool and report",
-        "exactly what each prints. Don't editorialize.",
+        "exactly what each prints. Don't editorialize. Use absolute paths.",
         "",
-        "  cmd1: ls / | sort",
-        "  cmd2: cat /etc/passwd 2>&1 | head -2",
-        "  cmd3: cat $HOME/.ssh/id_rsa 2>&1 | head -2",
-        "  cmd4: id",
+        "  cmd1: echo PATH=$PATH",
+        "  cmd2: /usr/bin/ls / | /usr/bin/sort",
+        "  cmd3: /usr/bin/cat /etc/passwd 2>&1 | /usr/bin/head -2",
+        "  cmd4: /usr/bin/cat $HOME/.ssh/id_rsa 2>&1 | /usr/bin/head -2",
+        "  cmd5: /usr/bin/id",
         "",
         "Then say done.",
       ].join("\n"),

@@ -74,6 +74,20 @@ export function buildBwrapArgs(opts: BwrapArgsOptions): string[] {
   args.push("--ro-bind-try", "/etc/ssl", "/etc/ssl");
   args.push("--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates");
   args.push("--ro-bind-try", "/etc/pki", "/etc/pki");
+  // /etc/passwd + /etc/group are needed by libuv's uv_os_homedir(): under
+  // --unshare-user the agent's euid is mapped to some value (often 0); when
+  // libc/libuv looks up that uid via getpwuid_r() it reads /etc/passwd. If
+  // missing, claude (and other node-bun binaries that call uv_os_homedir)
+  // crash with ENOENT before they even start. Read-only — /etc/shadow (which
+  // holds password hashes) is NOT bound.
+  args.push("--ro-bind-try", "/etc/passwd", "/etc/passwd");
+  args.push("--ro-bind-try", "/etc/group", "/etc/group");
+  // /etc/nsswitch.conf controls how getpw* resolves entries; without it
+  // glibc may bail on uid lookups.
+  args.push("--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf");
+  // /sys is needed by some native modules (cpu count via sysfs, etc.) and
+  // by node itself for some uv backends. Read-only is fine.
+  args.push("--ro-bind-try", "/sys", "/sys");
 
   // Caller-supplied extra read-only mounts.
   for (const entry of opts.extraRoBinds ?? []) {
@@ -92,19 +106,21 @@ export function buildBwrapArgs(opts: BwrapArgsOptions): string[] {
   args.push("--bind", opts.workdir, "/workdir");
 
   // Harness bundle (read-only). Mount at a stable path so the launch line
-  // doesn't change per-session.
+  // doesn't change per-session. /harness is a fresh tmpfs root, not part of
+  // any read-only system bind, so creating files inside it is allowed.
   args.push("--ro-bind", opts.bundlePath, "/harness/harness.mjs");
 
-  // Node binary (read-only). bwrap doesn't automatically expose the host
-  // node — we bind the specific binary the parent is running.
-  args.push("--ro-bind", opts.nodePath, "/usr/local/bin/node");
+  // Node binary (read-only). Bind at /opt/node/bin/node rather than under
+  // /usr/local — /usr is mounted --ro-bind-try above, so attempting to
+  // bind a new file there fails with EROFS. /opt is a fresh path.
+  args.push("--ro-bind", opts.nodePath, "/opt/node/bin/node");
 
   // Working directory inside the sandbox
   args.push("--chdir", "/workdir");
 
   // Environment. Order matters only insofar as a later --setenv wins; we
   // emit a sane PATH first then layer caller-supplied envs on top.
-  args.push("--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin");
+  args.push("--setenv", "PATH", "/opt/node/bin:/usr/local/bin:/usr/bin:/bin");
   args.push("--setenv", "HOME", "/workdir");
   args.push("--setenv", "PORT", String(opts.port));
   // Force loopback binding inside the sandbox; the host can still reach it
@@ -115,7 +131,7 @@ export function buildBwrapArgs(opts: BwrapArgsOptions): string[] {
   }
 
   // The command to run inside the sandbox.
-  args.push("--", "/usr/local/bin/node", "/harness/harness.mjs");
+  args.push("--", "/opt/node/bin/node", "/harness/harness.mjs");
 
   return args;
 }
