@@ -13,7 +13,8 @@ import { ClaudeAgentEngine } from "@computeragent/engine-claude-agent-sdk";
 import { GitAgentEngine } from "@computeragent/engine-gitagent";
 import { DeepAgentsEngine } from "@computeragent/engine-deepagents";
 import { GitAgentProtocolLoader } from "@computeragent/identity-gitagentprotocol";
-import { createLogger } from "@computeragent/protocol";
+import { createLogger, type SessionStore } from "@computeragent/protocol";
+import { MongoSessionStore } from "@computeragent/session-store-mongo";
 
 const PORT = Number(process.env.PORT ?? 7700);
 const logger = createLogger({ component: "harness" });
@@ -25,6 +26,25 @@ const app = createHarnessServer({
     "deepagents": new DeepAgentsEngine(),
   },
   identityLoaders: { gitagentprotocol: new GitAgentProtocolLoader() },
+  // `memory` and `file` are baked in by the framework — we just add Mongo here.
+  // Builder reads MONGO_URL from process.env when the caller's wire-side
+  // `sessionStore.options` omits `url` (the common case: clients send
+  // `{ kind: "mongo" }`, the server holds the credential).
+  sessionStores: {
+    mongo: (options: unknown): SessionStore => {
+      const o = (options ?? {}) as { url?: string; database?: string };
+      const url = o.url ?? process.env.MONGO_URL;
+      if (!url) {
+        throw new Error(
+          "mongo session store: MONGO_URL env var or options.url is required",
+        );
+      }
+      return new MongoSessionStore({
+        url,
+        ...(o.database ? { database: o.database } : {}),
+      });
+    },
+  },
   logger,
 });
 

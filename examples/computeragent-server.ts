@@ -13,6 +13,12 @@
  * rewrites the `source.url` with HTTPS basic-auth credentials, so simple-git
  * clones the private repo without leaking the token to other endpoints.
  *
+ * Session persistence: pass `sessionStore: { kind: "mongo" | "file" | "memory" }`
+ * (with optional `options`) to enable cross-process conversation resume.
+ * Combine with `sessionId` to continue a prior conversation. The `mongo`
+ * kind reads `MONGO_URL` from the harness env when `options.url` is omitted,
+ * so credentials stay server-side.
+ *
  *   curl -N -X POST http://127.0.0.1:8787/run -H 'content-type: application/json' \
  *     -d '{
  *       "source": { "type": "git", "url": "github.com/myorg/private-agent" },
@@ -66,6 +72,17 @@ interface RunBody {
   sessionId?: string;
   /** Enable verbose harness logs via COMPUTERAGENT_LOG=debug in the spawned harness. */
   debug?: boolean;
+  /**
+   * Pluggable session store. Built-in kinds shipped with the spawned harness:
+   *   - "memory"  (default, in-process; lost on dispose)
+   *   - "file"    options: { root: "/path/to/dir" }
+   *   - "mongo"   options: { url?: "mongodb://...", database?: "..." }
+   *               url omitted ⇒ falls back to MONGO_URL in the harness env
+   *               (pass it via top-level `envs` so the credential never
+   *               crosses the wire)
+   * Pair with `sessionId` to resume an existing conversation across processes.
+   */
+  sessionStore?: { kind: string; options?: unknown };
 }
 
 interface ActiveRun {
@@ -148,6 +165,7 @@ export class ComputerAgentServer {
         ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
         ...(body.sessionId ? { sessionId: body.sessionId } : {}),
         ...(body.debug ? { debug: true } : {}),
+        ...(body.sessionStore ? { sessionStore: body.sessionStore as never } : {}),
       });
 
       // Track the agent so /artifact can find it by sessionId while the run is live.
