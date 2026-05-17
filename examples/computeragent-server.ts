@@ -411,6 +411,31 @@ function validateRunBody(body: unknown): { code: string; message: string } | und
 // ── Example ──
 // Run with: `node --experimental-strip-types --no-warnings examples/computeragent-server.ts`
 if (import.meta.url === `file://${process.argv[1]}`) {
+  // Lazy-import optional substrates so missing E2B credentials / non-Linux
+  // hosts don't crash a deployment that only wants LocalSubstrate.
+  const { BwrapSubstrate } = await import("@computeragent/runtime-bwrap");
+  const { E2BSubstrate } = await import("@computeragent/runtime-e2b");
+
+  const substrates: Record<string, () => Substrate> = {
+    local: () => new LocalSubstrate(),
+  };
+
+  // bwrap: Linux only. Register when bwrap is on PATH AND the runtime deps
+  // have been staged. The path can be overridden via BWRAP_RUNTIME_DIR.
+  if (process.platform === "linux") {
+    const runtimeDir = process.env.BWRAP_RUNTIME_DIR ?? "/var/lib/computeragent/runtime";
+    substrates.bwrap = () =>
+      new BwrapSubstrate({
+        extraRoBinds: [{ src: `${runtimeDir}/node_modules`, dest: "/harness/node_modules" }],
+      });
+  }
+
+  // e2b: Register when E2B_API_KEY is set. Each session spins up its own
+  // Firecracker microVM via E2B's infra.
+  if (process.env.E2B_API_KEY) {
+    substrates.e2b = () => new E2BSubstrate({ apiKey: process.env.E2B_API_KEY });
+  }
+
   const server = new ComputerAgentServer({
     host: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 8787),
@@ -418,15 +443,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }
       : undefined,
     maxConcurrentRuns: 4,
-    // Register every substrate the deployment supports. Clients pick which
-    // via `"runtime": "local" | "bwrap" | ...` in the /run body.
-    substrates: {
-      local: () => new LocalSubstrate(),
-      // Add others as needed:
-      //   bwrap: () => new BwrapSubstrate({ extraRoBinds: [...] }),
-      //   e2b:   () => new E2BSubstrate({ apiKey: process.env.E2B_API_KEY! }),
-    },
-    defaultRuntime: "local",
+    substrates,
+    defaultRuntime: process.env.DEFAULT_RUNTIME ?? "local",
   });
   const { host, port } = await server.listen();
   console.log(`ComputerAgentServer listening on http://${host}:${port}`);
