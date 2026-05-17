@@ -471,12 +471,29 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     substrates.e2b = () => new E2BSubstrate({ apiKey: process.env.E2B_API_KEY });
   }
 
+  // Auto-forward selected host env vars into every spawned substrate. Bwrap
+  // wipes all env vars from the sandbox by default, so anything the inner
+  // harness server needs (model API keys, session-store URLs, etc.) MUST be
+  // explicitly forwarded. Listing keys here is the audit point: only these
+  // get exposed to agent processes.
+  const FORWARD = [
+    "ANTHROPIC_API_KEY",
+    "E2B_API_KEY",
+    "EXA_API_KEY",
+    "OPENAI_API_KEY",
+    "MONGO_URL",
+    "MONGO_DATABASE",
+  ];
+  const defaultEnvs: Record<string, string> = {};
+  for (const k of FORWARD) {
+    const v = process.env[k];
+    if (v) defaultEnvs[k] = v;
+  }
+
   const server = new ComputerAgentServer({
     host: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 8787),
-    defaultEnvs: process.env.ANTHROPIC_API_KEY
-      ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }
-      : undefined,
+    defaultEnvs: Object.keys(defaultEnvs).length > 0 ? defaultEnvs : undefined,
     maxConcurrentRuns: 4,
     substrates,
     defaultRuntime: process.env.DEFAULT_RUNTIME ?? "local",
