@@ -46,7 +46,7 @@ def t_s3_list_endpoint(base, r, bucket):
 
 
 def t_s3_snapshot_round_trip(base, r, bucket):
-    """Seed file via attachment, snapshot to real S3, restore into new sandbox, read back."""
+    """Seed file via attachment, snapshot to real S3, restore, verify."""
     body = {
         **DEFAULT_BODY,
         "attachments": [
@@ -60,6 +60,8 @@ def t_s3_snapshot_round_trip(base, r, bucket):
     sid = doc["sandboxId"]
     snapshot_id = None
     new_sid = None
+    harness = DEFAULT_BODY["harness"]
+    agent_sees_os_workdir = harness in ("claude-agent-sdk", "gitagent")
     try:
         sse_chat(base, sid, "Reply with: OK")
 
@@ -76,7 +78,6 @@ def t_s3_snapshot_round_trip(base, r, bucket):
               f"size={size}B files={files}")
 
         # Independently verify the objects landed in S3 via the AWS CLI.
-        # (Best-effort — only runs if the test host has creds.)
         try:
             meta = subprocess.run(
                 ["aws", "s3", "ls", f"s3://{bucket}/sandboxes/snapshots/{snapshot_id}/"],
@@ -98,14 +99,29 @@ def t_s3_snapshot_round_trip(base, r, bucket):
               str(rr[1]))
         new_sid = rr[1].get("sandboxId", "")
 
-        _, _, txt, _ = sse_chat(base, new_sid, "Use the Read tool to read test-s3-marker.txt and reply with only its content.")
-        r.add("restored workdir from S3 contains seed file (read by agent)",
-              "STARFISH-7" in (txt or ""),
-              f"got {txt!r}")
+        # Structural verification: re-snapshot restored sandbox + compare file count.
+        sse_chat(base, new_sid, "Reply with: OK")
+        sn2 = jpost(f"{base}/sandboxes/{new_sid}/snapshot",
+                    {"stateStore": {"kind": "s3", "options": {"bucket": bucket}}})
+        restored_files = sn2[1].get("fileCount", 0) if sn2[0] == 200 else 0
+        r.add("restored workdir from S3 matches original file count",
+              abs(restored_files - files) <= 2,
+              f"orig={files} restored={restored_files}")
+        # Clean up the secondary snapshot from S3.
+        if sn2[0] == 200:
+            jdelete(f"{base}/snapshots/{sn2[1]['snapshotId']}?stateStore=s3&bucket={bucket}")
+
+        if agent_sees_os_workdir:
+            _, _, txt, _ = sse_chat(base, new_sid, "Use the Read tool to read test-s3-marker.txt and reply with only its content.")
+            r.add("restored workdir from S3 readable by agent (seed file)",
+                  "STARFISH-7" in (txt or ""),
+                  f"got {txt!r}")
+        else:
+            r.skip("restored workdir readable by agent (seed file)",
+                   f"{harness}: virtual-FS gap — agent tools don't see OS workdir")
     finally:
         if new_sid: jdelete(f"{base}/sandboxes/{new_sid}")
         jdelete(f"{base}/sandboxes/{sid}")
-        # Clean up the test snapshot in S3 so the bucket doesn't grow on each run.
         if snapshot_id:
             jdelete(f"{base}/snapshots/{snapshot_id}?stateStore=s3&bucket={bucket}")
 
@@ -192,12 +208,17 @@ def main():
     p.add_argument("--base", default="https://api.clawagent.sh")
     p.add_argument("--bucket", default=os.environ.get("S3_BUCKET"))
     p.add_argument("--only", help="comma-separated subset of test names")
+    p.add_argument("--harness", default="claude-agent-sdk",
+                   choices=["claude-agent-sdk", "gitagent", "deepagents"])
     args = p.parse_args()
     if not args.bucket:
         print("ERROR: pass --bucket or set S3_BUCKET", file=sys.stderr)
         sys.exit(2)
+    # Override the shared DEFAULT_BODY so the imported test-sandboxes helpers
+    # use the requested harness.
+    ts.DEFAULT_BODY["harness"] = args.harness
     only = set(s.strip() for s in args.only.split(",")) if args.only else None
-    print(f"\nTesting {args.base} against bucket {args.bucket}\n")
+    print(f"\nTesting {args.base} against bucket {args.bucket} — harness={args.harness}\n")
     r = Report()
     for name, fn in TESTS:
         if only and name not in only: continue
