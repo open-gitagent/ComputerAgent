@@ -31,6 +31,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { gzipSync, gunzipSync } from "node:zlib";
+import { Readable } from "node:stream";
+import * as tar from "tar-stream";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -40,14 +43,22 @@ import type { IdentitySource, Substrate } from "computeragent";
 import type {
   HarnessEvent,
   PersistedEvent,
+  SandboxSnapshot,
+  SandboxUsage,
+  SessionStoreRef,
+  SnapshotFilter,
+  SnapshotSummary,
+  StateStore,
   TaskDoc,
   TaskStore,
   TaskStatus,
   TaskSummary,
 } from "@computeragent/protocol";
 import { mongoTaskStoreBuilder } from "@computeragent/task-store-mongo";
+import { s3StateStoreBuilder } from "@computeragent/state-store-s3";
 
 type TaskStoreBuilder = (options?: unknown) => TaskStore;
+type StateStoreBuilder = (options?: unknown) => StateStore;
 
 export interface ComputerAgentServerOptions {
   /** Bind host. Default "127.0.0.1" (loopback only). Pass "0.0.0.0" for LAN-accessible. */
@@ -107,6 +118,19 @@ export interface ComputerAgentServerOptions {
    * `taskStores`. If unset, the first registered key wins (or "memory").
    */
   readonly defaultTaskStore?: string;
+  /**
+   * Registry of state-store backends for sandbox snapshot/restore.
+   * Built-in: "memory" (in-process, lost on restart, useful for tests).
+   * The example startup auto-registers "s3" when S3_BUCKET is set.
+   *   stateStores: { s3: s3StateStoreBuilder({ bucket: "..." }) }
+   */
+  readonly stateStores?: Readonly<Record<string, StateStoreBuilder>>;
+  /**
+   * Default state-store kind when a snapshot/restore request omits one.
+   * Must be a registered key. If unset, the first registered key wins
+   * (typically `memory` since it's always registered).
+   */
+  readonly defaultStateStore?: string;
   /**
    * Long-lived sandbox pool tuning. A sandbox keeps a `ComputerAgent` (and
    * its substrate) alive between HTTP requests so multi-turn conversations
@@ -308,6 +332,34 @@ class MemoryTaskStore implements TaskStore {
   async delete(taskId: string): Promise<void> { this.docs.delete(taskId); }
 }
 
+// ── In-process state-store fallback (Wedge 1.13) ────────────────────────
+//
+// Mirrors MemoryTaskStore. Useful for tests and the always-registered
+// default when no durable backend is configured. Snapshots live in a Map
+// keyed by snapshotId — lost on server restart.
+class MemoryStateStore implements StateStore {
+  private readonly snaps = new Map<string, SandboxSnapshot>();
+
+  async save(snap: SandboxSnapshot): Promise<{ snapshotId: string; sizeBytes: number }> {
+    this.snaps.set(snap.snapshotId, snap);
+    return { snapshotId: snap.snapshotId, sizeBytes: snap.workdirBytes };
+  }
+  async load(snapshotId: string): Promise<SandboxSnapshot | null> {
+    return this.snaps.get(snapshotId) ?? null;
+  }
+  async list(filter?: SnapshotFilter): Promise<readonly SnapshotSummary[]> {
+    let out = [...this.snaps.values()].map(({ workdirTar: _t, ...rest }) => rest as SnapshotSummary);
+    if (filter?.sourceSandboxId) out = out.filter((s) => s.sourceSandboxId === filter.sourceSandboxId);
+    if (filter?.since) {
+      const sinceMs = filter.since.getTime();
+      out = out.filter((s) => s.takenAt.getTime() >= sinceMs);
+    }
+    out.sort((a, b) => b.takenAt.getTime() - a.takenAt.getTime());
+    return filter?.limit ? out.slice(0, filter.limit) : out;
+  }
+  async delete(snapshotId: string): Promise<void> { this.snaps.delete(snapshotId); }
+}
+
 // ── Sandbox pool (Wedge 1.12) ───────────────────────────────────────────
 //
 // A "sandbox" is a warm `ComputerAgent` + substrate kept alive across
@@ -317,12 +369,17 @@ class MemoryTaskStore implements TaskStore {
 // `this.booted` in computer-agent.ts); this registry is what stops the
 // example server from disposing the agent the moment a stream ends.
 
-type SandboxState = "booting" | "ready" | "busy" | "expired" | "disposed";
+type SandboxState = "booting" | "ready" | "busy" | "restoring" | "expired" | "disposed";
 
 interface LiveSandbox {
   readonly id: string;
-  readonly sessionId: string;
-  readonly agent: InstanceType<typeof ComputerAgent>;
+  sessionId: string;
+  /**
+   * Mutable agent reference. `replaceAgentInPlace` swaps this when restoring
+   * a snapshot onto an existing sandbox slot (target = "<existingId>"). Read
+   * paths go through `sandbox.agent` — never cache the reference.
+   */
+  agent: InstanceType<typeof ComputerAgent>;
   state: SandboxState;
   readonly createdAt: Date;
   lastActivityAt: Date;
@@ -339,6 +396,12 @@ interface LiveSandbox {
   /** Set to true on POST /chat; if no chat arrives within bootDeadlineMs, reaper kills the sandbox. */
   firstChatSeen: boolean;
   readonly bootDeadlineAt: Date;
+  /**
+   * If set, the registry snapshots the sandbox to this state store BEFORE
+   * disposing it (TTL fire, explicit DELETE, server shutdown). Snapshot
+   * failures are logged but do NOT block tear-down.
+   */
+  autoSave?: { stateStoreKind: string; stateStoreOptions?: unknown };
 }
 
 interface SandboxSummary {
@@ -379,13 +442,26 @@ class SandboxRegistry {
     return sb;
   }
 
-  async remove(id: string, reason: "expired" | "explicit" | "shutdown"): Promise<void> {
+  async remove(
+    id: string,
+    reason: "expired" | "explicit" | "shutdown",
+    preDispose?: (sb: LiveSandbox) => Promise<void>,
+  ): Promise<void> {
     const sb = this.detach(id);
     if (!sb) return;
+    // preDispose runs BEFORE the substrate goes down — used by auto-save to
+    // snapshot the workdir while it's still readable. Failures here are
+    // logged but never block tear-down (a flaky S3 must not strand a live
+    // substrate).
+    if (preDispose) {
+      try {
+        await preDispose(sb);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`[sandbox] ${id} preDispose failed (${reason}):`, err);
+      }
+    }
     sb.state = "disposed";
-    // agent.dispose() drops the substrate; any in-flight chat for-await sees a
-    // stream end / error and exits its handler cleanly. Swallow errors — at
-    // this point we just want the substrate down.
     await sb.agent.dispose().catch(() => {});
     if (reason !== "shutdown") {
       // eslint-disable-next-line no-console
@@ -393,13 +469,21 @@ class SandboxRegistry {
     }
   }
 
-  /** Start the periodic reaper. Idempotent. */
-  start(intervalMs: number): void {
+  /**
+   * Start the periodic reaper. Idempotent. The `reaper` callback is invoked
+   * for each expired sandbox; it MUST eventually call `registry.remove(id, "expired", ...)`
+   * (the caller wires it that way so autoSave preDispose hooks can plug in).
+   * Default reaper: `this.remove(id, "expired")` with no preDispose.
+   */
+  start(intervalMs: number, reaper?: (id: string) => Promise<void>): void {
     if (this.reapTimer) return;
+    this.reapFn = reaper ?? ((id) => this.remove(id, "expired"));
     this.reapTimer = setInterval(() => { void this.reapOnce(); }, intervalMs);
     // Don't keep the process alive solely for the reaper.
     this.reapTimer.unref?.();
   }
+
+  private reapFn: (id: string) => Promise<void> = (id) => this.remove(id, "expired");
 
   stop(): void {
     if (this.reapTimer) {
@@ -416,10 +500,12 @@ class SandboxRegistry {
       if (sb.expiresAt.getTime() <= now) { toReap.push(sb.id); continue; }
       // Boot deadline: created but never chatted. Drops dangling sandboxes.
       if (!sb.firstChatSeen && sb.bootDeadlineAt.getTime() <= now) { toReap.push(sb.id); continue; }
-      // Idle cap only applies when not actively serving a turn.
-      if (sb.state !== "busy" && sb.idleExpiresAt.getTime() <= now) { toReap.push(sb.id); continue; }
+      // Idle cap only applies when not actively serving a turn / being
+      // restored. Both states have transient operations the reaper must
+      // not interrupt.
+      if (sb.state !== "busy" && sb.state !== "restoring" && sb.idleExpiresAt.getTime() <= now) { toReap.push(sb.id); continue; }
     }
-    await Promise.all(toReap.map((id) => this.remove(id, "expired").catch(() => {})));
+    await Promise.all(toReap.map((id) => this.reapFn(id).catch(() => {})));
   }
 }
 
@@ -502,6 +588,12 @@ interface SandboxBody {
   attachments?: Array<{ path: string; content: string; encoding?: "utf8" | "base64" }>;
   idleTtlMs?: number;
   ttlMs?: number;
+  /**
+   * Opt-in: snapshot to this state store BEFORE the sandbox disposes
+   * (TTL fire, explicit DELETE, server shutdown). Snapshot ID is
+   * auto-derived. The store must already be registered on the server.
+   */
+  autoSave?: { stateStore: { kind: string; options?: unknown } };
 }
 
 interface SandboxChatBody {
@@ -516,6 +608,7 @@ export class ComputerAgentServer {
   private readonly runs = new Map<string, ActiveRun>();
   private readonly broker = new TaskBroker();
   private readonly taskStores: Record<string, TaskStoreBuilder>;
+  private readonly stateStores: Record<string, StateStoreBuilder>;
   /** Live agents for in-flight tasks, keyed by taskId. */
   private readonly liveTasks = new Map<string, InstanceType<typeof ComputerAgent>>();
   private readonly sandboxes = new SandboxRegistry();
@@ -530,6 +623,12 @@ export class ComputerAgentServer {
       memory: () => new MemoryTaskStore(),
       ...(opts.taskStores ?? {}),
     };
+    // State store registry mirrors taskStores. `memory` is always available;
+    // caller can register `s3` (or future GCS/Azure) on top.
+    this.stateStores = {
+      memory: () => new MemoryStateStore(),
+      ...(opts.stateStores ?? {}),
+    };
     this.wire();
   }
 
@@ -542,7 +641,16 @@ export class ComputerAgentServer {
     // Sandbox reaper: walks the registry every reaperIntervalMs and disposes
     // any sandbox past its idle or hard TTL. Started after the HTTP listener
     // is up so no /sandboxes request can land before the reaper exists.
-    this.sandboxes.start(this.opts.sandbox?.reaperIntervalMs ?? 5_000);
+    // Pass a custom reaper that runs auto-save before disposal. The
+    // registry calls reapFn(id) for each expired sandbox; we look up the
+    // sandbox, build its auto-save preDispose hook (if any), then call
+    // remove(...). preDispose runs WHILE the substrate is still up so the
+    // workdir is readable.
+    this.sandboxes.start(this.opts.sandbox?.reaperIntervalMs ?? 5_000, (id) => {
+      const sb = this.sandboxes.get(id);
+      const pre = sb ? this.buildAutoSavePreDispose(sb) : undefined;
+      return this.sandboxes.remove(id, "expired", pre);
+    });
     return { host, port };
   }
 
@@ -553,7 +661,12 @@ export class ComputerAgentServer {
     await Promise.all([...this.runs.values()].map((r) => r.agent.dispose().catch(() => {})));
     this.runs.clear();
     // Dispose every live sandbox in parallel.
-    await Promise.all(this.sandboxes.list().map((s) => this.sandboxes.remove(s.sandboxId, "shutdown").catch(() => {})));
+    // Auto-save on graceful shutdown too, so a `systemctl stop` doesn't lose work.
+    await Promise.all(this.sandboxes.list().map((s) => {
+      const sb = this.sandboxes.get(s.sandboxId);
+      const pre = sb ? this.buildAutoSavePreDispose(sb) : undefined;
+      return this.sandboxes.remove(s.sandboxId, "shutdown", pre).catch(() => {});
+    }));
     if (this.server) {
       await new Promise<void>((r) => {
         this.server!.close(() => r());
@@ -1007,6 +1120,7 @@ export class ComputerAgentServer {
         ttlMs: resolvedTtl.ttlMs,
         firstChatSeen: false,
         bootDeadlineAt: new Date(now.getTime() + (cfg.bootDeadlineMs ?? 60_000)),
+        ...(body.autoSave ? { autoSave: { stateStoreKind: body.autoSave.stateStore.kind, stateStoreOptions: body.autoSave.stateStore.options } } : {}),
       };
       this.sandboxes.insert(sandbox);
 
@@ -1034,13 +1148,14 @@ export class ComputerAgentServer {
 
     this.app.delete("/sandboxes/:id", async (c) => {
       const id = c.req.param("id");
-      const existed = this.sandboxes.has(id);
-      if (!existed) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+      const sb = this.sandboxes.get(id);
+      if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
       // Capture usage BEFORE disposing — the registry removal nulls the agent.
-      const finalUsage = this.sandboxes.get(id)?.usage ?? {};
-      const turnCount = this.sandboxes.get(id)?.turnCount ?? 0;
-      await this.sandboxes.remove(id, "explicit");
-      return c.json({ ok: true, sandboxId: id, finalUsage, turnCount });
+      const finalUsage = sb.usage;
+      const turnCount = sb.turnCount;
+      const pre = this.buildAutoSavePreDispose(sb);
+      await this.sandboxes.remove(id, "explicit", pre);
+      return c.json({ ok: true, sandboxId: id, finalUsage, turnCount, autoSaved: Boolean(sb.autoSave) });
     });
 
     this.app.post("/sandboxes/:id/chat", async (c) => {
@@ -1049,6 +1164,9 @@ export class ComputerAgentServer {
       if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
       if (sb.state === "expired" || sb.state === "disposed") {
         return c.json({ error: { code: "GONE", state: sb.state } }, 410);
+      }
+      if (sb.state === "restoring") {
+        return c.json({ error: { code: "RESTORING", message: "Sandbox is being restored from snapshot. Retry in a moment." } }, 409);
       }
       if (sb.state === "busy" && sb.currentTurn) {
         return c.json({
@@ -1133,6 +1251,410 @@ export class ComputerAgentServer {
         }
       });
     });
+
+    // ── Heartbeat (Wedge 1.13) ────────────────────────────────────────────
+    //
+    // Cheap auto-warm. The client (typically the browser) fires this every
+    // few seconds while the user is composing a message so the idle TTL
+    // doesn't kill the substrate mid-typing. No LLM round-trip, just a
+    // touch on idleExpiresAt.
+    this.app.post("/sandboxes/:id/heartbeat", (c) => {
+      const sb = this.sandboxes.get(c.req.param("id"));
+      if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+      if (sb.state === "expired" || sb.state === "disposed") {
+        return c.json({ error: { code: "GONE", state: sb.state } }, 410);
+      }
+      // Refresh even when busy — idle clock is moot during busy, but the
+      // contract is "ping keeps the sandbox alive". `lastActivityAt` is
+      // updated for the dashboard.
+      sb.idleExpiresAt = new Date(Date.now() + sb.idleTtlMs);
+      sb.lastActivityAt = new Date();
+      return c.json({
+        sandboxId: sb.id,
+        state: sb.state,
+        idleExpiresAt: sb.idleExpiresAt,
+        expiresAt: sb.expiresAt,
+      });
+    });
+
+    // ── Snapshot (Wedge 1.13) ─────────────────────────────────────────────
+    //
+    // POST /sandboxes/:id/snapshot — capture the live workdir + metadata to
+    // the chosen state store. Reject during busy (no consistent snapshot
+    // mid-chat). The workdir walks via the SDK's listWorkdir + fetchArtifact;
+    // each file becomes a tar-stream entry; the whole thing is gzipped and
+    // handed to store.save().
+    this.app.post("/sandboxes/:id/snapshot", async (c) => {
+      const id = c.req.param("id");
+      const sb = this.sandboxes.get(id);
+      if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+      if (sb.state === "busy") {
+        return c.json({ error: { code: "BUSY", message: "Cannot snapshot while a chat turn is in flight." } }, 409);
+      }
+      if (sb.state === "expired" || sb.state === "disposed" || sb.state === "restoring") {
+        return c.json({ error: { code: "GONE", state: sb.state } }, 410);
+      }
+      let body: { stateStore?: { kind: string; options?: unknown }; snapshotId?: string };
+      try {
+        body = (await c.req.json().catch(() => ({}))) as never;
+      } catch {
+        body = {};
+      }
+      const storeKind = body.stateStore?.kind ?? this.opts.defaultStateStore ?? Object.keys(this.stateStores)[0];
+      const builder = this.stateStores[storeKind];
+      if (!builder) {
+        return c.json({ error: { code: "UNKNOWN_STATE_STORE", available: Object.keys(this.stateStores) } }, 400);
+      }
+      const store = builder(body.stateStore?.options);
+      try {
+        const result = await this.takeSnapshot(sb, store, body.snapshotId);
+        return c.json(result);
+      } catch (err) {
+        return c.json({ error: { code: "SNAPSHOT_FAILED", message: err instanceof Error ? err.message : String(err) } }, 500);
+      }
+    });
+
+    // GET /sandboxes/snapshots — list snapshots in a backend. Query string
+    // carries kind + options (flat). e.g.
+    //   /sandboxes/snapshots?stateStore=s3&bucket=foo&prefix=tenant-a/
+    this.app.get("/sandboxes/snapshots", async (c) => {
+      const q = c.req.query();
+      const storeKind = q.stateStore ?? this.opts.defaultStateStore ?? Object.keys(this.stateStores)[0];
+      const builder = this.stateStores[storeKind];
+      if (!builder) return c.json({ error: { code: "UNKNOWN_STATE_STORE", available: Object.keys(this.stateStores) } }, 400);
+      const opts = optsFromQuery(q);
+      const store = builder(opts);
+      const filter: SnapshotFilter = {};
+      if (q.sourceSandboxId) (filter as { sourceSandboxId: string }).sourceSandboxId = q.sourceSandboxId;
+      if (q.limit) (filter as { limit: number }).limit = Number(q.limit);
+      try {
+        const snaps = await store.list(filter);
+        return c.json({ snapshots: snaps });
+      } catch (err) {
+        return c.json({ error: { code: "LIST_FAILED", message: err instanceof Error ? err.message : String(err) } }, 500);
+      }
+    });
+
+    // DELETE /sandboxes/snapshots/:id — same query-shape as list.
+    this.app.delete("/sandboxes/snapshots/:id", async (c) => {
+      const q = c.req.query();
+      const storeKind = q.stateStore ?? this.opts.defaultStateStore ?? Object.keys(this.stateStores)[0];
+      const builder = this.stateStores[storeKind];
+      if (!builder) return c.json({ error: { code: "UNKNOWN_STATE_STORE", available: Object.keys(this.stateStores) } }, 400);
+      const store = builder(optsFromQuery(q));
+      try {
+        await store.delete(c.req.param("id"));
+        return c.json({ ok: true });
+      } catch (err) {
+        return c.json({ error: { code: "DELETE_FAILED", message: err instanceof Error ? err.message : String(err) } }, 500);
+      }
+    });
+
+    // ── Restore (Wedge 1.13) ──────────────────────────────────────────────
+    //
+    // POST /sandboxes/restore — two modes via `target`:
+    //   target: "new" (default) → create a fresh sandbox from the snapshot.
+    //   target: "<existingId>"  → dispose target's substrate + swap in a new
+    //                              ComputerAgent built from the snapshot.
+    //                              Same sandboxId is preserved.
+    this.app.post("/sandboxes/restore", async (c) => {
+      let body: {
+        snapshotId: string;
+        stateStore: { kind: string; options?: unknown };
+        target?: string;
+        idleTtlMs?: number;
+        ttlMs?: number;
+        runtime?: string;
+        envs?: Record<string, string>;
+        autoSave?: { stateStore: { kind: string; options?: unknown } };
+      };
+      try { body = (await c.req.json()) as never; }
+      catch (err) {
+        return c.json({ error: { code: "INVALID_JSON", message: (err as Error).message } }, 400);
+      }
+      if (!body.snapshotId || !body.stateStore?.kind) {
+        return c.json({ error: { code: "INVALID_BODY", message: "snapshotId + stateStore.kind required" } }, 400);
+      }
+      const builder = this.stateStores[body.stateStore.kind];
+      if (!builder) return c.json({ error: { code: "UNKNOWN_STATE_STORE", available: Object.keys(this.stateStores) } }, 400);
+      const store = builder(body.stateStore.options);
+
+      const snap = await store.load(body.snapshotId);
+      if (!snap) return c.json({ error: { code: "NOT_FOUND", snapshotId: body.snapshotId } }, 404);
+
+      try {
+        if (!body.target || body.target === "new") {
+          // Fresh slot. Reconstruct a SandboxBody from the snapshot's config
+          // plus caller overrides, then go through the existing create flow.
+          const restored = await this.createRestoredSandbox(snap, body);
+          return c.json({ ...restored, restored: true, fromSnapshotId: snap.snapshotId }, 201);
+        }
+        // Replace-in-place.
+        const target = this.sandboxes.get(body.target);
+        if (!target) return c.json({ error: { code: "NOT_FOUND", target: body.target } }, 404);
+        if (target.state === "busy") {
+          return c.json({ error: { code: "BUSY", message: "Cannot restore while a chat turn is in flight" } }, 409);
+        }
+        if (target.state === "expired" || target.state === "disposed") {
+          return c.json({ error: { code: "GONE", state: target.state } }, 410);
+        }
+        await this.replaceAgentInPlace(target, snap, body);
+        return c.json({
+          sandboxId: target.id,
+          sessionId: target.sessionId,
+          state: target.state,
+          createdAt: target.createdAt,
+          expiresAt: target.expiresAt,
+          idleExpiresAt: target.idleExpiresAt,
+          restored: true,
+          fromSnapshotId: snap.snapshotId,
+        }, 200);
+      } catch (err) {
+        return c.json({ error: { code: "RESTORE_FAILED", message: err instanceof Error ? err.message : String(err) } }, 500);
+      }
+    });
+  }
+
+  /**
+   * Build the pre-dispose hook that snapshots a sandbox to its configured
+   * auto-save store before tear-down. Returns undefined if the sandbox
+   * doesn't have auto-save configured. Errors inside the returned hook
+   * are swallowed by `SandboxRegistry.remove()` — dispose proceeds either way.
+   */
+  private buildAutoSavePreDispose(sb: LiveSandbox): ((sb: LiveSandbox) => Promise<void>) | undefined {
+    if (!sb.autoSave) return undefined;
+    return async (sandbox) => {
+      const builder = this.stateStores[sandbox.autoSave!.stateStoreKind];
+      if (!builder) {
+        // eslint-disable-next-line no-console
+        console.error(`[sandbox] ${sandbox.id} autoSave: unknown store '${sandbox.autoSave!.stateStoreKind}'`);
+        return;
+      }
+      const store = builder(sandbox.autoSave!.stateStoreOptions);
+      // Stable id so a sandbox that gets reaped+restored has a discoverable
+      // trail. Includes timestamp for ordering when a sandbox is auto-saved
+      // multiple times across its lifetime (e.g. shutdown then restart).
+      const snapshotId = `snap_${sandbox.id}_${Date.now()}`;
+      const r = await this.takeSnapshot(sandbox, store, snapshotId);
+      // eslint-disable-next-line no-console
+      console.log(`[sandbox] ${sandbox.id} auto-saved → ${r.snapshotId} (${r.fileCount} files, ${r.sizeBytes}B)`);
+    };
+  }
+
+  /**
+   * Walk the live agent's workdir, build a gzipped tarball of all files,
+   * and persist via the supplied store. Assumes the caller already checked
+   * sandbox is not busy. Throws on any walk / tar / store error.
+   */
+  private async takeSnapshot(
+    sb: LiveSandbox,
+    store: StateStore,
+    snapshotId?: string,
+  ): Promise<{ snapshotId: string; sizeBytes: number; takenAt: Date; fileCount: number }> {
+    const id = snapshotId ?? `snap_${randomUUID().slice(0, 12)}`;
+    // listWorkdir caps depth at 8 server-side (path-jail). For deeper trees
+    // this is the practical limit; document if it bites.
+    const entries = await sb.agent.listWorkdir({ depth: 8 });
+    const files = entries.filter((e) => e.type === "file");
+
+    // tar-stream's pack() writes entries programmatically; we then pipe
+    // through gzip. The whole tarball lives in memory — fine for typical
+    // agent workdirs (<10MB), would need streaming for larger.
+    const pack = tar.pack();
+    let fileCount = 0;
+    // Drive the pack stream from the file list.
+    const writes = (async () => {
+      for (const f of files) {
+        const bytes = await sb.agent.fetchArtifact(f.path);
+        if (!bytes) continue;
+        await new Promise<void>((resolve, reject) => {
+          pack.entry({ name: f.path, size: bytes.byteLength }, Buffer.from(bytes), (err) => {
+            if (err) reject(err); else resolve();
+          });
+        });
+        fileCount += 1;
+      }
+      pack.finalize();
+    })();
+    // Collect the gzipped output.
+    const chunks: Buffer[] = [];
+    const collect = (async () => {
+      for await (const chunk of pack as unknown as AsyncIterable<Buffer>) {
+        chunks.push(chunk);
+      }
+    })();
+    await Promise.all([writes, collect]);
+    const tarBytes = Buffer.concat(chunks);
+    const gzipped = gzipSync(tarBytes);
+
+    // Build the SessionStoreRef from the sandbox's original config — if a
+    // sessionStore was wired, restoring with the same sessionId replays the
+    // engine's conversation memory on first chat.
+    const cfg = sb.config as { sessionStore?: { kind: string; options?: unknown } };
+    const sessionStoreRef: SessionStoreRef | undefined = cfg.sessionStore
+      ? { kind: cfg.sessionStore.kind, options: cfg.sessionStore.options, sessionId: sb.sessionId }
+      : undefined;
+
+    const snap: SandboxSnapshot = {
+      snapshotId: id,
+      sourceSandboxId: sb.id,
+      sourceSessionId: sb.sessionId,
+      takenAt: new Date(),
+      config: sb.config,
+      turnCount: sb.turnCount,
+      usage: sb.usage,
+      ...(sessionStoreRef ? { sessionStoreRef } : {}),
+      workdirTar: gzipped,
+      workdirBytes: gzipped.byteLength,
+      workdirFileCount: fileCount,
+    };
+    const result = await store.save(snap);
+    return { snapshotId: result.snapshotId, sizeBytes: result.sizeBytes, takenAt: snap.takenAt, fileCount };
+  }
+
+  /**
+   * Create a NEW sandbox seeded with the snapshot's workdir + sessionStore
+   * (if any). Used by POST /sandboxes/restore when target === "new" (or
+   * unset). Inserts into the registry and returns the same payload shape
+   * as POST /sandboxes.
+   */
+  private async createRestoredSandbox(
+    snap: SandboxSnapshot,
+    overrides: { idleTtlMs?: number; ttlMs?: number; runtime?: string; envs?: Record<string, string>; autoSave?: SandboxBody["autoSave"] },
+  ): Promise<{ sandboxId: string; sessionId: string; state: SandboxState; createdAt: Date; expiresAt: Date; idleExpiresAt: Date }> {
+    const cfg = snap.config as Partial<SandboxBody>;
+    const sandboxId = `sbx_${randomUUID().slice(0, 12)}`;
+    const sessionId = snap.sessionStoreRef?.sessionId ?? sandboxId;
+    const attachments = await tarToAttachments(snap.workdirTar);
+    const runtime = overrides.runtime ?? cfg.runtime;
+    const runtimeResult = this.resolveRuntime(runtime);
+    if (!runtimeResult.ok) throw new Error(`UNKNOWN_RUNTIME: ${runtime}`);
+
+    const envs = { ...this.opts.defaultEnvs, ...cfg.envs, ...overrides.envs };
+    if (!envs.ANTHROPIC_API_KEY && cfg.harness !== "gitagent") {
+      const fromHost = process.env.ANTHROPIC_API_KEY;
+      if (fromHost) envs.ANTHROPIC_API_KEY = fromHost;
+    }
+
+    const sessionStore = snap.sessionStoreRef
+      ? { kind: snap.sessionStoreRef.kind, options: snap.sessionStoreRef.options }
+      : (cfg.sessionStore as { kind: string; options?: unknown } | undefined);
+
+    const agent = new ComputerAgent({
+      source: cfg.source as never,
+      harness: cfg.harness as never,
+      runtime: runtimeResult.factory(),
+      envs,
+      sessionId,
+      ...(cfg.options ? { options: cfg.options } : {}),
+      ...(cfg.model ? { model: cfg.model } : {}),
+      ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+      ...(cfg.baseUrl ? { baseUrl: cfg.baseUrl } : {}),
+      ...(cfg.debug ? { debug: true } : {}),
+      ...(sessionStore ? { sessionStore: sessionStore as never } : {}),
+      attachments,
+    });
+
+    const now = new Date();
+    const sandboxCfg = this.opts.sandbox ?? {};
+    const ttl = resolveSandboxTtl(overrides.idleTtlMs ?? (cfg.idleTtlMs as number | undefined), overrides.ttlMs ?? (cfg.ttlMs as number | undefined), sandboxCfg);
+
+    const autoSave = overrides.autoSave ?? cfg.autoSave;
+    const sandbox: LiveSandbox = {
+      id: sandboxId,
+      sessionId,
+      agent,
+      state: "booting",
+      createdAt: now,
+      lastActivityAt: now,
+      expiresAt: new Date(now.getTime() + ttl.ttlMs),
+      idleExpiresAt: new Date(now.getTime() + ttl.idleTtlMs),
+      turnCount: 0,
+      usage: {},
+      currentTurn: null,
+      config: snap.config,
+      idleTtlMs: ttl.idleTtlMs,
+      ttlMs: ttl.ttlMs,
+      firstChatSeen: false,
+      bootDeadlineAt: new Date(now.getTime() + (sandboxCfg.bootDeadlineMs ?? 60_000)),
+      ...(autoSave ? { autoSave: { stateStoreKind: autoSave.stateStore.kind, stateStoreOptions: autoSave.stateStore.options } } : {}),
+    };
+    this.sandboxes.insert(sandbox);
+    return {
+      sandboxId,
+      sessionId,
+      state: sandbox.state,
+      createdAt: sandbox.createdAt,
+      expiresAt: sandbox.expiresAt,
+      idleExpiresAt: sandbox.idleExpiresAt,
+    };
+  }
+
+  /**
+   * Replace the agent inside an existing sandbox slot with a fresh agent
+   * built from `snap`. Used by POST /sandboxes/restore when target points
+   * at an existing sandboxId. The substrate is disposed + rebooted; the
+   * sandboxId stays stable. Caller has already verified state is not
+   * busy/expired/disposed.
+   */
+  private async replaceAgentInPlace(
+    sb: LiveSandbox,
+    snap: SandboxSnapshot,
+    overrides: { idleTtlMs?: number; ttlMs?: number; runtime?: string; envs?: Record<string, string> },
+  ): Promise<void> {
+    const oldState = sb.state;
+    sb.state = "restoring";
+    try {
+      const cfg = snap.config as Partial<SandboxBody>;
+      const sessionId = snap.sessionStoreRef?.sessionId ?? sb.sessionId;
+      const attachments = await tarToAttachments(snap.workdirTar);
+      const runtime = overrides.runtime ?? cfg.runtime;
+      const runtimeResult = this.resolveRuntime(runtime);
+      if (!runtimeResult.ok) throw new Error(`UNKNOWN_RUNTIME: ${runtime}`);
+
+      const envs = { ...this.opts.defaultEnvs, ...cfg.envs, ...overrides.envs };
+      if (!envs.ANTHROPIC_API_KEY && cfg.harness !== "gitagent") {
+        const fromHost = process.env.ANTHROPIC_API_KEY;
+        if (fromHost) envs.ANTHROPIC_API_KEY = fromHost;
+      }
+
+      const sessionStore = snap.sessionStoreRef
+        ? { kind: snap.sessionStoreRef.kind, options: snap.sessionStoreRef.options }
+        : (cfg.sessionStore as { kind: string; options?: unknown } | undefined);
+
+      // Build new agent BEFORE disposing old one so a build error doesn't
+      // leave us with a torn-down substrate + no replacement.
+      const newAgent = new ComputerAgent({
+        source: cfg.source as never,
+        harness: cfg.harness as never,
+        runtime: runtimeResult.factory(),
+        envs,
+        sessionId,
+        ...(cfg.options ? { options: cfg.options } : {}),
+        ...(cfg.model ? { model: cfg.model } : {}),
+        ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+        ...(cfg.baseUrl ? { baseUrl: cfg.baseUrl } : {}),
+        ...(cfg.debug ? { debug: true } : {}),
+        ...(sessionStore ? { sessionStore: sessionStore as never } : {}),
+        attachments,
+      });
+      // Old substrate goes down.
+      await sb.agent.dispose().catch(() => {});
+      sb.agent = newAgent;
+      sb.sessionId = sessionId;
+      sb.turnCount = 0;
+      sb.usage = {};
+      sb.firstChatSeen = false;
+      sb.lastActivityAt = new Date();
+      // Refresh idle clock so the freshly-restored sandbox doesn't get
+      // reaped immediately if the user left it idle pre-restore.
+      const idle = overrides.idleTtlMs ?? sb.idleTtlMs;
+      sb.idleExpiresAt = new Date(Date.now() + idle);
+      sb.state = "ready";
+    } catch (err) {
+      sb.state = oldState === "restoring" ? "ready" : oldState;
+      throw err;
+    }
   }
 
   /**
@@ -1360,6 +1882,60 @@ function mergeUsage(
 }
 
 /**
+ * Untar + ungzip a snapshot's `workdirTar` into the `attachments[]` shape
+ * the harness server understands. The harness writes each entry into the
+ * workdir via the existing path-jailed `writeBytes()` path, so we don't
+ * need any new server-side write code.
+ */
+async function tarToAttachments(
+  gzipped: Buffer,
+): Promise<Array<{ path: string; content: string; encoding: "base64" }>> {
+  const tarBytes = gunzipSync(gzipped);
+  const extract = tar.extract();
+  const out: Array<{ path: string; content: string; encoding: "base64" }> = [];
+  const done = new Promise<void>((resolve, reject) => {
+    extract.on("entry", (header, stream, next) => {
+      const chunks: Buffer[] = [];
+      stream.on("data", (c: Buffer) => chunks.push(c));
+      stream.on("end", () => {
+        if (header.type === "file") {
+          out.push({
+            path: header.name,
+            content: Buffer.concat(chunks).toString("base64"),
+            encoding: "base64",
+          });
+        }
+        next();
+      });
+      stream.on("error", reject);
+      stream.resume();
+    });
+    extract.on("finish", () => resolve());
+    extract.on("error", reject);
+  });
+  Readable.from(tarBytes).pipe(extract);
+  await done;
+  return out;
+}
+
+/**
+ * Flatten the Hono query-string object back into a plain options bag for
+ * a state-store builder. Used by GET /sandboxes/snapshots etc. — clients
+ * pass bucket/prefix/region as flat query params; the builder expects
+ * them merged into S3StateStoreOptions. Drops the reserved `stateStore`
+ * + filter keys.
+ */
+function optsFromQuery(q: Record<string, string>): Record<string, unknown> {
+  const reserved = new Set(["stateStore", "sourceSandboxId", "limit", "since"]);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(q)) {
+    if (reserved.has(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
  * Validator for POST /sandboxes — same as run-body minus the message check
  * (sandboxes are message-less until /chat). idleTtlMs/ttlMs validity is
  * checked separately by `resolveSandboxTtl`.
@@ -1448,6 +2024,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const defaultTaskStore = process.env.DEFAULT_TASK_STORE
     ?? (taskStores.mongo ? "mongo" : "memory");
 
+  // State store registry — `s3` registers when S3_BUCKET is set; AWS creds
+  // resolved via the SDK's default chain (env, instance role, etc.).
+  const stateStores: Record<string, StateStoreBuilder> = {};
+  if (process.env.S3_BUCKET) {
+    stateStores.s3 = s3StateStoreBuilder({
+      bucket: process.env.S3_BUCKET,
+      ...(process.env.AWS_REGION ? { region: process.env.AWS_REGION } : {}),
+      ...(process.env.S3_PREFIX ? { prefix: process.env.S3_PREFIX } : {}),
+      ...(process.env.S3_ENDPOINT ? { endpoint: process.env.S3_ENDPOINT } : {}),
+    });
+  }
+  const defaultStateStore = process.env.DEFAULT_STATE_STORE
+    ?? (stateStores.s3 ? "s3" : "memory");
+
   // Sandbox pool config — every knob is env-overridable so the deployment
   // can dial idle vs hard caps to match its substrate economics (bwrap is
   // cheap, e2b is per-minute). Defaults are conservative: 10m idle, 30m hard.
@@ -1476,6 +2066,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     defaultRuntime: process.env.DEFAULT_RUNTIME ?? "local",
     ...(Object.keys(taskStores).length > 0 ? { taskStores } : {}),
     defaultTaskStore,
+    ...(Object.keys(stateStores).length > 0 ? { stateStores } : {}),
+    defaultStateStore,
     sandbox: sandboxCfg,
   });
   const { host, port } = await server.listen();
@@ -1494,12 +2086,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log("  DEL  /tasks/:id                 cancel");
   console.log(`  defaultTaskStore: ${defaultTaskStore}  (registered: ${["memory", ...Object.keys(taskStores)].join(", ")})`);
   console.log("");
-  console.log("  POST /sandboxes                 body: {source, harness, runtime?, envs?, options?, model?, idleTtlMs?, ttlMs?}; returns 201 {sandboxId}");
+  console.log("  POST /sandboxes                 body: {source, harness, runtime?, envs?, options?, model?, idleTtlMs?, ttlMs?, autoSave?}; returns 201 {sandboxId}");
   console.log("  POST /sandboxes/:id/chat        body: {message, attachments?}; SSE stream; 409 if busy");
+  console.log("  POST /sandboxes/:id/heartbeat   refresh idle TTL without a chat; ~5ms");
+  console.log("  POST /sandboxes/:id/snapshot    body: {stateStore: {kind, options?}, snapshotId?}; returns {snapshotId, sizeBytes, takenAt}");
+  console.log("  POST /sandboxes/restore         body: {snapshotId, stateStore, target?: 'new'|'<id>'}; 201 new or 200 in-place");
   console.log("  GET  /sandboxes                 list active sandboxes");
   console.log("  GET  /sandboxes/:id             status snapshot");
-  console.log("  DEL  /sandboxes/:id             dispose explicitly");
+  console.log("  DEL  /sandboxes/:id             dispose explicitly (runs autoSave if configured)");
+  console.log("  GET  /sandboxes/snapshots       ?stateStore=&bucket=&prefix=... — list snapshots");
+  console.log("  DEL  /sandboxes/snapshots/:id   same query shape — delete a snapshot");
   console.log(`  sandbox TTLs: idle=${Math.round(sandboxCfg.defaultIdleTtlMs/1000)}s default / ${Math.round(sandboxCfg.maxIdleTtlMs/1000)}s max, hard=${Math.round(sandboxCfg.defaultTtlMs/1000)}s default / ${Math.round(sandboxCfg.maxTtlMs/1000)}s max, max ${sandboxCfg.maxConcurrent} concurrent`);
+  console.log(`  defaultStateStore: ${defaultStateStore}  (registered: ${["memory", ...Object.keys(stateStores)].join(", ")})`);
   console.log("");
   console.log("Example:");
   console.log("  curl -N -X POST http://" + host + ":" + port + "/run \\");

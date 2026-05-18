@@ -27,7 +27,12 @@
     "@computeragent/sdk": "workspace:*",
     "@computeragent/session-store-mongo": "workspace:*",
     "@computeragent/task-store-mongo": "workspace:*",
+    "@computeragent/state-store-s3": "workspace:*",
     "hono": "^4.6.0",
-    "@hono/node-server": "^1.13.0"
+    "@hono/node-server": "^1.13.0",
+    "tar-stream": "^3.1.7"
+  },
+  "devDependencies": {
+    "@types/tar-stream": "^3.1.3"
   }
 }

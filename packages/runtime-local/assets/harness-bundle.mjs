@@ -173449,6 +173449,12 @@ var TaskStoreConfig = exports_external.object({
   kind: exports_external.string().min(1),
   options: exports_external.unknown().optional()
 });
+// ../protocol/dist/state-store.js
+init_zod();
+var StateStoreConfig = exports_external.object({
+  kind: exports_external.string().min(1),
+  options: exports_external.unknown().optional()
+});
 // ../protocol/dist/logger.js
 var LEVEL_ORDER = {
   debug: 10,

@@ -354,6 +354,121 @@ def t_health_unaffected(base, r):
         s, h = jget(f"{base}/health")
         r.add("/health 200 with sandbox active", s == 200 and h.get("ok"), str(h))
 
+# ── Wedge 1.13: heartbeat + snapshot/restore + autoSave ───────────────────
+
+def t_heartbeat_refreshes_idle(base, r):
+    """A heartbeat past the original idle deadline keeps the sandbox alive."""
+    with sandbox(base, idleTtlMs=10000, ttlMs=180000) as (sid, doc):
+        # First chat flips firstChatSeen — necessary for the idle TTL to be
+        # the relevant timer (otherwise the boot deadline kicks in first).
+        sse_chat(base, sid, "Reply with: OK")
+        # Wait 6s, hit heartbeat — original idle was 10s out from chat-end.
+        time.sleep(6)
+        s, hb = jpost(f"{base}/sandboxes/{sid}/heartbeat", {})
+        r.add("heartbeat returns 200 + new idleExpiresAt",
+              s == 200 and hb.get("idleExpiresAt"),
+              str(hb))
+        # Now wait another 9s — without the heartbeat the sandbox would be
+        # dead by now (6 + 9 = 15s, idle was 10s). With heartbeat at t=6 it
+        # was refreshed to t+10=16s, so at t=15 it should still be alive.
+        time.sleep(9)
+        s2, snap = jget(f"{base}/sandboxes/{sid}")
+        r.add("sandbox still alive 15s after creation thanks to heartbeat",
+              s2 == 200, f"got {s2}")
+        # Stop pinging. After idle (~10s) + reaper tick, it should die.
+        time.sleep(14)
+        s3, _ = jget(f"{base}/sandboxes/{sid}")
+        r.add("sandbox reaped after heartbeat stops",
+              s3 == 404, f"got {s3}")
+
+def t_heartbeat_unknown(base, r):
+    s, doc = jpost(f"{base}/sandboxes/sbx_does_not_exist/heartbeat", {})
+    r.add("heartbeat → 404 on unknown sandbox", s == 404, str(doc))
+
+def t_snapshot_round_trip_memory(base, r):
+    """Write a file in turn 1, snapshot, restore into a new sandbox, recall."""
+    with sandbox(base) as (sid, _):
+        # Turn 1: ask the agent to write a file with known content.
+        sse_chat(base, sid, "Write a file called test-marker.txt with the exact content 'NIMBUS-9'. Acknowledge with: OK.")
+        # Snapshot using the memory state store (always registered).
+        sn = jpost(f"{base}/sandboxes/{sid}/snapshot", {"stateStore": {"kind": "memory"}})
+        r.add("snapshot returns 200 + snapshotId",
+              sn[0] == 200 and sn[1].get("snapshotId", "").startswith("snap_"),
+              str(sn[1]))
+        snapshot_id = sn[1].get("snapshotId", "")
+        size = sn[1].get("sizeBytes", 0)
+        files = sn[1].get("fileCount", 0)
+        r.add("snapshot reports byte count + file count",
+              size > 0 and files > 0,
+              f"size={size}B files={files}")
+
+        # Restore into a NEW sandbox.
+        rr = jpost(f"{base}/sandboxes/restore", {
+            "snapshotId": snapshot_id,
+            "stateStore": {"kind": "memory"},
+            "target": "new",
+        })
+        r.add("restore returns 201 + new sandboxId",
+              rr[0] == 201 and rr[1].get("sandboxId", "").startswith("sbx_") and rr[1].get("restored"),
+              str(rr[1]))
+        new_sid = rr[1].get("sandboxId", "")
+        try:
+            # Verify the file came back. Ask the agent to cat it.
+            _, _, txt, _ = sse_chat(base, new_sid, "Read the file test-marker.txt and reply with only its content, no other text.")
+            r.add("restored workdir contains the file with content",
+                  "NIMBUS-9" in (txt or ""),
+                  f"got {txt!r}")
+        finally:
+            jdelete(f"{base}/sandboxes/{new_sid}")
+
+def t_snapshot_409_when_busy(base, r):
+    """Snapshot during an in-flight chat must reject with 409."""
+    with sandbox(base) as (sid, _):
+        out = {}
+        def first():
+            out["res"] = sse_chat(base, sid, "Count from 1 to 25 with reasoning between each.")
+        th = threading.Thread(target=first); th.start()
+        time.sleep(1.5)
+        s, doc = jpost(f"{base}/sandboxes/{sid}/snapshot", {"stateStore": {"kind": "memory"}})
+        r.add("snapshot → 409 BUSY while chat is in flight",
+              s == 409 and doc.get("error", {}).get("code") == "BUSY",
+              str(doc))
+        th.join(timeout=120)
+
+def t_autosave_on_dispose(base, r):
+    """Sandbox with autoSave configured snapshots automatically on DELETE."""
+    # 1. Create with autoSave to memory store.
+    body = {
+        **DEFAULT_BODY,
+        "idleTtlMs": 60000,
+        "ttlMs": 180000,
+        "autoSave": {"stateStore": {"kind": "memory"}},
+    }
+    s, doc = jpost(f"{base}/sandboxes", body)
+    if s != 201:
+        r.add("autosave create", False, f"got {s}: {doc}")
+        return
+    sid = doc["sandboxId"]
+    try:
+        # 2. Chat once to put SOMETHING in the workdir.
+        sse_chat(base, sid, "Write a file named auto.txt with content 'AUTOSAVED'. Reply OK.")
+        # 3. DELETE → triggers autoSave preDispose.
+        d_s, d_doc = jdelete(f"{base}/sandboxes/{sid}")
+        r.add("DELETE returns autoSaved:true",
+              d_s == 200 and d_doc.get("autoSaved") is True,
+              str(d_doc))
+        # 4. List memory-store snapshots; expect to see one whose
+        # sourceSandboxId === sid.
+        time.sleep(0.5)
+        l_s, l_doc = jget(f"{base}/sandboxes/snapshots?stateStore=memory")
+        matches = [x for x in l_doc.get("snapshots", []) if x.get("sourceSandboxId") == sid]
+        r.add("autoSave produced a discoverable snapshot",
+              len(matches) >= 1,
+              f"matches={len(matches)} all={[x.get('snapshotId') for x in l_doc.get('snapshots', [])]}")
+    finally:
+        # Cleanup is best-effort — DELETE on a missing sandbox is fine.
+        jdelete(f"{base}/sandboxes/{sid}")
+
 # ── Runner ─────────────────────────────────────────────────────────────────
 
 TESTS = [
@@ -374,6 +489,12 @@ TESTS = [
     ("hard_ttl_overrides_activity",   t_hard_ttl_overrides_activity),
     ("boot_deadline",                 t_boot_deadline),
     ("max_concurrent_429",            t_max_concurrent_429),
+    # Wedge 1.13
+    ("heartbeat_unknown",             t_heartbeat_unknown),
+    ("heartbeat_refreshes_idle",      t_heartbeat_refreshes_idle),
+    ("snapshot_round_trip_memory",    t_snapshot_round_trip_memory),
+    ("snapshot_409_when_busy",        t_snapshot_409_when_busy),
+    ("autosave_on_dispose",           t_autosave_on_dispose),
 ]
 
 def main():

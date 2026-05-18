@@ -17,6 +17,15 @@ export type {
   TaskArtifactRef,
   PersistedEvent,
 } from "./task-store.js";
+export { StateStoreConfig } from "./state-store.js";
+export type {
+  StateStore,
+  SandboxSnapshot,
+  SnapshotSummary,
+  SnapshotFilter,
+  SandboxUsage,
+  SessionStoreRef,
+} from "./state-store.js";
 export type { Logger, LogLevel, CreateLoggerOptions } from "./logger.js";
 export { createLogger, nopLogger } from "./logger.js";
 export type {
