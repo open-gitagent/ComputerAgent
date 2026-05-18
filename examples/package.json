@@ -19,12 +19,15 @@
     "@computeragent/engine-gitagent": "workspace:*",
     "@computeragent/harness-server": "workspace:*",
     "@computeragent/identity-gitagentprotocol": "workspace:*",
+    "@computeragent/protocol": "workspace:*",
     "@computeragent/runtime-bwrap": "workspace:*",
     "@computeragent/runtime-e2b": "workspace:*",
     "@computeragent/runtime-local": "workspace:*",
     "@computeragent/runtime-vzvm": "workspace:*",
     "@computeragent/sdk": "workspace:*",
     "@computeragent/session-store-mongo": "workspace:*",
-    "@computeragent/task-store-mongo": "workspace:*"
+    "@computeragent/task-store-mongo": "workspace:*",
+    "hono": "^4.6.0",
+    "@hono/node-server": "^1.13.0"
   }
 }

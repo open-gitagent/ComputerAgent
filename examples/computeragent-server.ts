@@ -764,9 +764,13 @@ export class ComputerAgentServer {
         ...(usage ? { usage } : {}),
       });
     } catch (err) {
-      await taskStore.updateStatus(taskId, "errored", {
+      // If a cancel was requested, agent.dispose() typically surfaces as a
+      // SIGTERM error here. Treat that as a clean "cancelled" outcome rather
+      // than an unexpected error — the user asked for it.
+      const status: TaskStatus = cancelRequested ? "cancelled" : "errored";
+      await taskStore.updateStatus(taskId, status, {
         endedAt: new Date(),
-        error: err instanceof Error ? err.message : String(err),
+        ...(cancelRequested ? {} : { error: err instanceof Error ? err.message : String(err) }),
       });
     } finally {
       this.liveTasks.delete(taskId);
