@@ -513,6 +513,91 @@ def t_snapshot_round_trip_memory(base, r):
     finally:
         jdelete(f"{base}/sandboxes/{sid}")
 
+def t_restore_in_place(base, r):
+    """Restore a snapshot into an EXISTING sandbox slot (target=<id>).
+
+    Proves the replace-in-place path: the substrate is torn down and a
+    fresh ComputerAgent is built atop the same sandboxId. State flips
+    through "restoring" (a separate state the reaper + /chat both treat
+    as a transient guard). After the swap, the original sandboxId still
+    works for /chat — but turnCount/usage reset, and the workdir matches
+    the snapshot.
+    """
+    # Sandbox A: write a unique marker, snapshot it.
+    body_a = {
+        **DEFAULT_BODY,
+        "attachments": [{"path": "marker-a.txt", "content": "PHOENIX", "encoding": "utf8"}],
+    }
+    s, doc = jpost(f"{base}/sandboxes", body_a)
+    if s != 201: r.add("create A", False, str(doc)); return
+    sid_a = doc["sandboxId"]
+    # Sandbox B: a DIFFERENT seed. We'll replace B's substrate with A's snapshot.
+    body_b = {
+        **DEFAULT_BODY,
+        "attachments": [{"path": "marker-b.txt", "content": "GRYPHON", "encoding": "utf8"}],
+    }
+    s, doc = jpost(f"{base}/sandboxes", body_b)
+    if s != 201: r.add("create B", False, str(doc)); return
+    sid_b = doc["sandboxId"]
+    snap_id = None
+    harness = DEFAULT_BODY["harness"]
+    agent_sees_os_workdir = harness in ("claude-agent-sdk", "gitagent")
+    try:
+        # Boot both substrates by chatting once each.
+        sse_chat(base, sid_a, "Reply with: OK")
+        sse_chat(base, sid_b, "Reply with: OK")
+
+        # Take A's snapshot.
+        sn = jpost(f"{base}/sandboxes/{sid_a}/snapshot", {"stateStore": {"kind": "memory"}})
+        r.add("snapshot A succeeds", sn[0] == 200, str(sn[1]))
+        snap_id = sn[1].get("snapshotId", "")
+
+        # Pre-restore: B's turnCount + usage are non-trivial (booted + 1 chat).
+        _, b_pre = jget(f"{base}/sandboxes/{sid_b}")
+        pre_turns = b_pre.get("turnCount", 0)
+
+        # Restore A's snapshot INTO B's slot. Same sandboxId returned.
+        rr = jpost(f"{base}/sandboxes/restore", {
+            "snapshotId": snap_id,
+            "stateStore": {"kind": "memory"},
+            "target": sid_b,
+        })
+        r.add("in-place restore returns 200 (not 201 — slot reused)",
+              rr[0] == 200 and rr[1].get("sandboxId") == sid_b,
+              str(rr[1]))
+        r.add("restored flag + fromSnapshotId echo back",
+              rr[1].get("restored") is True and rr[1].get("fromSnapshotId") == snap_id,
+              str(rr[1]))
+
+        # B now has A's workdir. Verify via Read tool (where applicable).
+        if agent_sees_os_workdir:
+            _, _, txt, _ = sse_chat(base, sid_b, "Use the Read tool to read marker-a.txt and reply with only its content.")
+            r.add("after in-place restore, B serves A's workdir (marker-a readable)",
+                  "PHOENIX" in (txt or ""),
+                  f"got {txt!r}")
+            # Marker B should NOT be there — it was overwritten by the restore.
+            _, _, txt2, _ = sse_chat(base, sid_b, "Use the Read tool to read marker-b.txt. If it does not exist, reply exactly: GONE.")
+            r.add("B's original marker NOT present after restore (was overwritten)",
+                  ("GONE" in (txt2 or "")) or ("not found" in (txt2 or "").lower()) or ("does not exist" in (txt2 or "").lower()),
+                  f"got {txt2!r}")
+        else:
+            r.skip("after in-place restore, B serves A's workdir (Read tool)",
+                   f"{harness}: tools see virtual FS, not the OS workdir")
+
+        # Post-restore: turnCount reset (the agent is brand new in this slot).
+        _, b_post = jget(f"{base}/sandboxes/{sid_b}")
+        # We chatted once after restore (if Read-tool path); otherwise 0.
+        expected_max = 2 if agent_sees_os_workdir else 0
+        r.add("turnCount reset on in-place restore",
+              0 <= b_post.get("turnCount", -1) <= expected_max,
+              f"turnCount={b_post.get('turnCount')} (pre={pre_turns}, expected ≤{expected_max})")
+        r.add("sandboxId preserved through in-place restore",
+              b_post.get("sandboxId") == sid_b and b_post.get("state") in ("ready", "busy"),
+              f"sandboxId={b_post.get('sandboxId')} state={b_post.get('state')}")
+    finally:
+        jdelete(f"{base}/sandboxes/{sid_a}")
+        jdelete(f"{base}/sandboxes/{sid_b}")
+
 def t_snapshot_409_when_busy(base, r):
     """Snapshot during an in-flight chat must reject with 409."""
     with sandbox(base) as (sid, _):
@@ -587,6 +672,7 @@ TESTS = [
     ("snapshot_round_trip_memory",    t_snapshot_round_trip_memory),
     ("snapshot_409_when_busy",        t_snapshot_409_when_busy),
     ("autosave_on_dispose",           t_autosave_on_dispose),
+    ("restore_in_place",              t_restore_in_place),
 ]
 
 def main():
