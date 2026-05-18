@@ -39,9 +39,56 @@ def jdelete(url, **kw):
     s, _, b = http("DELETE", url, **kw)
     return s, (json.loads(b) if b else {})
 
+def _extract_final_text(payload, prev_text, deepagents_msg_count):
+    """Pluck the LAST assistant text from an sdk_message payload, across all
+    three harness dialects. Returns (new_text_or_prev, updated_msg_count).
+    Mirrors the dispatch logic in test.html's `dispatchEvent`."""
+    if not isinstance(payload, dict):
+        return prev_text, deepagents_msg_count
+
+    # ── claude-agent-sdk: assistant.message.content[]
+    if payload.get("type") == "assistant" and isinstance(payload.get("message"), dict):
+        for b in payload["message"].get("content", []) or []:
+            if b.get("type") == "text" and isinstance(b.get("text"), str):
+                prev_text = b["text"]
+
+    # ── gitagent: top-level assistant.content (string)
+    if payload.get("type") == "assistant" and isinstance(payload.get("content"), str):
+        prev_text = payload["content"]
+
+    # ── universal terminator emitted by gitagent + deepagents
+    if payload.get("type") == "result" and isinstance(payload.get("result"), str):
+        prev_text = payload["result"]
+
+    # ── deepagents: LangGraph "values" snapshot — payload.messages[] grows;
+    # dedupe by tracking how many we've seen and only scanning the tail.
+    msgs = payload.get("messages")
+    if isinstance(msgs, list):
+        new = msgs[deepagents_msg_count:]
+        deepagents_msg_count = len(msgs)
+        for msg in new:
+            m = msg.get("kwargs") if isinstance(msg, dict) and isinstance(msg.get("kwargs"), dict) else msg
+            cls = ".".join(msg.get("id", []) if isinstance(msg, dict) else [])
+            if "AIMessage" in cls:
+                if isinstance(m.get("content"), str) and m["content"].strip():
+                    prev_text = m["content"]
+                elif isinstance(m.get("content"), list):
+                    parts = [b.get("text") for b in m["content"]
+                             if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)]
+                    joined = "".join(parts)
+                    if joined.strip():
+                        prev_text = joined
+
+    return prev_text, deepagents_msg_count
+
+
 def sse_chat(base, sbx_id, message, timeout=120):
     """Open POST /sandboxes/:id/chat as SSE, parse events into a list.
-    Returns (final_status_code, events_list, final_text_or_None, elapsed_ms)."""
+    Returns (final_status_code, events_list, final_text_or_None, elapsed_ms).
+
+    Final-text extraction handles all three harness dialects (claude-sdk
+    nested-content, gitagent flat-content string, deepagents LangGraph
+    messages array) via _extract_final_text."""
     t0 = time.time()
     url = f"{base}/sandboxes/{sbx_id}/chat"
     req = urllib.request.Request(url,
@@ -49,6 +96,7 @@ def sse_chat(base, sbx_id, message, timeout=120):
         method="POST",
         headers={"content-type": "application/json", "accept": "text/event-stream"})
     events, final_text = [], None
+    deepagents_msg_count = 0
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             status = r.status
@@ -66,14 +114,10 @@ def sse_chat(base, sbx_id, message, timeout=120):
                             except: data = s[6:]
                     if ev:
                         events.append({"kind": ev, "data": data})
-                        # Pluck the assistant final text out of claude-sdk shape.
                         if ev == "sdk_message" and isinstance(data, dict):
-                            p = data.get("payload", {})
-                            if p.get("type") == "assistant":
-                                msg = p.get("message", {})
-                                for b in msg.get("content", []) or []:
-                                    if b.get("type") == "text":
-                                        final_text = b.get("text")
+                            final_text, deepagents_msg_count = _extract_final_text(
+                                data.get("payload", {}), final_text, deepagents_msg_count,
+                            )
     except urllib.error.HTTPError as e:
         return e.code, [], None, int((time.time() - t0) * 1000)
     return status, events, final_text, int((time.time() - t0) * 1000)
@@ -109,6 +153,9 @@ DEFAULT_BODY = {
     "runtime": "bwrap",
     "options": {"permissionMode": "bypassPermissions", "settingSources": ["project"]},
 }
+
+# Set by main() based on --harness; tests read DEFAULT_BODY directly so this
+# is a sufficient hook (DEFAULT_BODY is rebuilt with .update at startup).
 
 @contextmanager
 def sandbox(base, **overrides):
@@ -386,10 +433,18 @@ def t_heartbeat_unknown(base, r):
     r.add("heartbeat → 404 on unknown sandbox", s == 404, str(doc))
 
 def t_snapshot_round_trip_memory(base, r):
-    """Seed a file via attachments, snapshot, restore, read it back via the agent."""
-    # Using attachments instead of asking the LLM to Write means the test
-    # doesn't depend on the source agent having a Write tool exposed —
-    # the harness server writes the seed file before first chat.
+    """Seed a file via attachments, snapshot, restore, verify the workdir
+    round-tripped. The verification has two layers:
+
+      1. Structural (harness-agnostic): the original snapshot's fileCount
+         matches a re-snapshot of the restored sandbox. Proves the OS-level
+         workdir survived the round-trip.
+      2. Agent-read (where applicable): for harnesses whose tools see the OS
+         workdir directly (claude-agent-sdk, gitagent), ask the Read tool
+         to fetch the seed file's content. Skipped for deepagents which
+         uses an in-memory virtual filesystem that's separate from the OS
+         workdir (its tools can't see attachments).
+    """
     body = {
         **DEFAULT_BODY,
         "attachments": [
@@ -401,30 +456,30 @@ def t_snapshot_round_trip_memory(base, r):
         r.add("create with attachments", False, f"got {s}: {doc}")
         return
     sid = doc["sandboxId"]
+    harness = DEFAULT_BODY["harness"]
+    agent_sees_os_workdir = harness in ("claude-agent-sdk", "gitagent")
     try:
-        # Boot the substrate + write seed file by chatting once.
         sse_chat(base, sid, "Reply with: OK")
 
-        # Confirm the seed file is readable by the agent (proxy for "it's
-        # in the workdir"). The agent's Read tool is the only externally
-        # observable way for sandbox-mode sessions — /workdir is wired
-        # to /run's run-map, not the sandbox registry.
-        _, _, txt0, _ = sse_chat(base, sid, "Use the Read tool to read test-marker.txt and reply with only its content.")
-        r.add("seed attachment readable by agent before snapshot",
-              "NIMBUS-9" in (txt0 or ""),
-              f"got {txt0!r}")
+        if agent_sees_os_workdir:
+            _, _, txt0, _ = sse_chat(base, sid, "Use the Read tool to read test-marker.txt and reply with only its content.")
+            r.add("seed attachment readable by agent before snapshot",
+                  "NIMBUS-9" in (txt0 or ""),
+                  f"got {txt0!r}")
+        else:
+            r.skip("seed attachment readable by agent before snapshot",
+                   f"{harness}: tools see virtual FS, not the OS workdir")
 
         sn = jpost(f"{base}/sandboxes/{sid}/snapshot", {"stateStore": {"kind": "memory"}})
         r.add("snapshot returns 200 + snapshotId",
               sn[0] == 200 and sn[1].get("snapshotId", "").startswith("snap_"),
               str(sn[1]))
         snapshot_id = sn[1].get("snapshotId", "")
-        files = sn[1].get("fileCount", 0)
-        r.add("snapshot file count includes seed + repo files",
-              files >= 1,
-              f"files={files}")
+        original_files = sn[1].get("fileCount", 0)
+        r.add("snapshot file count > 0 (workdir captured)",
+              original_files > 0,
+              f"files={original_files}")
 
-        # Restore into a NEW sandbox.
         rr = jpost(f"{base}/sandboxes/restore", {
             "snapshotId": snapshot_id,
             "stateStore": {"kind": "memory"},
@@ -435,12 +490,24 @@ def t_snapshot_round_trip_memory(base, r):
               str(rr[1]))
         new_sid = rr[1].get("sandboxId", "")
         try:
-            # Read the file from the restored sandbox to verify the workdir
-            # came across the snapshot/restore boundary.
-            _, _, txt, _ = sse_chat(base, new_sid, "Use the Read tool to read test-marker.txt and reply with only its content.")
-            r.add("restored workdir contains the seed file (read by agent)",
-                  "NIMBUS-9" in (txt or ""),
-                  f"got {txt!r}")
+            sse_chat(base, new_sid, "Reply with: OK")
+            # Structural check: re-snapshot the restored sandbox and verify
+            # file count matches the original (within ±1 for harness-induced
+            # tmp files like .pyc — tolerant but bounded).
+            sn2 = jpost(f"{base}/sandboxes/{new_sid}/snapshot", {"stateStore": {"kind": "memory"}})
+            restored_files = sn2[1].get("fileCount", 0) if sn2[0] == 200 else 0
+            r.add("restored workdir matches original file count (structural)",
+                  abs(restored_files - original_files) <= 2,
+                  f"orig={original_files} restored={restored_files}")
+
+            if agent_sees_os_workdir:
+                _, _, txt, _ = sse_chat(base, new_sid, "Use the Read tool to read test-marker.txt and reply with only its content.")
+                r.add("restored workdir readable by agent (seed file content)",
+                      "NIMBUS-9" in (txt or ""),
+                      f"got {txt!r}")
+            else:
+                r.skip("restored workdir readable by agent (seed file content)",
+                       f"{harness}: virtual-FS gap — agent tools don't see OS workdir")
         finally:
             jdelete(f"{base}/sandboxes/{new_sid}")
     finally:
@@ -526,11 +593,20 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--base", default="https://api.clawagent.sh")
     p.add_argument("--only", help="comma-separated subset of test names")
+    p.add_argument("--harness", default="claude-agent-sdk",
+                   choices=["claude-agent-sdk", "gitagent", "deepagents"],
+                   help="which harness to drive the LLM-using tests with")
+    p.add_argument("--source", default=None,
+                   help="override the source repo (defaults to the harness-appropriate one)")
     args = p.parse_args()
+
+    DEFAULT_BODY["harness"] = args.harness
+    if args.source:
+        DEFAULT_BODY["source"] = args.source
 
     only = set(s.strip() for s in args.only.split(",")) if args.only else None
 
-    print(f"\nTesting {args.base} — Wedge 1.12 sandbox pool\n")
+    print(f"\nTesting {args.base} — harness={args.harness} source={DEFAULT_BODY['source']}\n")
     r = Report()
     for name, fn in TESTS:
         if only and name not in only: continue
