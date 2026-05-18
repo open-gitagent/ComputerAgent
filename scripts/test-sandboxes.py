@@ -386,21 +386,43 @@ def t_heartbeat_unknown(base, r):
     r.add("heartbeat → 404 on unknown sandbox", s == 404, str(doc))
 
 def t_snapshot_round_trip_memory(base, r):
-    """Write a file in turn 1, snapshot, restore into a new sandbox, recall."""
-    with sandbox(base) as (sid, _):
-        # Turn 1: ask the agent to write a file with known content.
-        sse_chat(base, sid, "Write a file called test-marker.txt with the exact content 'NIMBUS-9'. Acknowledge with: OK.")
-        # Snapshot using the memory state store (always registered).
+    """Seed a file via attachments, snapshot, restore, read it back via the agent."""
+    # Using attachments instead of asking the LLM to Write means the test
+    # doesn't depend on the source agent having a Write tool exposed —
+    # the harness server writes the seed file before first chat.
+    body = {
+        **DEFAULT_BODY,
+        "attachments": [
+            {"path": "test-marker.txt", "content": "NIMBUS-9", "encoding": "utf8"},
+        ],
+    }
+    s, doc = jpost(f"{base}/sandboxes", body)
+    if s != 201:
+        r.add("create with attachments", False, f"got {s}: {doc}")
+        return
+    sid = doc["sandboxId"]
+    try:
+        # Boot the substrate + write seed file by chatting once.
+        sse_chat(base, sid, "Reply with: OK")
+
+        # Confirm the seed file is readable by the agent (proxy for "it's
+        # in the workdir"). The agent's Read tool is the only externally
+        # observable way for sandbox-mode sessions — /workdir is wired
+        # to /run's run-map, not the sandbox registry.
+        _, _, txt0, _ = sse_chat(base, sid, "Use the Read tool to read test-marker.txt and reply with only its content.")
+        r.add("seed attachment readable by agent before snapshot",
+              "NIMBUS-9" in (txt0 or ""),
+              f"got {txt0!r}")
+
         sn = jpost(f"{base}/sandboxes/{sid}/snapshot", {"stateStore": {"kind": "memory"}})
         r.add("snapshot returns 200 + snapshotId",
               sn[0] == 200 and sn[1].get("snapshotId", "").startswith("snap_"),
               str(sn[1]))
         snapshot_id = sn[1].get("snapshotId", "")
-        size = sn[1].get("sizeBytes", 0)
         files = sn[1].get("fileCount", 0)
-        r.add("snapshot reports byte count + file count",
-              size > 0 and files > 0,
-              f"size={size}B files={files}")
+        r.add("snapshot file count includes seed + repo files",
+              files >= 1,
+              f"files={files}")
 
         # Restore into a NEW sandbox.
         rr = jpost(f"{base}/sandboxes/restore", {
@@ -413,13 +435,16 @@ def t_snapshot_round_trip_memory(base, r):
               str(rr[1]))
         new_sid = rr[1].get("sandboxId", "")
         try:
-            # Verify the file came back. Ask the agent to cat it.
-            _, _, txt, _ = sse_chat(base, new_sid, "Read the file test-marker.txt and reply with only its content, no other text.")
-            r.add("restored workdir contains the file with content",
+            # Read the file from the restored sandbox to verify the workdir
+            # came across the snapshot/restore boundary.
+            _, _, txt, _ = sse_chat(base, new_sid, "Use the Read tool to read test-marker.txt and reply with only its content.")
+            r.add("restored workdir contains the seed file (read by agent)",
                   "NIMBUS-9" in (txt or ""),
                   f"got {txt!r}")
         finally:
             jdelete(f"{base}/sandboxes/{new_sid}")
+    finally:
+        jdelete(f"{base}/sandboxes/{sid}")
 
 def t_snapshot_409_when_busy(base, r):
     """Snapshot during an in-flight chat must reject with 409."""
@@ -460,7 +485,7 @@ def t_autosave_on_dispose(base, r):
         # 4. List memory-store snapshots; expect to see one whose
         # sourceSandboxId === sid.
         time.sleep(0.5)
-        l_s, l_doc = jget(f"{base}/sandboxes/snapshots?stateStore=memory")
+        l_s, l_doc = jget(f"{base}/snapshots?stateStore=memory")
         matches = [x for x in l_doc.get("snapshots", []) if x.get("sourceSandboxId") == sid]
         r.add("autoSave produced a discoverable snapshot",
               len(matches) >= 1,

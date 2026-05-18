@@ -619,14 +619,19 @@ export class ComputerAgentServer {
     // memory default. The startup example also auto-registers `mongo` when
     // MONGO_URL is set in the environment — that wiring lives in the
     // example's main() to keep this class infra-agnostic.
+    // Memory backends MUST be singletons — the builder closure is invoked
+    // separately for save / load / list, and a fresh instance per call
+    // would mean a snapshot saved by one request is invisible to the
+    // restore route. Durable backends (mongo, s3) don't have this problem
+    // because the underlying server is the source of truth.
+    const memoryTaskStoreSingleton = new MemoryTaskStore();
+    const memoryStateStoreSingleton = new MemoryStateStore();
     this.taskStores = {
-      memory: () => new MemoryTaskStore(),
+      memory: () => memoryTaskStoreSingleton,
       ...(opts.taskStores ?? {}),
     };
-    // State store registry mirrors taskStores. `memory` is always available;
-    // caller can register `s3` (or future GCS/Azure) on top.
     this.stateStores = {
-      memory: () => new MemoryStateStore(),
+      memory: () => memoryStateStoreSingleton,
       ...(opts.stateStores ?? {}),
     };
     this.wire();
@@ -1314,10 +1319,13 @@ export class ComputerAgentServer {
       }
     });
 
-    // GET /sandboxes/snapshots — list snapshots in a backend. Query string
-    // carries kind + options (flat). e.g.
-    //   /sandboxes/snapshots?stateStore=s3&bucket=foo&prefix=tenant-a/
-    this.app.get("/sandboxes/snapshots", async (c) => {
+    // GET /snapshots — list snapshots in a backend. Lives at /snapshots
+    // (not /sandboxes/snapshots) to avoid routing collision with
+    // /sandboxes/:id, since Hono's router treats them as ambiguous when
+    // both end with the same segment count.
+    // Query string carries kind + options (flat). e.g.
+    //   /snapshots?stateStore=s3&bucket=foo&prefix=tenant-a/
+    this.app.get("/snapshots", async (c) => {
       const q = c.req.query();
       const storeKind = q.stateStore ?? this.opts.defaultStateStore ?? Object.keys(this.stateStores)[0];
       const builder = this.stateStores[storeKind];
@@ -1335,8 +1343,8 @@ export class ComputerAgentServer {
       }
     });
 
-    // DELETE /sandboxes/snapshots/:id — same query-shape as list.
-    this.app.delete("/sandboxes/snapshots/:id", async (c) => {
+    // DELETE /snapshots/:id — same query-shape as list.
+    this.app.delete("/snapshots/:id", async (c) => {
       const q = c.req.query();
       const storeKind = q.stateStore ?? this.opts.defaultStateStore ?? Object.keys(this.stateStores)[0];
       const builder = this.stateStores[storeKind];
@@ -1886,6 +1894,13 @@ function mergeUsage(
  * the harness server understands. The harness writes each entry into the
  * workdir via the existing path-jailed `writeBytes()` path, so we don't
  * need any new server-side write code.
+ *
+ * Entries under `.git/` are SKIPPED on restore: the loader recreates
+ * `.git` cleanly from `source` (git clone), so re-applying snapshot
+ * bytes is at best redundant and at worst fails on read-only pack files
+ * (e.g. `.git/objects/pack/*.idx` are mode 0444 and EACCES on overwrite).
+ * The snapshot still CAPTURES `.git` for fidelity; we just don't pour it
+ * back over a freshly-cloned working tree.
  */
 async function tarToAttachments(
   gzipped: Buffer,
@@ -1898,7 +1913,7 @@ async function tarToAttachments(
       const chunks: Buffer[] = [];
       stream.on("data", (c: Buffer) => chunks.push(c));
       stream.on("end", () => {
-        if (header.type === "file") {
+        if (header.type === "file" && !header.name.startsWith(".git/") && header.name !== ".git") {
           out.push({
             path: header.name,
             content: Buffer.concat(chunks).toString("base64"),
@@ -2094,8 +2109,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log("  GET  /sandboxes                 list active sandboxes");
   console.log("  GET  /sandboxes/:id             status snapshot");
   console.log("  DEL  /sandboxes/:id             dispose explicitly (runs autoSave if configured)");
-  console.log("  GET  /sandboxes/snapshots       ?stateStore=&bucket=&prefix=... — list snapshots");
-  console.log("  DEL  /sandboxes/snapshots/:id   same query shape — delete a snapshot");
+  console.log("  GET  /snapshots                 ?stateStore=&bucket=&prefix=... — list snapshots");
+  console.log("  DEL  /snapshots/:id             same query shape — delete a snapshot");
   console.log(`  sandbox TTLs: idle=${Math.round(sandboxCfg.defaultIdleTtlMs/1000)}s default / ${Math.round(sandboxCfg.maxIdleTtlMs/1000)}s max, hard=${Math.round(sandboxCfg.defaultTtlMs/1000)}s default / ${Math.round(sandboxCfg.maxTtlMs/1000)}s max, max ${sandboxCfg.maxConcurrent} concurrent`);
   console.log(`  defaultStateStore: ${defaultStateStore}  (registered: ${["memory", ...Object.keys(stateStores)].join(", ")})`);
   console.log("");
