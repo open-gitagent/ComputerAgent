@@ -459,9 +459,12 @@ function resolveSandboxTtl(
   if (idleRaw <= 0 || hardRaw <= 0) {
     throw new Error("idleTtlMs and ttlMs must be positive milliseconds");
   }
-  const idleTtlMs = Math.min(idleRaw, idleMax);
-  // Hard cap can never be SHORTER than idle (would make idle moot).
-  const ttlMs = Math.min(Math.max(hardRaw, idleTtlMs), hardMax);
+  // Hard cap is the authority. Idle gets clamped DOWN to it — a sandbox
+  // can't be idle-alive longer than its absolute lifetime. This matches
+  // the intuitive reading: "dispose after X idle OR after Y total,
+  // whichever fires first."
+  const ttlMs = Math.min(hardRaw, hardMax);
+  const idleTtlMs = Math.min(idleRaw, idleMax, ttlMs);
   return { idleTtlMs, ttlMs };
 }
 
