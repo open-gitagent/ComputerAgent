@@ -59,6 +59,9 @@ importers:
       '@computeragent/session-store-mongo':
         specifier: workspace:*
         version: link:../packages/session-store-mongo
+      '@computeragent/task-store-mongo':
+        specifier: workspace:*
+        version: link:../packages/task-store-mongo
       computeragent:
         specifier: workspace:*
         version: link:../packages/computeragent
@@ -473,6 +476,22 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.11
         version: 7.6.13
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.19.18)
+
+  packages/task-store-mongo:
+    dependencies:
+      '@computeragent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      mongodb:
+        specifier: ^6.10.0
+        version: 6.21.0(socks@2.8.9)
+    devDependencies:
       typescript:
         specifier: ^5.5.0
         version: 5.9.3

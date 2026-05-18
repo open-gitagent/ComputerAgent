@@ -5,6 +5,18 @@ export * from "./harness-rest.js";
 export * from "./sse-events.js";
 export * from "./contracts.js";
 export { SessionStoreConfig } from "./session-store-config.js";
+export { TaskStoreConfig } from "./task-store.js";
+export type {
+  TaskStore,
+  TaskStatus,
+  TaskDoc,
+  TaskInit,
+  TaskSummary,
+  TaskFilter,
+  TaskUsage,
+  TaskArtifactRef,
+  PersistedEvent,
+} from "./task-store.js";
 export type { Logger, LogLevel, CreateLoggerOptions } from "./logger.js";
 export { createLogger, nopLogger } from "./logger.js";
 export type {

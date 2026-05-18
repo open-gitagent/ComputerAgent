@@ -1,0 +1,46 @@
+{
+  "name": "@computeragent/task-store-mongo",
+  "version": "0.1.0",
+  "description": "MongoDB-backed TaskStore for the ComputerAgent harness — persists the entire run lifecycle (status, every event, usage, artifacts) so clients can fire-and-forget and poll by taskId.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@computeragent/protocol": "workspace:*",
+    "mongodb": "^6.10.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "keywords": [
+    "ai-agents",
+    "task-store",
+    "mongodb",
+    "background-jobs",
+    "computeragent"
+  ],
+  "homepage": "https://github.com/open-gitagent/ComputerAgent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/open-gitagent/ComputerAgent.git",
+    "directory": "packages/task-store-mongo"
+  }
+}

@@ -132324,6 +132324,12 @@ var HarnessEvent = exports_external.discriminatedUnion("kind", [
   CaUsageSnapshotEvent,
   CaSessionEndedEvent
 ]);
+// ../protocol/dist/task-store.js
+init_zod();
+var TaskStoreConfig = exports_external.object({
+  kind: exports_external.string().min(1),
+  options: exports_external.unknown().optional()
+});
 // ../protocol/dist/logger.js
 var LEVEL_ORDER = {
   debug: 10,

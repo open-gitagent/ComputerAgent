@@ -30,12 +30,24 @@
  *     }'
  */
 
+import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { serve, type ServerType } from "@hono/node-server";
 import { ComputerAgent, LocalSubstrate } from "computeragent";
 import type { IdentitySource, Substrate } from "computeragent";
+import type {
+  HarnessEvent,
+  PersistedEvent,
+  TaskDoc,
+  TaskStore,
+  TaskStatus,
+  TaskSummary,
+} from "@computeragent/protocol";
+import { mongoTaskStoreBuilder } from "@computeragent/task-store-mongo";
+
+type TaskStoreBuilder = (options?: unknown) => TaskStore;
 
 export interface ComputerAgentServerOptions {
   /** Bind host. Default "127.0.0.1" (loopback only). Pass "0.0.0.0" for LAN-accessible. */
@@ -82,6 +94,19 @@ export interface ComputerAgentServerOptions {
    * Default: 4 (LocalSubstrate spawns a Node process per agent).
    */
   readonly maxConcurrentRuns?: number;
+  /**
+   * Registry of task-store backends keyed by wire-side `kind`. Clients pick
+   * which to use per-task via the `taskStore` field in the POST /tasks body.
+   *   taskStores: { mongo: mongoTaskStoreBuilder({ url: process.env.MONGO_URL! }) }
+   * Built-in: "memory" (in-process, lost on restart). The example startup
+   * also auto-registers "mongo" when MONGO_URL is in the env.
+   */
+  readonly taskStores?: Readonly<Record<string, TaskStoreBuilder>>;
+  /**
+   * Default task-store kind when POST /tasks omits one. Must be a key in
+   * `taskStores`. If unset, the first registered key wins (or "memory").
+   */
+  readonly defaultTaskStore?: string;
 }
 
 interface RunBody {
@@ -138,14 +163,140 @@ interface ActiveRun {
   startedAt: number;
 }
 
+/**
+ * In-memory broker: per-task pub/sub for live SSE clients. Persisted history
+ * comes from the TaskStore; this just lets connected clients tail new events
+ * as they arrive without polling.
+ */
+class TaskBroker {
+  private readonly subscribers = new Map<string, Set<(ev: PersistedEvent) => void>>();
+  private readonly closed = new Set<string>();
+  private readonly cancelHandlers = new Map<string, () => void>();
+
+  subscribe(taskId: string, cb: (ev: PersistedEvent) => void): () => void {
+    let set = this.subscribers.get(taskId);
+    if (!set) {
+      set = new Set();
+      this.subscribers.set(taskId, set);
+    }
+    set.add(cb);
+    return () => {
+      set?.delete(cb);
+      if (set?.size === 0) this.subscribers.delete(taskId);
+    };
+  }
+
+  broadcast(taskId: string, ev: PersistedEvent): void {
+    const set = this.subscribers.get(taskId);
+    if (!set) return;
+    for (const cb of set) {
+      try { cb(ev); } catch { /* swallow */ }
+    }
+  }
+
+  closeTask(taskId: string): void {
+    this.closed.add(taskId);
+    this.subscribers.delete(taskId);
+    this.cancelHandlers.delete(taskId);
+  }
+
+  isClosed(taskId: string): boolean {
+    return this.closed.has(taskId);
+  }
+
+  onCancel(taskId: string, handler: () => void): void {
+    this.cancelHandlers.set(taskId, handler);
+  }
+
+  cancel(taskId: string): boolean {
+    const handler = this.cancelHandlers.get(taskId);
+    if (!handler) return false;
+    try { handler(); } catch { /* swallow */ }
+    return true;
+  }
+}
+
+/**
+ * Fallback in-process TaskStore. Lost on server restart — use mongo (or
+ * another durable backend) for anything past a dev demo. Useful as the
+ * zero-config default so the API works without any external infra.
+ */
+class MemoryTaskStore implements TaskStore {
+  private readonly docs = new Map<string, {
+    taskId: string; sessionId: string; status: TaskStatus;
+    config?: Record<string, unknown>;
+    events: PersistedEvent[];
+    usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number };
+    startedAt: Date; endedAt?: Date; lastEventAt: Date;
+    error?: string;
+    artifactRefs?: { path: string; bytes: number; chunkId?: string }[];
+  }>();
+
+  async createTask(taskId: string, init: { sessionId: string; config?: Record<string, unknown>; status?: TaskStatus }): Promise<void> {
+    if (this.docs.has(taskId)) return;
+    const now = new Date();
+    this.docs.set(taskId, {
+      taskId, sessionId: init.sessionId, status: init.status ?? "queued",
+      events: [], startedAt: now, lastEventAt: now,
+      ...(init.config ? { config: init.config } : {}),
+    });
+  }
+
+  async appendEvent(taskId: string, ev: PersistedEvent): Promise<void> {
+    const d = this.docs.get(taskId);
+    if (!d) return;
+    if (d.events.some((e) => e.id === ev.id)) return;
+    d.events.push(ev);
+    d.lastEventAt = ev.ts;
+  }
+
+  async updateStatus(taskId: string, status: TaskStatus, fields?: Record<string, unknown>): Promise<void> {
+    const d = this.docs.get(taskId);
+    if (!d) return;
+    d.status = status;
+    if (fields) Object.assign(d, fields);
+  }
+
+  async load(taskId: string): Promise<TaskDoc | null> {
+    return (this.docs.get(taskId) ?? null) as TaskDoc | null;
+  }
+
+  async loadEventsSince(taskId: string, since: number): Promise<readonly PersistedEvent[]> {
+    return this.docs.get(taskId)?.events.filter((e) => e.id > since) ?? [];
+  }
+
+  async listTasks(filter?: { status?: TaskStatus | readonly TaskStatus[]; limit?: number }): Promise<readonly TaskSummary[]> {
+    const out = [...this.docs.values()]
+      .filter((d) => !filter?.status
+        || (Array.isArray(filter.status) ? filter.status.includes(d.status) : d.status === filter.status))
+      .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
+      .slice(0, filter?.limit ?? 50);
+    return out.map(({ events: _e, ...rest }) => rest) as TaskSummary[];
+  }
+
+  async delete(taskId: string): Promise<void> { this.docs.delete(taskId); }
+}
+
 export class ComputerAgentServer {
   private readonly opts: ComputerAgentServerOptions;
   private readonly app = new Hono();
   private server: ServerType | null = null;
   private readonly runs = new Map<string, ActiveRun>();
+  private readonly broker = new TaskBroker();
+  private readonly taskStores: Record<string, TaskStoreBuilder>;
+  /** Live agents for in-flight tasks, keyed by taskId. */
+  private readonly liveTasks = new Map<string, InstanceType<typeof ComputerAgent>>();
 
   constructor(opts: ComputerAgentServerOptions) {
     this.opts = opts;
+    // Task store registry: caller's `taskStores` wins over the built-in
+    // memory default. The startup example also auto-registers `mongo` when
+    // MONGO_URL is set in the environment — that wiring lives in the
+    // example's main() to keep this class infra-agnostic.
+    this.taskStores = {
+      memory: () => new MemoryTaskStore(),
+      ...(opts.taskStores ?? {}),
+    };
     this.wire();
   }
 
@@ -332,6 +483,296 @@ export class ComputerAgentServer {
       const tree = await run.agent.listWorkdir({ depth: 3 });
       return c.json({ entries: tree });
     });
+
+    // ── /tasks — background execution, persisted to a TaskStore ───────────
+    //
+    // Same shape as /run but:
+    //   - POST returns 202 + taskId immediately (no SSE on this call)
+    //   - the agent runs to completion regardless of client disconnect
+    //   - every HarnessEvent is persisted via the TaskStore (mongo / memory)
+    //   - status + events queryable via GET /tasks/:id and /events
+    //   - DELETE /tasks/:id cancels mid-flight
+    //
+    // The wire shape is intentionally close to /run so a client switching
+    // between modes only adds the polling layer.
+
+    this.app.post("/tasks", async (c) => {
+      let body: RunBody & { taskStore?: { kind: string; options?: unknown } };
+      try {
+        body = (await c.req.json()) as never;
+      } catch (err) {
+        return c.json({ error: { code: "INVALID_JSON", message: (err as Error).message } }, 400);
+      }
+      const validation = validateRunBody(body);
+      if (validation) return c.json({ error: validation }, 400);
+
+      const runtimeResult = this.resolveRuntime(body.runtime);
+      if (!runtimeResult.ok) return c.json({ error: runtimeResult.error }, 400);
+
+      // Pick the task store backend. Default: caller's defaultTaskStore →
+      // "mongo" if registered, else "memory".
+      const storeKind =
+        body.taskStore?.kind ??
+        this.opts.defaultTaskStore ??
+        (this.taskStores.mongo ? "mongo" : "memory");
+      const storeBuilder = this.taskStores[storeKind];
+      if (!storeBuilder) {
+        return c.json({
+          error: {
+            code: "UNKNOWN_TASK_STORE",
+            message: `task store '${storeKind}' not registered`,
+            available: Object.keys(this.taskStores),
+          },
+        }, 400);
+      }
+      const taskStore = storeBuilder(body.taskStore?.options);
+
+      const taskId = `task_${randomUUID().slice(0, 12)}`;
+      const sessionId = body.sessionId ?? taskId;
+
+      // Persist task creation BEFORE returning so the client can immediately
+      // poll without a race. Redact env values from the persisted config —
+      // they're secrets, not debug-relevant content.
+      const safeConfig = redactConfig(body);
+      await taskStore.createTask(taskId, { sessionId, config: safeConfig, status: "queued" });
+
+      // Fire-and-forget: the run continues regardless of the HTTP request.
+      void this.runTask({
+        taskId, sessionId, body, taskStore,
+        buildSubstrate: runtimeResult.factory,
+      }).catch((err) => {
+        // Last-resort: any uncaught error in runTask gets logged + the task
+        // is marked errored. The internal try/catch handles most cases; this
+        // is defense against bugs in our own code.
+        // eslint-disable-next-line no-console
+        console.error("[tasks] runTask threw:", err);
+        taskStore.updateStatus(taskId, "errored", {
+          endedAt: new Date(),
+          error: err instanceof Error ? err.message : String(err),
+        }).catch(() => {});
+      });
+
+      return c.json({ taskId, sessionId, status: "queued" }, 202);
+    });
+
+    this.app.get("/tasks", async (c) => {
+      const storeKind = c.req.query("taskStore") ?? this.opts.defaultTaskStore ?? "mongo";
+      const builder = this.taskStores[storeKind];
+      if (!builder) return c.json({ error: { code: "UNKNOWN_TASK_STORE", available: Object.keys(this.taskStores) } }, 400);
+      const store = builder();
+      const status = c.req.query("status");
+      const limit = Number.parseInt(c.req.query("limit") ?? "50", 10);
+      const tasks = await store.listTasks({
+        ...(status ? { status: status as TaskStatus } : {}),
+        limit: Number.isFinite(limit) ? limit : 50,
+      });
+      return c.json({ tasks });
+    });
+
+    this.app.get("/tasks/:id", async (c) => {
+      const taskId = c.req.param("id");
+      const storeKind = c.req.query("taskStore") ?? this.opts.defaultTaskStore ?? "mongo";
+      const builder = this.taskStores[storeKind];
+      if (!builder) return c.json({ error: { code: "UNKNOWN_TASK_STORE", available: Object.keys(this.taskStores) } }, 400);
+      const store = builder();
+      const doc = await store.load(taskId);
+      if (!doc) return c.json({ error: { code: "NOT_FOUND", taskId } }, 404);
+      // Return a slim status snapshot. Use /tasks/:id/events to fetch the log.
+      return c.json({
+        taskId: doc.taskId,
+        sessionId: doc.sessionId,
+        status: doc.status,
+        eventCount: doc.events.length,
+        usage: doc.usage,
+        startedAt: doc.startedAt,
+        endedAt: doc.endedAt,
+        lastEventAt: doc.lastEventAt,
+        error: doc.error,
+        artifactRefs: doc.artifactRefs,
+      });
+    });
+
+    this.app.get("/tasks/:id/events", async (c) => {
+      const taskId = c.req.param("id");
+      const storeKind = c.req.query("taskStore") ?? this.opts.defaultTaskStore ?? "mongo";
+      const builder = this.taskStores[storeKind];
+      if (!builder) return c.json({ error: { code: "UNKNOWN_TASK_STORE", available: Object.keys(this.taskStores) } }, 400);
+      const store = builder();
+      const accept = c.req.header("accept") ?? "";
+      const wantsSse = accept.includes("text/event-stream");
+
+      // JSON polling form — fetch events with id > since.
+      if (!wantsSse) {
+        const since = Number.parseInt(c.req.query("since") ?? "-1", 10);
+        const doc = await store.load(taskId);
+        if (!doc) return c.json({ error: { code: "NOT_FOUND", taskId } }, 404);
+        const sinceN = Number.isFinite(since) ? since : -1;
+        const events = doc.events.filter((e: PersistedEvent) => e.id > sinceN);
+        const nextSince = events.length > 0 ? events[events.length - 1].id : sinceN;
+        const done = doc.status === "complete" || doc.status === "errored" || doc.status === "cancelled";
+        return c.json({ events, nextSince, done, status: doc.status });
+      }
+
+      // SSE form — replay persisted history, then tail live broadcasts.
+      const lastEventId = Number.parseInt(
+        c.req.header("Last-Event-ID") ?? c.req.query("lastEventId") ?? "-1",
+        10,
+      );
+      return streamSSE(c, async (stream) => {
+        const doc = await store.load(taskId);
+        if (!doc) {
+          await stream.writeSSE({ event: "ca_error", data: JSON.stringify({ code: "NOT_FOUND", taskId }) });
+          return;
+        }
+        // 1. Cold replay: every event past Last-Event-ID
+        const sinceN = Number.isFinite(lastEventId) ? lastEventId : -1;
+        let highWater = sinceN;
+        for (const ev of doc.events) {
+          if (ev.id <= sinceN) continue;
+          await stream.writeSSE({ event: ev.kind, id: String(ev.id), data: JSON.stringify(ev.payload) });
+          highWater = ev.id;
+        }
+        // 2. If terminal, close. Else live-tail until the broker closes us.
+        if (doc.status === "complete" || doc.status === "errored" || doc.status === "cancelled") {
+          await stream.writeSSE({ event: "ca_done", data: JSON.stringify({ taskId, status: doc.status }) });
+          return;
+        }
+        const done = new Promise<void>((resolve) => {
+          const unsubscribe = this.broker.subscribe(taskId, (ev) => {
+            if (ev.id <= highWater) return;
+            highWater = ev.id;
+            stream.writeSSE({ event: ev.kind, id: String(ev.id), data: JSON.stringify(ev.payload) }).catch(() => {});
+            // Terminal events end the stream.
+            if (ev.kind === "ca_session_ended") {
+              setTimeout(() => { unsubscribe(); resolve(); }, 100);
+            }
+          });
+          stream.onAbort(() => { unsubscribe(); resolve(); });
+        });
+        await done;
+      });
+    });
+
+    this.app.get("/tasks/:id/artifact", async (c) => {
+      const taskId = c.req.param("id");
+      const path = c.req.query("path");
+      if (!path) return c.json({ error: { code: "MISSING_PATH" } }, 400);
+      // While the task is live, the agent still owns the workdir — fetch via it.
+      const live = this.liveTasks.get(taskId);
+      if (live) {
+        const bytes = await live.fetchArtifact(path);
+        if (!bytes) return c.json({ error: { code: "NOT_FOUND", path } }, 404);
+        return new Response(new Uint8Array(bytes), { headers: { "Content-Type": "application/octet-stream" } });
+      }
+      // Task ended — would need a stable workdir or store-backed artifacts.
+      // For v1 we surface a clear 410 so clients know to fetch during the run.
+      return c.json({
+        error: {
+          code: "GONE",
+          message: "Task has ended. Artifact fetch after completion requires a stable workdir or store-backed artifacts — not yet implemented. Fetch via /tasks/:id/artifact while status=running.",
+        },
+      }, 410);
+    });
+
+    this.app.delete("/tasks/:id", async (c) => {
+      const taskId = c.req.param("id");
+      const ok = this.broker.cancel(taskId);
+      // Best-effort: status flips to "cancelled" inside runTask's finally.
+      return c.json({ ok, taskId });
+    });
+  }
+
+  /**
+   * Background runner — drives the agent to completion, persists every
+   * event, exposes the live stream via the broker. Detached from the HTTP
+   * request that created the task (POST /tasks returns immediately).
+   */
+  private async runTask(opts: {
+    taskId: string;
+    sessionId: string;
+    body: RunBody;
+    taskStore: TaskStore;
+    buildSubstrate: () => Substrate;
+  }): Promise<void> {
+    const { taskId, sessionId, body, taskStore, buildSubstrate } = opts;
+    const source = applyGitToken(normalizeSource(body.source), body.gitToken);
+    const envs = { ...this.opts.defaultEnvs, ...body.envs };
+    if (!envs.ANTHROPIC_API_KEY && body.harness !== "gitagent") {
+      const fromHost = process.env.ANTHROPIC_API_KEY;
+      if (fromHost) envs.ANTHROPIC_API_KEY = fromHost;
+    }
+
+    const agent = new ComputerAgent({
+      source,
+      harness: body.harness as never,
+      runtime: buildSubstrate(),
+      envs,
+      sessionId,                                              // pin so resume works
+      ...(body.options ? { options: body.options } : {}),
+      ...(body.model ? { model: body.model } : {}),
+      ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
+      ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
+      ...(body.debug ? { debug: true } : {}),
+      ...(body.sessionStore ? { sessionStore: body.sessionStore as never } : {}),
+      ...(body.attachments && body.attachments.length > 0 ? { attachments: body.attachments } : {}),
+    });
+    this.liveTasks.set(taskId, agent);
+
+    // Cancel hook — runs in response to DELETE /tasks/:id. Disposes the
+    // agent (SIGTERM the substrate); the for-await below sees an empty
+    // tail or a cancelled session end event and exits cleanly.
+    let cancelRequested = false;
+    this.broker.onCancel(taskId, () => {
+      cancelRequested = true;
+      agent.dispose().catch(() => {});
+    });
+
+    await taskStore.updateStatus(taskId, "running", { startedAt: new Date() });
+
+    let eventIndex = 0;
+    let usage: { inputTokens?: number; outputTokens?: number; costUsd?: number } | undefined;
+
+    try {
+      const message = typeof body.message === "string" ? body.message : body.message;
+      const handle = agent.chat(message as never);
+      for await (const ev of handle as AsyncIterable<HarnessEvent>) {
+        const persisted: PersistedEvent = {
+          id: eventIndex++,
+          ts: new Date(),
+          kind: ev.kind,
+          // Drop `kind` from the payload — the wrapper carries it. The rest
+          // of the event (sessionId + kind-specific fields) lands in payload.
+          payload: ((): unknown => {
+            const { kind: _kind, ...rest } = ev as Record<string, unknown> & { kind: string };
+            return rest;
+          })(),
+        };
+        // Persist FIRST so any client that just attached sees the same total
+        // ordering as the on-disk record before the live broadcast hits.
+        await taskStore.appendEvent(taskId, persisted);
+        this.broker.broadcast(taskId, persisted);
+
+        if (ev.kind === "ca_usage_snapshot") {
+          usage = handle.getUsage();
+        }
+        if (ev.kind === "ca_session_ended") break;
+      }
+      // Final status: cancelled wins over complete if requested mid-flight.
+      const finalStatus: TaskStatus = cancelRequested ? "cancelled" : "complete";
+      await taskStore.updateStatus(taskId, finalStatus, {
+        endedAt: new Date(),
+        ...(usage ? { usage } : {}),
+      });
+    } catch (err) {
+      await taskStore.updateStatus(taskId, "errored", {
+        endedAt: new Date(),
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.liveTasks.delete(taskId);
+      this.broker.closeTask(taskId);
+      await agent.dispose().catch(() => {});
+    }
   }
 
   /**
@@ -432,6 +873,22 @@ function applyGitToken(source: IdentitySource, token: string | undefined): Ident
   return source;
 }
 
+/**
+ * Strip secrets from the request body before it lands in the task store.
+ * The full config is useful for debugging (which harness, which model, which
+ * runtime), but `envs` carries credentials and `gitToken` is a PAT — neither
+ * belongs in the persisted record.
+ */
+function redactConfig(body: RunBody & { taskStore?: unknown }): Record<string, unknown> {
+  const { envs: _envs, gitToken: _gt, attachments, ...rest } = body;
+  return {
+    ...rest,
+    ...(attachments ? { attachments: attachments.map((a) => ({ path: a.path, bytes: a.content.length, encoding: a.encoding ?? "utf8" })) } : {}),
+    envsKeys: Object.keys(body.envs ?? {}),
+    hasGitToken: Boolean(body.gitToken),
+  };
+}
+
 function validateRunBody(body: unknown): { code: string; message: string } | undefined {
   if (!body || typeof body !== "object") return { code: "INVALID_BODY", message: "body must be a JSON object" };
   const b = body as Record<string, unknown>;
@@ -490,6 +947,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (v) defaultEnvs[k] = v;
   }
 
+  // Task store registry — mirrors the substrate pattern. We always register
+  // the in-memory fallback; `mongo` only registers when MONGO_URL is set so
+  // a misconfigured host doesn't silently default to a broken backend.
+  const taskStores: Record<string, TaskStoreBuilder> = {};
+  if (process.env.MONGO_URL) {
+    taskStores.mongo = mongoTaskStoreBuilder({
+      url: process.env.MONGO_URL,
+      ...(process.env.MONGO_DATABASE ? { database: process.env.MONGO_DATABASE } : {}),
+      collection: process.env.MONGO_TASKS_COLLECTION ?? "tasks",
+    });
+  }
+  // Pick the default: mongo if available, else fall back to the in-process
+  // memory store registered by the server itself.
+  const defaultTaskStore = process.env.DEFAULT_TASK_STORE
+    ?? (taskStores.mongo ? "mongo" : "memory");
+
   const server = new ComputerAgentServer({
     host: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 8787),
@@ -497,6 +970,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     maxConcurrentRuns: 4,
     substrates,
     defaultRuntime: process.env.DEFAULT_RUNTIME ?? "local",
+    ...(Object.keys(taskStores).length > 0 ? { taskStores } : {}),
+    defaultTaskStore,
   });
   const { host, port } = await server.listen();
   console.log(`ComputerAgentServer listening on http://${host}:${port}`);
@@ -506,6 +981,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log("  POST /run                       body: {source, harness, runtime?, message, envs?, options?, gitToken?, model?, sessionStore?, sessionId?, debug?, attachments?}");
   console.log("  GET  /workdir?sessionId=<id>");
   console.log("  GET  /artifact?sessionId=<id>&path=<path>");
+  console.log("  POST /tasks                     body: same as /run + taskStore?: {kind, options?}; returns 202 {taskId}");
+  console.log("  GET  /tasks                     ?status=&limit= — list recent tasks");
+  console.log("  GET  /tasks/:id                 status snapshot");
+  console.log("  GET  /tasks/:id/events          ?since=<n> JSON poll, or Accept: text/event-stream for SSE");
+  console.log("  GET  /tasks/:id/artifact        ?path=<path> — while task is live");
+  console.log("  DEL  /tasks/:id                 cancel");
+  console.log(`  defaultTaskStore: ${defaultTaskStore}  (registered: ${["memory", ...Object.keys(taskStores)].join(", ")})`);
   console.log("");
   console.log("Example:");
   console.log("  curl -N -X POST http://" + host + ":" + port + "/run \\");

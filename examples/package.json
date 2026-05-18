@@ -24,6 +24,7 @@
     "@computeragent/runtime-local": "workspace:*",
     "@computeragent/runtime-vzvm": "workspace:*",
     "@computeragent/sdk": "workspace:*",
-    "@computeragent/session-store-mongo": "workspace:*"
+    "@computeragent/session-store-mongo": "workspace:*",
+    "@computeragent/task-store-mongo": "workspace:*"
   }
 }
