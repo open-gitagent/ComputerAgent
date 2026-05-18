@@ -107,6 +107,37 @@ export interface ComputerAgentServerOptions {
    * `taskStores`. If unset, the first registered key wins (or "memory").
    */
   readonly defaultTaskStore?: string;
+  /**
+   * Long-lived sandbox pool tuning. A sandbox keeps a `ComputerAgent` (and
+   * its substrate) alive between HTTP requests so multi-turn conversations
+   * don't re-clone/install/boot for every turn.
+   *
+   * Two TTL knobs, both refresh-on-clamp:
+   *   - idleTtlMs: dispose after this much inactivity (each chat resets it).
+   *   - ttlMs:     absolute hard cap from creation. Fires regardless of activity.
+   *
+   * Clients pick both per-request; server clamps to `maxIdleTtlMs` / `maxTtlMs`.
+   */
+  readonly sandbox?: {
+    /** Hard cap on concurrent live sandboxes. Beyond this POST /sandboxes returns 429. Default 8. */
+    readonly maxConcurrent?: number;
+    /** Default idleTtlMs when the request omits it. Default 10 * 60_000. */
+    readonly defaultIdleTtlMs?: number;
+    /** Default ttlMs when the request omits it. Default 30 * 60_000. */
+    readonly defaultTtlMs?: number;
+    /** Server-side upper bound for idleTtlMs. Default 30 * 60_000. */
+    readonly maxIdleTtlMs?: number;
+    /** Server-side upper bound for ttlMs. Default 120 * 60_000 (2h). */
+    readonly maxTtlMs?: number;
+    /** Reaper sweep interval. Default 5_000. */
+    readonly reaperIntervalMs?: number;
+    /**
+     * If POST /sandboxes is followed by NO /chat within this window, the
+     * sandbox is reaped (avoids dangling agents from broken clients).
+     * Default 60_000.
+     */
+    readonly bootDeadlineMs?: number;
+  };
 }
 
 interface RunBody {
@@ -277,6 +308,204 @@ class MemoryTaskStore implements TaskStore {
   async delete(taskId: string): Promise<void> { this.docs.delete(taskId); }
 }
 
+// ── Sandbox pool (Wedge 1.12) ───────────────────────────────────────────
+//
+// A "sandbox" is a warm `ComputerAgent` + substrate kept alive across
+// multiple HTTP requests, bounded by an idle TTL (refreshed on each chat)
+// and an absolute hard TTL. The SDK already supports calling `chat()`
+// repeatedly on a single instance (lazy substrate boot, memoized via
+// `this.booted` in computer-agent.ts); this registry is what stops the
+// example server from disposing the agent the moment a stream ends.
+
+type SandboxState = "booting" | "ready" | "busy" | "expired" | "disposed";
+
+interface LiveSandbox {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly agent: InstanceType<typeof ComputerAgent>;
+  state: SandboxState;
+  readonly createdAt: Date;
+  lastActivityAt: Date;
+  /** Absolute hard cap. Fires regardless of activity. */
+  readonly expiresAt: Date;
+  /** Idle cap. Refreshed on each chat completion. */
+  idleExpiresAt: Date;
+  turnCount: number;
+  usage: { inputTokens?: number; outputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokens?: number; costUsd?: number };
+  currentTurn: { startedAt: Date } | null;
+  config: Record<string, unknown>;
+  readonly idleTtlMs: number;
+  readonly ttlMs: number;
+  /** Set to true on POST /chat; if no chat arrives within bootDeadlineMs, reaper kills the sandbox. */
+  firstChatSeen: boolean;
+  readonly bootDeadlineAt: Date;
+}
+
+interface SandboxSummary {
+  sandboxId: string;
+  sessionId: string;
+  state: SandboxState;
+  createdAt: Date;
+  lastActivityAt: Date;
+  expiresAt: Date;
+  idleExpiresAt: Date;
+  turnCount: number;
+  busy: boolean;
+  usage: LiveSandbox["usage"];
+  config: Record<string, unknown>;
+}
+
+class SandboxRegistry {
+  private readonly sandboxes = new Map<string, LiveSandbox>();
+  private reapTimer: NodeJS.Timeout | null = null;
+
+  size(): number { return this.sandboxes.size; }
+  get(id: string): LiveSandbox | undefined { return this.sandboxes.get(id); }
+  has(id: string): boolean { return this.sandboxes.has(id); }
+  insert(sb: LiveSandbox): void { this.sandboxes.set(sb.id, sb); }
+
+  list(): SandboxSummary[] {
+    return [...this.sandboxes.values()].map(summarize);
+  }
+
+  /**
+   * Atomically take a sandbox out of the map. Caller is responsible for
+   * disposing the agent — kept separate so close() can dispose in parallel.
+   */
+  detach(id: string): LiveSandbox | undefined {
+    const sb = this.sandboxes.get(id);
+    if (!sb) return undefined;
+    this.sandboxes.delete(id);
+    return sb;
+  }
+
+  async remove(id: string, reason: "expired" | "explicit" | "shutdown"): Promise<void> {
+    const sb = this.detach(id);
+    if (!sb) return;
+    sb.state = "disposed";
+    // agent.dispose() drops the substrate; any in-flight chat for-await sees a
+    // stream end / error and exits its handler cleanly. Swallow errors — at
+    // this point we just want the substrate down.
+    await sb.agent.dispose().catch(() => {});
+    if (reason !== "shutdown") {
+      // eslint-disable-next-line no-console
+      console.log(`[sandbox] ${id} disposed (${reason}) turns=${sb.turnCount}`);
+    }
+  }
+
+  /** Start the periodic reaper. Idempotent. */
+  start(intervalMs: number): void {
+    if (this.reapTimer) return;
+    this.reapTimer = setInterval(() => { void this.reapOnce(); }, intervalMs);
+    // Don't keep the process alive solely for the reaper.
+    this.reapTimer.unref?.();
+  }
+
+  stop(): void {
+    if (this.reapTimer) {
+      clearInterval(this.reapTimer);
+      this.reapTimer = null;
+    }
+  }
+
+  private async reapOnce(): Promise<void> {
+    const now = Date.now();
+    const toReap: string[] = [];
+    for (const sb of this.sandboxes.values()) {
+      // Hard cap wins over busy — guarantees the sandbox can't outlive ttlMs.
+      if (sb.expiresAt.getTime() <= now) { toReap.push(sb.id); continue; }
+      // Boot deadline: created but never chatted. Drops dangling sandboxes.
+      if (!sb.firstChatSeen && sb.bootDeadlineAt.getTime() <= now) { toReap.push(sb.id); continue; }
+      // Idle cap only applies when not actively serving a turn.
+      if (sb.state !== "busy" && sb.idleExpiresAt.getTime() <= now) { toReap.push(sb.id); continue; }
+    }
+    await Promise.all(toReap.map((id) => this.remove(id, "expired").catch(() => {})));
+  }
+}
+
+function summarize(sb: LiveSandbox): SandboxSummary {
+  return {
+    sandboxId: sb.id,
+    sessionId: sb.sessionId,
+    state: sb.state,
+    createdAt: sb.createdAt,
+    lastActivityAt: sb.lastActivityAt,
+    expiresAt: sb.expiresAt,
+    idleExpiresAt: sb.idleExpiresAt,
+    turnCount: sb.turnCount,
+    busy: sb.state === "busy",
+    usage: sb.usage,
+    config: sb.config,
+  };
+}
+
+/**
+ * Resolve and clamp client-supplied TTL fields. Returns the effective values
+ * the registry should use. Rejects via thrown error if the result would be
+ * absurd (negative / zero / hard < idle).
+ */
+function resolveSandboxTtl(
+  clientIdleMs: number | undefined,
+  clientHardMs: number | undefined,
+  cfg: NonNullable<ComputerAgentServerOptions["sandbox"]>,
+): { idleTtlMs: number; ttlMs: number } {
+  const idleDef = cfg.defaultIdleTtlMs ?? 10 * 60_000;
+  const hardDef = cfg.defaultTtlMs ?? 30 * 60_000;
+  const idleMax = cfg.maxIdleTtlMs ?? 30 * 60_000;
+  const hardMax = cfg.maxTtlMs ?? 120 * 60_000;
+
+  const idleRaw = clientIdleMs ?? idleDef;
+  const hardRaw = clientHardMs ?? hardDef;
+  if (idleRaw <= 0 || hardRaw <= 0) {
+    throw new Error("idleTtlMs and ttlMs must be positive milliseconds");
+  }
+  const idleTtlMs = Math.min(idleRaw, idleMax);
+  // Hard cap can never be SHORTER than idle (would make idle moot).
+  const ttlMs = Math.min(Math.max(hardRaw, idleTtlMs), hardMax);
+  return { idleTtlMs, ttlMs };
+}
+
+/**
+ * Drop secrets from the POST /sandboxes body before stashing it on the
+ * sandbox doc. Mirrors `redactConfig` for tasks — same redaction surface.
+ */
+function redactSandboxConfig(body: SandboxBody): Record<string, unknown> {
+  const { envs: _envs, gitToken: _gt, attachments, ...rest } = body;
+  return {
+    ...rest,
+    ...(attachments ? { attachments: attachments.map((a) => ({ path: a.path, bytes: a.content.length, encoding: a.encoding ?? "utf8" })) } : {}),
+    envsKeys: Object.keys(body.envs ?? {}),
+    hasGitToken: Boolean(body.gitToken),
+  };
+}
+
+/**
+ * POST /sandboxes body. Subset of RunBody minus `message` (message arrives
+ * via /chat) plus the two TTL knobs.
+ */
+interface SandboxBody {
+  source: IdentitySource | string;
+  harness: string;
+  runtime?: string;
+  envs?: Record<string, string>;
+  options?: Record<string, unknown>;
+  model?: string;
+  temperature?: number;
+  baseUrl?: string;
+  gitToken?: string;
+  sessionId?: string;
+  debug?: boolean;
+  sessionStore?: { kind: string; options?: unknown };
+  attachments?: Array<{ path: string; content: string; encoding?: "utf8" | "base64" }>;
+  idleTtlMs?: number;
+  ttlMs?: number;
+}
+
+interface SandboxChatBody {
+  message: string | Array<{ role: "user"; content: string }>;
+  attachments?: Array<{ path: string; content: string; encoding?: "utf8" | "base64" }>;
+}
+
 export class ComputerAgentServer {
   private readonly opts: ComputerAgentServerOptions;
   private readonly app = new Hono();
@@ -286,6 +515,7 @@ export class ComputerAgentServer {
   private readonly taskStores: Record<string, TaskStoreBuilder>;
   /** Live agents for in-flight tasks, keyed by taskId. */
   private readonly liveTasks = new Map<string, InstanceType<typeof ComputerAgent>>();
+  private readonly sandboxes = new SandboxRegistry();
 
   constructor(opts: ComputerAgentServerOptions) {
     this.opts = opts;
@@ -306,13 +536,21 @@ export class ComputerAgentServer {
     await new Promise<void>((resolve) => {
       this.server = serve({ fetch: this.app.fetch, hostname: host, port }, () => resolve());
     });
+    // Sandbox reaper: walks the registry every reaperIntervalMs and disposes
+    // any sandbox past its idle or hard TTL. Started after the HTTP listener
+    // is up so no /sandboxes request can land before the reaper exists.
+    this.sandboxes.start(this.opts.sandbox?.reaperIntervalMs ?? 5_000);
     return { host, port };
   }
 
   async close(): Promise<void> {
+    // Stop the reaper first so it doesn't race with our explicit teardown.
+    this.sandboxes.stop();
     // Tear down any in-flight agent runs first so their substrates don't outlive us.
     await Promise.all([...this.runs.values()].map((r) => r.agent.dispose().catch(() => {})));
     this.runs.clear();
+    // Dispose every live sandbox in parallel.
+    await Promise.all(this.sandboxes.list().map((s) => this.sandboxes.remove(s.sandboxId, "shutdown").catch(() => {})));
     if (this.server) {
       await new Promise<void>((r) => {
         this.server!.close(() => r());
@@ -680,6 +918,218 @@ export class ComputerAgentServer {
       // Best-effort: status flips to "cancelled" inside runTask's finally.
       return c.json({ ok, taskId });
     });
+
+    // ── /sandboxes — warm substrate, multi-turn chat, TTL-bounded ─────────
+    //
+    // POST /sandboxes               create (substrate boots lazily on first chat)
+    // POST /sandboxes/:id/chat      one turn of conversation (SSE)
+    // GET  /sandboxes               list active sandboxes
+    // GET  /sandboxes/:id           status snapshot
+    // DELETE /sandboxes/:id         explicit dispose
+    //
+    // The reaper (started in listen()) walks the registry every reaperIntervalMs
+    // and disposes any sandbox that's passed its idle or hard TTL.
+
+    this.app.post("/sandboxes", async (c) => {
+      const cfg = this.opts.sandbox ?? {};
+      const max = cfg.maxConcurrent ?? 8;
+      if (this.sandboxes.size() >= max) {
+        return c.json({ error: { code: "TOO_MANY_SANDBOXES", active: this.sandboxes.size(), max } }, 429);
+      }
+
+      let body: SandboxBody;
+      try {
+        body = (await c.req.json()) as SandboxBody;
+      } catch (err) {
+        return c.json({ error: { code: "INVALID_JSON", message: (err as Error).message } }, 400);
+      }
+      // Reuse the run-body validator, minus the message check — a sandbox is
+      // created BEFORE any turn arrives, so message lives on /chat.
+      const v = validateSandboxBody(body);
+      if (v) return c.json({ error: v }, 400);
+
+      const runtimeResult = this.resolveRuntime(body.runtime);
+      if (!runtimeResult.ok) return c.json({ error: runtimeResult.error }, 400);
+
+      let resolvedTtl: { idleTtlMs: number; ttlMs: number };
+      try {
+        resolvedTtl = resolveSandboxTtl(body.idleTtlMs, body.ttlMs, cfg);
+      } catch (err) {
+        return c.json({ error: { code: "INVALID_TTL", message: (err as Error).message } }, 400);
+      }
+
+      const sandboxId = `sbx_${randomUUID().slice(0, 12)}`;
+      const sessionId = body.sessionId ?? sandboxId;
+      const now = new Date();
+
+      // Hoist defaults that we know any harness needs. Mirrors the /run path.
+      const envs = { ...this.opts.defaultEnvs, ...body.envs };
+      if (!envs.ANTHROPIC_API_KEY && body.harness !== "gitagent") {
+        const fromHost = process.env.ANTHROPIC_API_KEY;
+        if (fromHost) envs.ANTHROPIC_API_KEY = fromHost;
+      }
+
+      const source = applyGitToken(normalizeSource(body.source), body.gitToken);
+      // Build the agent but DO NOT call chat() yet — that's the substrate boot
+      // signal. The first POST /sandboxes/:id/chat triggers it.
+      const agent = new ComputerAgent({
+        source,
+        harness: body.harness as never,
+        runtime: runtimeResult.factory(),
+        envs,
+        sessionId,
+        ...(body.options ? { options: body.options } : {}),
+        ...(body.model ? { model: body.model } : {}),
+        ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
+        ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
+        ...(body.debug ? { debug: true } : {}),
+        ...(body.sessionStore ? { sessionStore: body.sessionStore as never } : {}),
+        ...(body.attachments && body.attachments.length > 0 ? { attachments: body.attachments } : {}),
+      });
+
+      const sandbox: LiveSandbox = {
+        id: sandboxId,
+        sessionId,
+        agent,
+        state: "booting",
+        createdAt: now,
+        lastActivityAt: now,
+        expiresAt: new Date(now.getTime() + resolvedTtl.ttlMs),
+        idleExpiresAt: new Date(now.getTime() + resolvedTtl.idleTtlMs),
+        turnCount: 0,
+        usage: {},
+        currentTurn: null,
+        config: redactSandboxConfig(body),
+        idleTtlMs: resolvedTtl.idleTtlMs,
+        ttlMs: resolvedTtl.ttlMs,
+        firstChatSeen: false,
+        bootDeadlineAt: new Date(now.getTime() + (cfg.bootDeadlineMs ?? 60_000)),
+      };
+      this.sandboxes.insert(sandbox);
+
+      return c.json({
+        sandboxId,
+        sessionId,
+        state: sandbox.state,
+        createdAt: sandbox.createdAt,
+        expiresAt: sandbox.expiresAt,
+        idleExpiresAt: sandbox.idleExpiresAt,
+        idleTtlMs: sandbox.idleTtlMs,
+        ttlMs: sandbox.ttlMs,
+      }, 201);
+    });
+
+    this.app.get("/sandboxes", (c) => {
+      return c.json({ sandboxes: this.sandboxes.list() });
+    });
+
+    this.app.get("/sandboxes/:id", (c) => {
+      const sb = this.sandboxes.get(c.req.param("id"));
+      if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+      return c.json(summarize(sb));
+    });
+
+    this.app.delete("/sandboxes/:id", async (c) => {
+      const id = c.req.param("id");
+      const existed = this.sandboxes.has(id);
+      if (!existed) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+      // Capture usage BEFORE disposing — the registry removal nulls the agent.
+      const finalUsage = this.sandboxes.get(id)?.usage ?? {};
+      const turnCount = this.sandboxes.get(id)?.turnCount ?? 0;
+      await this.sandboxes.remove(id, "explicit");
+      return c.json({ ok: true, sandboxId: id, finalUsage, turnCount });
+    });
+
+    this.app.post("/sandboxes/:id/chat", async (c) => {
+      const id = c.req.param("id");
+      const sb = this.sandboxes.get(id);
+      if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+      if (sb.state === "expired" || sb.state === "disposed") {
+        return c.json({ error: { code: "GONE", state: sb.state } }, 410);
+      }
+      if (sb.state === "busy" && sb.currentTurn) {
+        return c.json({
+          error: {
+            code: "BUSY",
+            message: "Sandbox is already serving a chat turn. Wait for ca_done on the other stream.",
+            currentTurnStartedAt: sb.currentTurn.startedAt,
+          },
+        }, 409);
+      }
+
+      let body: SandboxChatBody;
+      try {
+        body = (await c.req.json()) as SandboxChatBody;
+      } catch (err) {
+        return c.json({ error: { code: "INVALID_JSON", message: (err as Error).message } }, 400);
+      }
+      if (!body.message) {
+        return c.json({ error: { code: "MISSING_MESSAGE", message: "message is required" } }, 400);
+      }
+
+      // Reserve the slot synchronously so a concurrent POST sees state=busy.
+      sb.state = "busy";
+      sb.currentTurn = { startedAt: new Date() };
+      sb.firstChatSeen = true;
+      sb.lastActivityAt = new Date();
+
+      return streamSSE(c, async (stream) => {
+        // IMPORTANT: stream.onAbort must NOT dispose the sandbox. The substrate
+        // is shared across turns — only DELETE or TTL fires dispose. We just
+        // mark the turn complete from the server's perspective; the for-await
+        // below sees stream backpressure / write errors and exits.
+        let clientGone = false;
+        stream.onAbort(() => { clientGone = true; });
+
+        try {
+          // The SDK accepts the same `message` shape /run uses.
+          const handle = sb.agent.chat(body.message as never);
+          for await (const ev of handle) {
+            if (clientGone) break;
+            await stream.writeSSE({ event: ev.kind, data: JSON.stringify(ev) }).catch(() => { clientGone = true; });
+            if (ev.kind === "ca_usage_snapshot") {
+              // The snapshot is incremental for the current turn; merge into
+              // cumulative usage. The SDK's `handle.getUsage()` would give us
+              // the same value but reading the event payload avoids the extra
+              // method call.
+              const u = (ev as { payload?: typeof sb.usage }).payload ?? {};
+              mergeUsage(sb.usage, u);
+            }
+            if (ev.kind === "ca_session_ended") break;
+          }
+          if (!clientGone) {
+            const finalUsage = handle.getUsage();
+            mergeUsage(sb.usage, finalUsage);
+            await stream.writeSSE({
+              event: "ca_done",
+              data: JSON.stringify({ sandboxId: id, sessionId: sb.sessionId, turn: sb.turnCount + 1, usage: finalUsage }),
+            }).catch(() => {});
+          }
+        } catch (err) {
+          // Stream the error to the client (if connected), but keep the sandbox
+          // alive for the next turn — the agent may be in a recoverable state.
+          // If the failure is fatal, the next chat() will surface the same
+          // problem; either way it's the client's call whether to DELETE.
+          if (!clientGone) {
+            await stream.writeSSE({
+              event: "ca_error",
+              data: JSON.stringify({ message: err instanceof Error ? err.message : String(err) }),
+            }).catch(() => {});
+          }
+        } finally {
+          // Reset turn state. Refresh the idle timer ONLY if the sandbox
+          // hasn't been reaped underneath us by the hard cap mid-stream.
+          const stillAlive = this.sandboxes.get(id);
+          if (stillAlive) {
+            stillAlive.turnCount += 1;
+            stillAlive.lastActivityAt = new Date();
+            stillAlive.idleExpiresAt = new Date(Date.now() + stillAlive.idleTtlMs);
+            stillAlive.currentTurn = null;
+            stillAlive.state = "ready";
+          }
+        }
+      });
+    });
   }
 
   /**
@@ -893,6 +1343,34 @@ function redactConfig(body: RunBody & { taskStore?: unknown }): Record<string, u
   };
 }
 
+/** Accumulate per-turn usage deltas into the sandbox's running totals. */
+function mergeUsage(
+  target: LiveSandbox["usage"],
+  src: Partial<LiveSandbox["usage"]> | undefined,
+): void {
+  if (!src) return;
+  if (src.inputTokens != null) target.inputTokens = (target.inputTokens ?? 0) + src.inputTokens;
+  if (src.outputTokens != null) target.outputTokens = (target.outputTokens ?? 0) + src.outputTokens;
+  if (src.cacheCreationInputTokens != null) target.cacheCreationInputTokens = (target.cacheCreationInputTokens ?? 0) + src.cacheCreationInputTokens;
+  if (src.cacheReadInputTokens != null) target.cacheReadInputTokens = (target.cacheReadInputTokens ?? 0) + src.cacheReadInputTokens;
+  if (src.costUsd != null) target.costUsd = (target.costUsd ?? 0) + src.costUsd;
+}
+
+/**
+ * Validator for POST /sandboxes — same as run-body minus the message check
+ * (sandboxes are message-less until /chat). idleTtlMs/ttlMs validity is
+ * checked separately by `resolveSandboxTtl`.
+ */
+function validateSandboxBody(body: unknown): { code: string; message: string } | undefined {
+  if (!body || typeof body !== "object") return { code: "INVALID_BODY", message: "body must be a JSON object" };
+  const b = body as Record<string, unknown>;
+  if (!b.source) return { code: "MISSING_SOURCE", message: "source is required" };
+  if (!b.harness || typeof b.harness !== "string") {
+    return { code: "MISSING_HARNESS", message: "harness is required (e.g. 'claude-agent-sdk')" };
+  }
+  return undefined;
+}
+
 function validateRunBody(body: unknown): { code: string; message: string } | undefined {
   if (!body || typeof body !== "object") return { code: "INVALID_BODY", message: "body must be a JSON object" };
   const b = body as Record<string, unknown>;
@@ -967,6 +1445,25 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const defaultTaskStore = process.env.DEFAULT_TASK_STORE
     ?? (taskStores.mongo ? "mongo" : "memory");
 
+  // Sandbox pool config — every knob is env-overridable so the deployment
+  // can dial idle vs hard caps to match its substrate economics (bwrap is
+  // cheap, e2b is per-minute). Defaults are conservative: 10m idle, 30m hard.
+  const intEnv = (key: string, fallback: number): number => {
+    const v = process.env[key];
+    if (!v) return fallback;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  };
+  const sandboxCfg = {
+    maxConcurrent: intEnv("SANDBOX_MAX_CONCURRENT", 8),
+    defaultIdleTtlMs: intEnv("SANDBOX_DEFAULT_IDLE_TTL_MS", 10 * 60_000),
+    defaultTtlMs: intEnv("SANDBOX_DEFAULT_TTL_MS", 30 * 60_000),
+    maxIdleTtlMs: intEnv("SANDBOX_MAX_IDLE_TTL_MS", 30 * 60_000),
+    maxTtlMs: intEnv("SANDBOX_MAX_TTL_MS", 120 * 60_000),
+    reaperIntervalMs: intEnv("SANDBOX_REAPER_INTERVAL_MS", 5_000),
+    bootDeadlineMs: intEnv("SANDBOX_BOOT_DEADLINE_MS", 60_000),
+  };
+
   const server = new ComputerAgentServer({
     host: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 8787),
@@ -976,6 +1473,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     defaultRuntime: process.env.DEFAULT_RUNTIME ?? "local",
     ...(Object.keys(taskStores).length > 0 ? { taskStores } : {}),
     defaultTaskStore,
+    sandbox: sandboxCfg,
   });
   const { host, port } = await server.listen();
   console.log(`ComputerAgentServer listening on http://${host}:${port}`);
@@ -992,6 +1490,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log("  GET  /tasks/:id/artifact        ?path=<path> — while task is live");
   console.log("  DEL  /tasks/:id                 cancel");
   console.log(`  defaultTaskStore: ${defaultTaskStore}  (registered: ${["memory", ...Object.keys(taskStores)].join(", ")})`);
+  console.log("");
+  console.log("  POST /sandboxes                 body: {source, harness, runtime?, envs?, options?, model?, idleTtlMs?, ttlMs?}; returns 201 {sandboxId}");
+  console.log("  POST /sandboxes/:id/chat        body: {message, attachments?}; SSE stream; 409 if busy");
+  console.log("  GET  /sandboxes                 list active sandboxes");
+  console.log("  GET  /sandboxes/:id             status snapshot");
+  console.log("  DEL  /sandboxes/:id             dispose explicitly");
+  console.log(`  sandbox TTLs: idle=${Math.round(sandboxCfg.defaultIdleTtlMs/1000)}s default / ${Math.round(sandboxCfg.maxIdleTtlMs/1000)}s max, hard=${Math.round(sandboxCfg.defaultTtlMs/1000)}s default / ${Math.round(sandboxCfg.maxTtlMs/1000)}s max, max ${sandboxCfg.maxConcurrent} concurrent`);
   console.log("");
   console.log("Example:");
   console.log("  curl -N -X POST http://" + host + ":" + port + "/run \\");
