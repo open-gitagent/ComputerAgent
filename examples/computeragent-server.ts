@@ -2121,6 +2121,36 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     bootDeadlineMs: intEnv("SANDBOX_BOOT_DEADLINE_MS", 60_000),
   };
 
+  // Optional: in-process Anthropic ↔ OpenAI translator proxy. When
+  // LYZR_PROXY_ENABLED=1 we boot @computeragent/llm-proxy-openai on
+  // 127.0.0.1:<port> so claude-agent-sdk / deepagents can target Lyzr (or
+  // any OpenAI-Chat-Completions backend) by setting `envs.ANTHROPIC_BASE_URL`
+  // = "http://127.0.0.1:<port>" on a /run or sandbox chat. Substrates
+  // running on the same host can reach the proxy via loopback (bwrap and
+  // local share the host's network namespace; e2b cannot — it would need
+  // a publicly routable proxy URL, out of scope here).
+  //
+  // gitagent doesn't need this proxy at all — gitclaw natively speaks OpenAI
+  // Chat Completions via GITCLAW_MODEL_BASE_URL + provider:model@baseUrl.
+  let lyzrProxyHandle: { port: number; close: () => Promise<void> } | null = null;
+  if (process.env.LYZR_PROXY_ENABLED === "1") {
+    const { startProxy } = await import("@computeragent/llm-proxy-openai");
+    const proxyToken = process.env.LYZR_UPSTREAM_TOKEN;
+    if (!proxyToken) {
+      console.error("[lyzr-proxy] LYZR_PROXY_ENABLED=1 but LYZR_UPSTREAM_TOKEN is not set — skipping");
+    } else {
+      lyzrProxyHandle = await startProxy({
+        port: intEnv("LYZR_PROXY_PORT", 8788),
+        upstream: {
+          base: process.env.LYZR_UPSTREAM_BASE ?? "https://agent-dev.test.studio.lyzr.ai",
+          path: process.env.LYZR_UPSTREAM_PATH ?? "/v4/chat/completions",
+          token: proxyToken,
+          ...(process.env.LYZR_UPSTREAM_MODEL ? { modelOverride: process.env.LYZR_UPSTREAM_MODEL } : {}),
+        },
+      });
+    }
+  }
+
   const server = new ComputerAgentServer({
     host: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 8787),
@@ -2134,8 +2164,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     defaultStateStore,
     sandbox: sandboxCfg,
   });
+  // Graceful shutdown — kill the proxy too when the main server stops.
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      void (async () => {
+        await lyzrProxyHandle?.close().catch(() => {});
+        await server.close().catch(() => {});
+        process.exit(0);
+      })();
+    });
+  }
   const { host, port } = await server.listen();
   console.log(`ComputerAgentServer listening on http://${host}:${port}`);
+  if (lyzrProxyHandle) {
+    console.log(`Anthropic↔OpenAI proxy listening on http://127.0.0.1:${lyzrProxyHandle.port}`);
+    console.log(`  → use envs.ANTHROPIC_BASE_URL=http://127.0.0.1:${lyzrProxyHandle.port} on /run for claude-agent-sdk + deepagents`);
+  }
   console.log("");
   console.log("Endpoints:");
   console.log("  GET  /health                    runtimes + default + active count");

@@ -41,6 +41,9 @@ importers:
       '@computeragent/identity-gitagentprotocol':
         specifier: workspace:*
         version: link:../packages/identity-gitagentprotocol
+      '@computeragent/llm-proxy-openai':
+        specifier: workspace:*
+        version: link:../packages/llm-proxy-openai
       '@computeragent/protocol':
         specifier: workspace:*
         version: link:../packages/protocol
