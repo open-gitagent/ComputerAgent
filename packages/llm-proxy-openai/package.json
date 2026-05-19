@@ -1,0 +1,50 @@
+{
+  "name": "@computeragent/llm-proxy-openai",
+  "version": "0.1.0",
+  "description": "Translator proxy: accepts POST /v1/messages (Anthropic Messages format) and forwards to /v1/chat/completions (OpenAI-compat). Lets engines that speak Anthropic Messages (claude-agent-sdk, deepagents) target any OpenAI-Chat-Completions backend — Lyzr Studio, vLLM, LiteLLM, Together, etc.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "anth-to-openai-proxy": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "keywords": [
+    "anthropic",
+    "openai",
+    "proxy",
+    "llm",
+    "computeragent",
+    "lyzr"
+  ],
+  "homepage": "https://github.com/open-gitagent/ComputerAgent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/open-gitagent/ComputerAgent.git",
+    "directory": "packages/llm-proxy-openai"
+  }
+}
