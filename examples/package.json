@@ -31,7 +31,8 @@
     "@computeragent/llm-proxy-openai": "workspace:*",
     "hono": "^4.6.0",
     "@hono/node-server": "^1.13.0",
-    "tar-stream": "^3.1.7"
+    "tar-stream": "^3.1.7",
+    "mongodb": "^6.10.0"
   },
   "devDependencies": {
     "@types/tar-stream": "^3.1.3"

@@ -611,6 +611,15 @@ interface SandboxChatBody {
 export class ComputerAgentServer {
   private readonly opts: ComputerAgentServerOptions;
   private readonly app = new Hono();
+
+  /**
+   * Mount another Hono app under this server's HTTP listener. Used by the
+   * Slack-bot module to attach /slack/* routes without booting a separate
+   * port. Call BEFORE `listen()`.
+   */
+  mount(subApp: Hono): void {
+    this.app.route("/", subApp);
+  }
   private server: ServerType | null = null;
   private readonly runs = new Map<string, ActiveRun>();
   private readonly broker = new TaskBroker();
@@ -2164,6 +2173,40 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     defaultStateStore,
     sandbox: sandboxCfg,
   });
+
+  // ── Optional: Slack bots — mount under /slack/{bot}/events.
+  //
+  // Two bots exposed when SLACK_BOTS_ENABLED=1:
+  //   /slack/claudebot/events  → claude-agent-sdk + (optional) LYZR proxy
+  //   /slack/gitagent/events   → gitagent direct
+  //
+  // Each bot maps a Slack thread to a warm /sandboxes instance with
+  // autoSave → S3 so threads can be resumed days later. Bots missing env
+  // config (TOKEN/SIGNING_SECRET/SOURCE) are skipped at boot, not fatal.
+  let slackBotNames: string[] = [];
+  if (process.env.SLACK_BOTS_ENABLED === "1") {
+    if (!process.env.MONGO_URL) {
+      console.error("[slack-bot] SLACK_BOTS_ENABLED=1 but MONGO_URL not set — Slack thread map needs mongo; skipping");
+    } else {
+      const [{ createSlackBotsApp, botsFromEnv }] = await Promise.all([
+        import("./slack-bot.ts"),
+      ]);
+      const bots = botsFromEnv();
+      if (bots.length === 0) {
+        console.error("[slack-bot] SLACK_BOTS_ENABLED=1 but no bot has all of TOKEN+SIGNING_SECRET+SOURCE; skipping");
+      } else {
+        const caBase = `http://${process.env.HOST ?? "127.0.0.1"}:${Number(process.env.PORT ?? 8787)}`;
+        const slackApp = createSlackBotsApp({
+          caBase,
+          mongoUrl: process.env.MONGO_URL,
+          mongoDb: process.env.MONGO_DATABASE ?? "computeragent-test",
+          bots,
+        });
+        server.mount(slackApp);
+        slackBotNames = bots.map((b) => b.name);
+      }
+    }
+  }
   // Graceful shutdown — kill the proxy too when the main server stops.
   for (const sig of ["SIGINT", "SIGTERM"] as const) {
     process.on(sig, () => {
@@ -2179,6 +2222,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (lyzrProxyHandle) {
     console.log(`Anthropic↔OpenAI proxy listening on http://127.0.0.1:${lyzrProxyHandle.port}`);
     console.log(`  → use envs.ANTHROPIC_BASE_URL=http://127.0.0.1:${lyzrProxyHandle.port} on /run for claude-agent-sdk + deepagents`);
+  }
+  if (slackBotNames.length > 0) {
+    console.log(`Slack bots active: ${slackBotNames.join(", ")}`);
+    for (const b of slackBotNames) {
+      console.log(`  POST /slack/${b}/events  (set as Slack Request URL for the ${b} app)`);
+    }
+    console.log(`  GET  /slack/health          (mongo connectivity + bot list)`);
   }
   console.log("");
   console.log("Endpoints:");
