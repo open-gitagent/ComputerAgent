@@ -1390,6 +1390,18 @@ export class ComputerAgentServer {
       const snap = await store.load(body.snapshotId);
       if (!snap) return c.json({ error: { code: "NOT_FOUND", snapshotId: body.snapshotId } }, 404);
 
+      // Same gate as POST /sandboxes — if the snapshot was taken with
+      // harness=deepagents (only possible from before the gate was added),
+      // refuse to restore. The conversation wouldn't survive anyway.
+      if ((snap.config as { harness?: string } | undefined)?.harness === "deepagents") {
+        return c.json({
+          error: {
+            code: "HARNESS_NOT_SUPPORTED",
+            message: "Restore refused: snapshot's harness is deepagents, which the warm-sandbox surface does not support. The captured workdir survives but the conversation does not. Use POST /run with attachments if you need the workdir bytes only.",
+          },
+        }, 400);
+      }
+
       try {
         if (!body.target || body.target === "new") {
           // Fresh slot. Reconstruct a SandboxBody from the snapshot's config
@@ -1961,6 +1973,23 @@ function validateSandboxBody(body: unknown): { code: string; message: string } |
   if (!b.source) return { code: "MISSING_SOURCE", message: "source is required" };
   if (!b.harness || typeof b.harness !== "string") {
     return { code: "MISSING_HARNESS", message: "harness is required (e.g. 'claude-agent-sdk')" };
+  }
+  // ── Warm-sandbox gate (Wedge 1.13 follow-up) ───────────────────────────
+  // Deepagents' LangGraph checkpointer is fully in-memory and isn't bridged
+  // to the SessionStore protocol the way claude-agent-sdk + gitagent are.
+  // That means:
+  //   - multi-turn within ONE warm sandbox WORKS (verified, in-memory state
+  //     persists across chat() calls)
+  //   - BUT snapshot → restore loses the conversation
+  // Cross-harness suite verified this end-to-end. Until engine-deepagents
+  // bridges its checkpointer (a substantial follow-up wedge), the warm
+  // sandbox surface refuses deepagents at the door. Users get /run + /tasks
+  // for one-shot work, which doesn't depend on the missing bridge.
+  if (b.harness === "deepagents") {
+    return {
+      code: "HARNESS_NOT_SUPPORTED",
+      message: "Warm sandboxes are not yet supported for harness=deepagents. The LangGraph checkpointer state isn't bridged to SessionStore, so conversation is lost on snapshot/restore. Use POST /run or POST /tasks for deepagents one-shot work.",
+    };
   }
   return undefined;
 }
