@@ -89,7 +89,14 @@ export interface ComputerAgentServerOptions {
    * If both `substrates` and the legacy `substrate` are absent, requests use a
    * fresh LocalSubstrate per call (matches the v0 default).
    */
-  readonly substrates?: Readonly<Record<string, () => Substrate>>;
+  /**
+   * Substrate factory signature accepts an optional per-call `timeoutMs`.
+   * Used by warm sandboxes to bump E2B's external idle timer (default 5m)
+   * up to match our sandbox.ttlMs + a grace window — otherwise the E2B
+   * service kills the substrate before our TTL fires.
+   * Substrates that have no external timer (bwrap, local) ignore the arg.
+   */
+  readonly substrates?: Readonly<Record<string, (opts?: { timeoutMs?: number }) => Substrate>>;
   /**
    * Default `runtime` when the request body omits it. Must be a key in
    * `substrates`. If unset, the first registered key wins.
@@ -99,7 +106,7 @@ export interface ComputerAgentServerOptions {
    * @deprecated Pass via `substrates: { default: () => ... }` and `defaultRuntime: "default"` instead.
    * Kept for backward compatibility with the singular-substrate v0 shape.
    */
-  readonly substrate?: () => Substrate;
+  readonly substrate?: (opts?: { timeoutMs?: number }) => Substrate;
   /**
    * Hard cap on concurrent agent runs. Beyond this, /run returns 429.
    * Default: 4 (LocalSubstrate spawns a Node process per agent).
@@ -1092,11 +1099,14 @@ export class ComputerAgentServer {
 
       const source = applyGitToken(normalizeSource(body.source), body.gitToken);
       // Build the agent but DO NOT call chat() yet — that's the substrate boot
-      // signal. The first POST /sandboxes/:id/chat triggers it.
+      // signal. The first POST /sandboxes/:id/chat triggers it. Per-call
+      // timeoutMs = sandbox.ttlMs + 30s grace so E2B's external 5m default
+      // doesn't pre-empt our own TTL. Non-e2b substrates ignore the arg.
+      const substrateTimeoutMs = resolvedTtl.ttlMs + 30_000;
       const agent = new ComputerAgent({
         source,
         harness: body.harness as never,
-        runtime: runtimeResult.factory(),
+        runtime: runtimeResult.factory({ timeoutMs: substrateTimeoutMs }),
         envs,
         sessionId,
         ...(body.options ? { options: body.options } : {}),
@@ -1560,10 +1570,15 @@ export class ComputerAgentServer {
       ? { kind: snap.sessionStoreRef.kind, options: snap.sessionStoreRef.options }
       : (cfg.sessionStore as { kind: string; options?: unknown } | undefined);
 
+    // Resolve TTL first so we can pass the e2b timeout when building the substrate.
+    const now = new Date();
+    const sandboxCfg = this.opts.sandbox ?? {};
+    const ttl = resolveSandboxTtl(overrides.idleTtlMs ?? (cfg.idleTtlMs as number | undefined), overrides.ttlMs ?? (cfg.ttlMs as number | undefined), sandboxCfg);
+
     const agent = new ComputerAgent({
       source: cfg.source as never,
       harness: cfg.harness as never,
-      runtime: runtimeResult.factory(),
+      runtime: runtimeResult.factory({ timeoutMs: ttl.ttlMs + 30_000 }),
       envs,
       sessionId,
       ...(cfg.options ? { options: cfg.options } : {}),
@@ -1574,10 +1589,6 @@ export class ComputerAgentServer {
       ...(sessionStore ? { sessionStore: sessionStore as never } : {}),
       attachments,
     });
-
-    const now = new Date();
-    const sandboxCfg = this.opts.sandbox ?? {};
-    const ttl = resolveSandboxTtl(overrides.idleTtlMs ?? (cfg.idleTtlMs as number | undefined), overrides.ttlMs ?? (cfg.ttlMs as number | undefined), sandboxCfg);
 
     const autoSave = overrides.autoSave ?? cfg.autoSave;
     const sandbox: LiveSandbox = {
@@ -1643,11 +1654,14 @@ export class ComputerAgentServer {
         : (cfg.sessionStore as { kind: string; options?: unknown } | undefined);
 
       // Build new agent BEFORE disposing old one so a build error doesn't
-      // leave us with a torn-down substrate + no replacement.
+      // leave us with a torn-down substrate + no replacement. The new substrate
+      // inherits the existing slot's remaining ttlMs window — that's what the
+      // caller is paying for in terms of warmth.
+      const inPlaceTimeoutMs = (overrides.ttlMs ?? sb.ttlMs) + 30_000;
       const newAgent = new ComputerAgent({
         source: cfg.source as never,
         harness: cfg.harness as never,
-        runtime: runtimeResult.factory(),
+        runtime: runtimeResult.factory({ timeoutMs: inPlaceTimeoutMs }),
         envs,
         sessionId,
         ...(cfg.options ? { options: cfg.options } : {}),
@@ -1782,7 +1796,7 @@ export class ComputerAgentServer {
   private resolveRuntime(
     requested: string | undefined,
   ):
-    | { ok: true; factory: () => Substrate }
+    | { ok: true; factory: (opts?: { timeoutMs?: number }) => Substrate }
     | { ok: false; error: { code: string; message: string; available: string[] } } {
     const registry = this.opts.substrates;
     const fallback = this.opts.substrate;
@@ -2013,7 +2027,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { BwrapSubstrate } = await import("@computeragent/runtime-bwrap");
   const { E2BSubstrate } = await import("@computeragent/runtime-e2b");
 
-  const substrates: Record<string, () => Substrate> = {
+  const substrates: Record<string, (opts?: { timeoutMs?: number }) => Substrate> = {
     local: () => new LocalSubstrate(),
   };
 
@@ -2030,7 +2044,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // e2b: Register when E2B_API_KEY is set. Each session spins up its own
   // Firecracker microVM via E2B's infra.
   if (process.env.E2B_API_KEY) {
-    substrates.e2b = () => new E2BSubstrate({ apiKey: process.env.E2B_API_KEY });
+    // Forward per-call timeoutMs (warm sandboxes pass ttlMs + grace so E2B's
+    // 5min default idle-killer doesn't bury a longer-lived sandbox). For /run
+    // + /tasks the arg is undefined and E2B uses its built-in default.
+    substrates.e2b = (opts) => new E2BSubstrate({
+      apiKey: process.env.E2B_API_KEY,
+      ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+    });
   }
 
   // Auto-forward selected host env vars into every spawned substrate. Bwrap

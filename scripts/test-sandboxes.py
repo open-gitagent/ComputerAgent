@@ -682,11 +682,15 @@ def main():
     p.add_argument("--harness", default="claude-agent-sdk",
                    choices=["claude-agent-sdk", "gitagent", "deepagents"],
                    help="which harness to drive the LLM-using tests with")
+    p.add_argument("--runtime", default="bwrap",
+                   choices=["bwrap", "local", "e2b"],
+                   help="which substrate to spawn the agent in")
     p.add_argument("--source", default=None,
                    help="override the source repo (defaults to the harness-appropriate one)")
     args = p.parse_args()
 
     DEFAULT_BODY["harness"] = args.harness
+    DEFAULT_BODY["runtime"] = args.runtime
     if args.source:
         DEFAULT_BODY["source"] = args.source
 
