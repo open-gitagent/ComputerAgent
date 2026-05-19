@@ -175547,7 +175547,7 @@ class DeepAgentsEngine {
     });
     const checkpointer = new MemorySaver2;
     const threadId = ctx.sessionId;
-    const backend = new LocalShellBackend3({ rootDir: ctx.workdir });
+    const backend = new LocalShellBackend3({ rootDir: ctx.workdir, virtualMode: true });
     await backend.initialize();
     const agent = createDeepAgent2({
       model,

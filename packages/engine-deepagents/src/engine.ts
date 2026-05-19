@@ -90,7 +90,15 @@ export class DeepAgentsEngine implements EngineDriver<DeepAgentsOptions> {
     // produce real files the substrate FS API can fetch, and `execute` runs
     // real shell commands. Without this deepagents falls back to StateBackend
     // (a virtual in-memory FS, no shell) — making skills that shell out unusable.
-    const backend = new LocalShellBackend({ rootDir: ctx.workdir });
+    //
+    // virtualMode:true tells LocalShellBackend to treat the agent's "absolute"
+    // paths (e.g. "/foo.txt") as virtual paths rooted at workdir, not real
+    // filesystem absolutes. Without it, deepagents' Claude-trained instinct to
+    // emit "/path/to/file" hits EROFS on macOS (root FS is read-only) and
+    // works-but-wrong on Linux (writes outside the sandbox workdir). The
+    // backend still allows relative paths verbatim — this only fixes the
+    // leading-slash case. Traversal (`..`) is rejected by deepagents itself.
+    const backend = new LocalShellBackend({ rootDir: ctx.workdir, virtualMode: true });
     await backend.initialize();
 
     const agent = createDeepAgent({
