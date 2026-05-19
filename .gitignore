@@ -19,3 +19,14 @@ examples/marketing-real-outputs/
 examples/pdfs/
 examples/security-reports/
 examples/wedge16-sessions/
+
+# Local Claude Code state (per-user settings.local.json holds live API keys
+# for that developer's environment — never commit).
+.claude/
+
+# Untracked dev tester with baked-in keys for local testing.
+test.html
+
+# Python bytecode caches from scripts/ test runners.
+__pycache__/
+*.pyc
