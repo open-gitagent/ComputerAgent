@@ -117,15 +117,15 @@ console.log(`\n${"─".repeat(70)}`);
 console.log(`Done in ${elapsed}s • ${toolCalls} tool calls • status: ${endedReason}`);
 console.log(
   `Usage: ${usage.inputTokens.toLocaleString()} in + ${usage.outputTokens.toLocaleString()} out` +
-    (usage.cacheReadInputTokens > 0
-      ? ` (cache read: ${usage.cacheReadInputTokens.toLocaleString()})`
-      : "") +
-    (usage.cacheCreationInputTokens > 0
-      ? ` (cache write: ${usage.cacheCreationInputTokens.toLocaleString()})`
-      : "") +
-    ` = ${totalTokens.toLocaleString()} tokens` +
-    (usage.costUsd !== undefined ? ` • $${usage.costUsd.toFixed(4)}` : "") +
-    "\n",
+  (usage.cacheReadInputTokens > 0
+    ? ` (cache read: ${usage.cacheReadInputTokens.toLocaleString()})`
+    : "") +
+  (usage.cacheCreationInputTokens > 0
+    ? ` (cache write: ${usage.cacheCreationInputTokens.toLocaleString()})`
+    : "") +
+  ` = ${totalTokens.toLocaleString()} tokens` +
+  (usage.costUsd !== undefined ? ` • $${usage.costUsd.toFixed(4)}` : "") +
+  "\n",
 );
 
 // Pull SECURITY_REVIEW.md from the workdir.
