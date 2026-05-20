@@ -61,6 +61,8 @@ interface BotConfig {
   readonly model?: string;
   /** Optional envs added to every sandbox this bot creates (e.g. Lyzr proxy / direct config). */
   readonly extraEnvs?: Record<string, string>;
+  /** Optional GitHub PAT used to clone private GAP repos. Server bakes it into the clone URL. */
+  readonly gitToken?: string;
 }
 
 interface ThreadDoc {
@@ -252,6 +254,7 @@ async function ensureSandboxForThread(
     ttlMs: 4 * 60 * 60_000,    // 4h hard cap per thread
   };
   if (bot.model) body.model = bot.model;
+  if (bot.gitToken) body.gitToken = bot.gitToken;
 
   const r = await fetch(`${caBase}/sandboxes`, {
     method: "POST",
@@ -563,7 +566,14 @@ export function botsFromEnv(): BotConfig[] {
         extraEnvs.ANTHROPIC_API_KEY = "lyzr-via-proxy";
       }
     }
-    return { name, harness, token, signingSecret, source, ...(model ? { model } : {}), extraEnvs };
+    // Optional GitHub PAT for private repos. Per-bot override wins over the global GITHUB_TOKEN.
+    const gitToken = process.env[`${prefix}GIT_TOKEN`] ?? process.env.GITHUB_TOKEN;
+    return {
+      name, harness, token, signingSecret, source,
+      ...(model ? { model } : {}),
+      extraEnvs,
+      ...(gitToken ? { gitToken } : {}),
+    };
   };
 
   const claudebot = buildOne("claudebot", "claude-agent-sdk");
