@@ -576,6 +576,12 @@ export function botsFromEnv(): BotConfig[] {
       extraEnvs.GITHUB_TOKEN = gitToken;
       extraEnvs.GH_TOKEN = gitToken;       // gh CLI reads GH_TOKEN
     }
+    // Slack user ID to @-mention when the agent thinks a PR review is approve-worthy.
+    // The agent emits `<@USERID>` into its final reply text; Slack renders the mention.
+    const approver = process.env[`${prefix}APPROVER_USER_ID`] ?? process.env.SLACK_APPROVER_USER_ID;
+    if (approver) {
+      extraEnvs.SLACK_APPROVER_USER_ID = approver;
+    }
     return {
       name, harness, token, signingSecret, source,
       ...(model ? { model } : {}),
