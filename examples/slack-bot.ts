@@ -184,6 +184,55 @@ async function slackUpdate(token: string, channel: string, ts: string, text: str
   return await r.json() as SlackUpdateResp;
 }
 
+/**
+ * Upload a file as a Slack thread attachment using the files.upload_v2 flow.
+ * Three steps:
+ *   1. files.getUploadURLExternal → pre-signed upload URL + file_id
+ *   2. POST the bytes to that URL (multipart)
+ *   3. files.completeUploadExternal → publish into the channel/thread
+ * Requires the bot to have the `files:write` scope.
+ */
+async function slackUploadFile(
+  token: string, channel: string, thread_ts: string,
+  filename: string, bytes: Uint8Array,
+): Promise<{ ok: boolean; error?: string }> {
+  // Step 1: get the upload URL
+  const step1 = await fetch("https://slack.com/api/files.getUploadURLExternal", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ filename, length: String(bytes.byteLength) }),
+  });
+  const j1 = await step1.json() as { ok: boolean; upload_url?: string; file_id?: string; error?: string };
+  if (!j1.ok || !j1.upload_url || !j1.file_id) {
+    return { ok: false, error: `getUploadURLExternal: ${j1.error ?? "unknown"}` };
+  }
+
+  // Step 2: upload bytes to the pre-signed URL
+  const form = new FormData();
+  form.append("file", new Blob([bytes as BlobPart]), filename);
+  const step2 = await fetch(j1.upload_url, { method: "POST", body: form });
+  if (!step2.ok) {
+    return { ok: false, error: `upload bytes: HTTP ${step2.status}` };
+  }
+
+  // Step 3: complete the upload and post to the channel thread
+  const step3 = await fetch("https://slack.com/api/files.completeUploadExternal", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" },
+    body: JSON.stringify({
+      files: [{ id: j1.file_id, title: filename }],
+      channel_id: channel,
+      thread_ts,
+    }),
+  });
+  const j3 = await step3.json() as { ok: boolean; error?: string };
+  if (!j3.ok) return { ok: false, error: `completeUploadExternal: ${j3.error ?? "unknown"}` };
+  return { ok: true };
+}
+
 // ── Sandbox lifecycle helpers ────────────────────────────────────────────
 
 interface SandboxRef {
@@ -399,10 +448,35 @@ async function streamChatToSlack(
     }
   }
 
-  const reply = finalText && finalText.trim()
-    ? finalText
-    : "_(no reply text)_";
-  await maybeEdit(reply, true);
+  // Parse [[ATTACH:path]] markers from the final reply text. The agent emits these
+  // to signal that a workdir file should be uploaded to Slack as a thread attachment.
+  // Markers are stripped from the user-visible text before the final edit.
+  const rawReply = finalText && finalText.trim() ? finalText : "_(no reply text)_";
+  const attachPaths: string[] = [];
+  const cleanedReply = rawReply.replace(/\[\[ATTACH:([^\]]+)\]\]/g, (_m, p) => {
+    attachPaths.push(String(p).trim());
+    return "";
+  }).replace(/\n{3,}/g, "\n\n").trim() || rawReply;
+  await maybeEdit(cleanedReply, true);
+
+  // Fetch each requested file from the sandbox workdir and upload to the Slack thread.
+  for (const path of attachPaths) {
+    try {
+      const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(sandboxId)}/artifact?path=${encodeURIComponent(path)}`);
+      if (!r.ok) {
+        console.error("[slack-bot]", bot.name, "artifact fetch failed", path, r.status);
+        continue;
+      }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      const filename = path.split("/").pop() || path;
+      const up = await slackUploadFile(bot.token, channel, msgTs, filename, buf);
+      if (!up.ok) {
+        console.error("[slack-bot]", bot.name, "slack upload failed for", filename, up.error);
+      }
+    } catch (err) {
+      console.error("[slack-bot]", bot.name, "attachment error for", path, (err as Error).message);
+    }
+  }
 }
 
 // ── Slack event handler ─────────────────────────────────────────────────

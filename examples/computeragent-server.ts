@@ -1170,6 +1170,24 @@ export class ComputerAgentServer {
       return c.json(summarize(sb));
     });
 
+    // GET /sandboxes/:id/artifact?path=<path> — fetch a workdir file from a live sandbox.
+    // Used by the Slack bot to grab agent-generated files (PDFs, PPTs, CSVs, …) and
+    // re-upload them as Slack file attachments.
+    this.app.get("/sandboxes/:id/artifact", async (c) => {
+      const sb = this.sandboxes.get(c.req.param("id"));
+      if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+      if (sb.state === "expired" || sb.state === "disposed") {
+        return c.json({ error: { code: "GONE" } }, 410);
+      }
+      const path = c.req.query("path");
+      if (!path) return c.json({ error: { code: "MISSING_PATH" } }, 400);
+      const bytes = await sb.agent.fetchArtifact(path);
+      if (!bytes) return c.json({ error: { code: "NOT_FOUND", path } }, 404);
+      return new Response(new Uint8Array(bytes), {
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+    });
+
     this.app.delete("/sandboxes/:id", async (c) => {
       const id = c.req.param("id");
       const sb = this.sandboxes.get(id);
