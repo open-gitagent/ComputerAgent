@@ -567,7 +567,15 @@ export function botsFromEnv(): BotConfig[] {
       }
     }
     // Optional GitHub PAT for private repos. Per-bot override wins over the global GITHUB_TOKEN.
+    // The token is used in two places:
+    //   1. `gitToken` — server-side, baked into the clone URL when fetching the GAP repo
+    //   2. Sandbox envs (GITHUB_TOKEN + GH_TOKEN) — so the agent itself can clone private
+    //      repos when the user asks it to from Slack.
     const gitToken = process.env[`${prefix}GIT_TOKEN`] ?? process.env.GITHUB_TOKEN;
+    if (gitToken) {
+      extraEnvs.GITHUB_TOKEN = gitToken;
+      extraEnvs.GH_TOKEN = gitToken;       // gh CLI reads GH_TOKEN
+    }
     return {
       name, harness, token, signingSecret, source,
       ...(model ? { model } : {}),
