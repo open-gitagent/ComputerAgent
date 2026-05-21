@@ -703,11 +703,28 @@ async function handleAppMention(
   }
 
   try {
+    // Resolve the sandbox first — we need to know whether the workdir is fresh
+    // (empty) or carried over, because that decides whether previously-ingested
+    // files still physically exist in the workdir.
+    const sb = await ensureSandboxForThread(caBase, store, bot, ev.channel, threadTs);
+    if (sb.fromSnapshot) {
+      await slackUpdate(bot.token, ev.channel, placeholder.ts,
+        `📦 Restoring previous context from snapshot \`${sb.fromSnapshot}\`…`);
+    }
+
+    // A brand-new sandbox with NO snapshot has an empty workdir, so the dedup
+    // record is stale — clear it and re-ingest. A reused or snapshot-restored
+    // sandbox still has the files, so honor the dedup record and skip re-download.
+    const workdirIsFresh = sb.fresh && !sb.fromSnapshot;
+    const doc = await store.load(bot.name, ev.channel, threadTs);
+    const alreadyIngested = workdirIsFresh ? new Set<string>() : new Set(doc?.ingestedFileIds ?? []);
+    if (workdirIsFresh && (doc?.ingestedFileIds?.length ?? 0) > 0) {
+      await store.upsert(bot.name, ev.channel, threadTs, { ingestedFileIds: [] });
+    }
+
     // Gather files to ingest. Prefer files on THIS mention; if it has none, fall
     // back to scanning the thread (user often uploads to the root message, then
     // mentions the bot in a reply). Dedup against files already pulled in.
-    const doc = await store.load(bot.name, ev.channel, threadTs);
-    const alreadyIngested = new Set(doc?.ingestedFileIds ?? []);
     let candidateFiles: SlackFile[] = ev.files ?? [];
     if (candidateFiles.length === 0) {
       candidateFiles = await fetchThreadFiles(bot.token, ev.channel, threadTs);
@@ -732,11 +749,6 @@ async function handleAppMention(
       }
     }
 
-    const sb = await ensureSandboxForThread(caBase, store, bot, ev.channel, threadTs);
-    if (sb.fromSnapshot) {
-      await slackUpdate(bot.token, ev.channel, placeholder.ts,
-        `📦 Restoring previous context from snapshot \`${sb.fromSnapshot}\`…`);
-    }
     // Prepend a note about the uploaded files so the agent knows they exist and where.
     const message = fileNote
       ? (userText ? `${fileNote}\n\n${userText}` : fileNote)
