@@ -489,7 +489,7 @@ async function streamChatToSlack(
   msgTs: string,
   userText: string,
   attachments: ChatAttachment[] = [],
-): Promise<void> {
+): Promise<{ replyText: string }> {
   // Snapshot the workdir BEFORE the turn so we can auto-attach any deliverable
   // files the agent creates — a safety net for when it forgets the [[ATTACH]] marker.
   const beforeFiles = await snapshotWorkdir(caBase, sandboxId);
@@ -503,14 +503,15 @@ async function streamChatToSlack(
     body: JSON.stringify(chatBody),
   });
   if (r.status === 409) {
-    await slackUpdate(bot.token, channel, msgTs,
-      "⏳ I'm already working on another reply in this thread. Wait for it to finish, then ask again.");
-    return;
+    const msg = "⏳ I'm already working on another reply in this thread. Wait for it to finish, then ask again.";
+    await slackUpdate(bot.token, channel, msgTs, msg);
+    return { replyText: msg };
   }
   if (!r.ok || !r.body) {
     const text = await r.text();
-    await slackUpdate(bot.token, channel, msgTs, `❌ Sandbox chat failed (${r.status}): ${text.slice(0, 400)}`);
-    return;
+    const msg = `❌ Sandbox chat failed (${r.status}): ${text.slice(0, 400)}`;
+    await slackUpdate(bot.token, channel, msgTs, msg);
+    return { replyText: msg };
   }
 
   let lastSlackText = "🤔 Working…";
@@ -601,7 +602,7 @@ async function streamChatToSlack(
       else if (ev === "ca_error") {
         const msg = ((data as { message?: string }).message) ?? "Unknown error";
         await maybeEdit(`❌ ${msg}`, true);
-        return;
+        return { replyText: `❌ ${msg}` };
       }
       else if (ev === "ca_session_ended") {
         break;
@@ -674,6 +675,47 @@ async function streamChatToSlack(
     if (!/attach|here|below|deliver/i.test(cleanedReply)) {
       await slackUpdate(bot.token, channel, msgTs, `${cleanedReply}\n\n_(Attached ${noun} above.)_`).catch(() => {});
     }
+  }
+
+  return { replyText: cleanedReply };
+}
+
+// ── Owner audit log ──────────────────────────────────────────────────────
+
+/**
+ * Programmatic audit log: DM the owner a record of every request the bot
+ * handles — who asked, what they asked, and the agent's reply. This is a hook,
+ * not agent-driven: it runs regardless of what the agent does.
+ *
+ * Owner is set via SLACK_AUDIT_USER_ID (falls back to SLACK_APPROVER_USER_ID).
+ * Best-effort: a failure here never affects the user's reply.
+ */
+async function sendOwnerAuditLog(
+  token: string,
+  bot: BotConfig,
+  ctx: { requester: string; channel: string; threadTs: string; query: string; reply: string },
+): Promise<void> {
+  const owner = process.env.SLACK_AUDIT_USER_ID ?? process.env.SLACK_APPROVER_USER_ID;
+  if (!owner) return;
+  // Don't fully spam the log with huge bodies — clamp each field.
+  const clamp = (s: string, n: number) => (s.length > n ? s.slice(0, n) + " …(truncated)" : s);
+  const channelRef = ctx.channel.startsWith("C") || ctx.channel.startsWith("G") ? `<#${ctx.channel}>` : ctx.channel;
+  const text = [
+    `*Audit log · ${bot.name}*`,
+    `*From:* <@${ctx.requester}>  ·  *In:* ${channelRef}`,
+    `*Query:* ${clamp(ctx.query || "_(no text)_", 1500)}`,
+    `*Reply:* ${clamp(ctx.reply || "_(empty)_", 2500)}`,
+  ].join("\n");
+  try {
+    const r = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ channel: owner, text }),
+    });
+    const j = await r.json() as { ok: boolean; error?: string };
+    if (!j.ok) console.error("[slack-bot]", bot.name, "audit DM failed:", j.error);
+  } catch (err) {
+    console.error("[slack-bot]", bot.name, "audit DM error:", (err as Error).message);
   }
 }
 
@@ -765,10 +807,27 @@ async function handleAppMention(
     const message = fileNote
       ? (userText ? `${fileNote}\n\n${userText}` : fileNote)
       : userText;
-    await streamChatToSlack(caBase, bot, sb.sandboxId, ev.channel, placeholder.ts, message, attachments);
+    const result = await streamChatToSlack(caBase, bot, sb.sandboxId, ev.channel, placeholder.ts, message, attachments);
+
+    // Programmatic audit log to the owner (best-effort; never blocks the reply).
+    await sendOwnerAuditLog(bot.token, bot, {
+      requester: ev.user,
+      channel: ev.channel,
+      threadTs,
+      query: userText || message,
+      reply: result?.replyText ?? "",
+    });
   } catch (err) {
     const msg = (err as Error).message ?? "unknown error";
     await slackUpdate(bot.token, ev.channel, placeholder.ts, `❌ Failed: ${msg.slice(0, 600)}`);
+    // Log failures to the owner too, so the audit trail captures errors.
+    await sendOwnerAuditLog(bot.token, bot, {
+      requester: ev.user,
+      channel: ev.channel,
+      threadTs,
+      query: stripMention(ev.text),
+      reply: `❌ Failed: ${msg.slice(0, 600)}`,
+    });
   }
 }
 
