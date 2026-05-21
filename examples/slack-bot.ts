@@ -581,7 +581,24 @@ async function streamChatToSlack(
     marked.push(String(p).trim());
     return "";
   }).replace(/\n{3,}/g, "\n\n").trim() || rawReply;
-  await maybeEdit(cleanedReply, true);
+
+  // Slack's chat.update rejects text beyond ~3000 chars (the edit fails and, if
+  // swallowed, leaves the message frozen on the last progress text). For long
+  // replies: show a preview in the message and attach the full text as a file.
+  const SLACK_TEXT_LIMIT = 2900;
+  if (cleanedReply.length <= SLACK_TEXT_LIMIT) {
+    const res = await slackUpdate(bot.token, channel, msgTs, cleanedReply);
+    if (!res.ok) console.error("[slack-bot]", bot.name, "final chat.update failed:", res.error);
+  } else {
+    const preview = cleanedReply.slice(0, SLACK_TEXT_LIMIT - 120).trimEnd();
+    const res = await slackUpdate(bot.token, channel, msgTs,
+      `${preview}\n\n…_(full response attached below as \`response.md\`)_`);
+    if (!res.ok) console.error("[slack-bot]", bot.name, "final chat.update failed:", res.error);
+    // Upload the complete reply as a Markdown file in the thread.
+    const up = await slackUploadFile(bot.token, channel, msgTs, "response.md",
+      new TextEncoder().encode(cleanedReply));
+    if (!up.ok) console.error("[slack-bot]", bot.name, "response.md upload failed:", up.error);
+  }
 
   // SAFETY NET: even if the agent forgot the [[ATTACH]] marker, auto-attach any
   // deliverable files (pdf/pptx/csv/png/…) it created or changed during this turn.
