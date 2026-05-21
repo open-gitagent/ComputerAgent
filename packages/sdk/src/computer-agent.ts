@@ -244,7 +244,11 @@ export class ComputerAgent {
    * a subsequent `chat()` reuses the same session rather than creating a new one.
    */
   async ensureSession(): Promise<string> {
-    if (this.existingSessionId) return this.existingSessionId;
+    // Gate on hasRegisteredOnServer, NOT existingSessionId: a constructor-supplied
+    // sessionId pre-sets existingSessionId before the harness session actually
+    // exists, so checking existingSessionId here would skip creation and leave the
+    // harness without the session. This mirrors chat()'s isFirstOnServer logic.
+    if (this.hasRegisteredOnServer) return this.existingSessionId!;
     this.hasRegisteredOnServer = true;
     return this.createSession(this.resolveHarnessUrl());
   }
