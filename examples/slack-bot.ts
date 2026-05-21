@@ -31,6 +31,19 @@ import { Hono } from "hono";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { MongoClient, type Collection } from "mongodb";
 
+// ── Loopback auth ────────────────────────────────────────────────────────
+//
+// When the parent server has API_AUTH_USER + API_AUTH_PASS set, every request
+// to /sandboxes/* requires HTTP Basic Auth. The slack-bot makes loopback HTTP
+// calls to that same server, so it also needs to send the credentials.
+// Reads the same env vars; no separate config.
+function caAuthHeader(): Record<string, string> {
+  const u = process.env.API_AUTH_USER;
+  const p = process.env.API_AUTH_PASS;
+  if (!u || !p) return {};
+  return { authorization: "Basic " + Buffer.from(`${u}:${p}`).toString("base64") };
+}
+
 // ── Types ────────────────────────────────────────────────────────────────
 
 interface SlackEventCallback {
@@ -257,7 +270,9 @@ async function ensureSandboxForThread(
 
   // ── Path A: existing live sandbox — verify it's actually still alive
   if (doc?.sandboxId) {
-    const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(doc.sandboxId)}`);
+    const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(doc.sandboxId)}`, {
+      headers: caAuthHeader(),
+    });
     if (r.status === 200) {
       const j = await r.json() as { state: string };
       if (j.state !== "expired" && j.state !== "disposed") {
@@ -272,7 +287,7 @@ async function ensureSandboxForThread(
   if (doc?.snapshotId) {
     const r = await fetch(`${caBase}/sandboxes/restore`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...caAuthHeader() },
       body: JSON.stringify({
         snapshotId: doc.snapshotId,
         stateStore: { kind: "s3", options: { prefix: `slack/${bot.name}/` } },
@@ -307,7 +322,7 @@ async function ensureSandboxForThread(
 
   const r = await fetch(`${caBase}/sandboxes`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...caAuthHeader() },
     body: JSON.stringify(body),
   });
   if (!r.ok) {
@@ -338,7 +353,7 @@ async function streamChatToSlack(
 ): Promise<void> {
   const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(sandboxId)}/chat`, {
     method: "POST",
-    headers: { "content-type": "application/json", "accept": "text/event-stream" },
+    headers: { "content-type": "application/json", "accept": "text/event-stream", ...caAuthHeader() },
     body: JSON.stringify({ message: userText }),
   });
   if (r.status === 409) {
@@ -462,7 +477,9 @@ async function streamChatToSlack(
   // Fetch each requested file from the sandbox workdir and upload to the Slack thread.
   for (const path of attachPaths) {
     try {
-      const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(sandboxId)}/artifact?path=${encodeURIComponent(path)}`);
+      const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(sandboxId)}/artifact?path=${encodeURIComponent(path)}`, {
+        headers: caAuthHeader(),
+      });
       if (!r.ok) {
         console.error("[slack-bot]", bot.name, "artifact fetch failed", path, r.status);
         continue;

@@ -30,7 +30,7 @@
  *     }'
  */
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { Readable } from "node:stream";
 import * as tar from "tar-stream";
@@ -697,21 +697,49 @@ export class ComputerAgentServer {
   }
 
   private wire(): void {
-    // CORS: this is an unauthenticated public API; the same callers that
-    // can curl it from anywhere should be able to fetch() it from a browser
-    // (test.html, dashboards, etc.). origin:"*" is consistent with the
-    // server's existing no-auth posture. Add a proper auth layer first if
-    // you want to restrict cross-origin browser access.
+    // CORS — must come BEFORE auth so preflight OPTIONS doesn't get 401'd.
+    // allowHeaders includes "authorization" so browsers can send Basic Auth.
     this.app.use(
       "*",
       cors({
         origin: "*",
         allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allowHeaders: ["content-type", "accept", "last-event-id"],
+        allowHeaders: ["content-type", "accept", "last-event-id", "authorization"],
         exposeHeaders: ["content-type"],
         maxAge: 86400,
       }),
     );
+
+    // Basic Auth — enabled when API_AUTH_USER + API_AUTH_PASS are set in env.
+    // Whitelisted paths skip auth:
+    //   - /health           uptime monitoring should not require credentials
+    //   - /slack/*          Slack signature verification is its own auth layer
+    //                       (HMAC over the request body — see slack-bot.ts)
+    //
+    // When unset, the server logs a warning and accepts all requests, so this
+    // stays backward-compatible until creds are configured.
+    const authUser = process.env.API_AUTH_USER;
+    const authPass = process.env.API_AUTH_PASS;
+    if (authUser && authPass) {
+      const expected = "Basic " + Buffer.from(`${authUser}:${authPass}`).toString("base64");
+      const expectedBuf = Buffer.from(expected);
+      this.app.use("*", async (c, next) => {
+        const path = new URL(c.req.url).pathname;
+        if (path === "/health" || path.startsWith("/slack/")) return next();
+        const got = c.req.header("authorization") ?? "";
+        if (got.length === expected.length) {
+          const gotBuf = Buffer.from(got);
+          try {
+            if (timingSafeEqual(gotBuf, expectedBuf)) return next();
+          } catch { /* length mismatch — fall through to 401 */ }
+        }
+        c.header("WWW-Authenticate", 'Basic realm="ComputerAgent"');
+        return c.json({ error: { code: "UNAUTHORIZED" } }, 401);
+      });
+      console.log("[auth] Basic Auth ENABLED (user=" + authUser + ")");
+    } else {
+      console.warn("[auth] Basic Auth DISABLED — set API_AUTH_USER + API_AUTH_PASS env vars to enable.");
+    }
 
     this.app.get("/health", (c) =>
       c.json({
