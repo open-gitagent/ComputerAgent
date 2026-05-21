@@ -101,6 +101,7 @@ interface ThreadDoc {
   sessionId: string;            // pinned: "slack-<channel>-<threadTs>"
   createdAt: Date;
   lastMessageAt: Date;
+  ingestedFileIds?: string[];   // Slack file IDs already pulled into the sandbox
 }
 
 // ── Slack signature verification ─────────────────────────────────────────
@@ -219,6 +220,30 @@ function safeFilename(name: string | undefined, idx: number): string {
   const base = (name ?? `upload_${idx}`).split("/").pop() ?? `upload_${idx}`;
   const cleaned = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "");
   return cleaned || `upload_${idx}`;
+}
+
+/**
+ * Fetch all files attached anywhere in a Slack thread (root + replies). Used
+ * when the user uploads a file on one message and mentions the bot on another.
+ * Needs a history scope: `channels:history` (public) / `groups:history`
+ * (private) / `im:history` / `mpim:history`.
+ */
+async function fetchThreadFiles(token: string, channel: string, threadTs: string): Promise<SlackFile[]> {
+  const files: SlackFile[] = [];
+  try {
+    const r = await fetch(
+      `https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=200`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    const j = await r.json() as { ok: boolean; error?: string; messages?: Array<{ files?: SlackFile[] }> };
+    if (!j.ok) { console.error("[slack-bot] conversations.replies failed:", j.error); return files; }
+    for (const m of j.messages ?? []) {
+      for (const f of m.files ?? []) files.push(f);
+    }
+  } catch (err) {
+    console.error("[slack-bot] fetchThreadFiles error:", (err as Error).message);
+  }
+  return files;
 }
 
 /**
@@ -678,15 +703,28 @@ async function handleAppMention(
   }
 
   try {
-    // Download any files the user attached and turn them into chat attachments.
+    // Gather files to ingest. Prefer files on THIS mention; if it has none, fall
+    // back to scanning the thread (user often uploads to the root message, then
+    // mentions the bot in a reply). Dedup against files already pulled in.
+    const doc = await store.load(bot.name, ev.channel, threadTs);
+    const alreadyIngested = new Set(doc?.ingestedFileIds ?? []);
+    let candidateFiles: SlackFile[] = ev.files ?? [];
+    if (candidateFiles.length === 0) {
+      candidateFiles = await fetchThreadFiles(bot.token, ev.channel, threadTs);
+    }
+    const newFiles = candidateFiles.filter((f) => f.id && !alreadyIngested.has(f.id));
+
     let attachments: ChatAttachment[] = [];
     let fileNote = "";
-    if (hasFiles) {
-      await slackUpdate(bot.token, ev.channel, placeholder.ts, "📎 Downloading your file(s)…");
-      const dl = await downloadSlackFiles(bot.token, ev.files);
+    if (newFiles.length > 0) {
+      await slackUpdate(bot.token, ev.channel, placeholder.ts, "📎 Downloading file(s)…");
+      const dl = await downloadSlackFiles(bot.token, newFiles);
       attachments = dl.attachments;
       if (dl.names.length > 0) {
         fileNote = `The user attached ${dl.names.length} file(s), saved in your working directory: ${dl.names.map((n) => `\`${n}\``).join(", ")}. Read them as needed to answer.`;
+        // Record these so we don't re-download them on every follow-up mention.
+        const ingestedIds = [...alreadyIngested, ...newFiles.map((f) => f.id)];
+        await store.upsert(bot.name, ev.channel, threadTs, { ingestedFileIds: ingestedIds });
       }
       if (dl.skipped.length > 0) {
         await slackUpdate(bot.token, ev.channel, placeholder.ts,
