@@ -673,6 +673,11 @@ export function botsFromEnv(): BotConfig[] {
     if (approver) {
       extraEnvs.SLACK_APPROVER_USER_ID = approver;
     }
+    // Exa API key for the exa-research skill. Per-bot override allowed.
+    const exaKey = process.env[`${prefix}EXA_API_KEY`] ?? process.env.EXA_API_KEY;
+    if (exaKey) {
+      extraEnvs.EXA_API_KEY = exaKey;
+    }
     return {
       name, harness, token, signingSecret, source,
       ...(model ? { model } : {}),
