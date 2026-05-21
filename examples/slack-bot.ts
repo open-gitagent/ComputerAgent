@@ -362,10 +362,22 @@ function extOf(path: string): string {
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
 }
 
-/** New-or-changed deliverable files between two workdir snapshots. */
+// Workdir subtrees that belong to the cloned GAP repo, never agent deliverables.
+// Auto-attach skips these so a curated knowledge/ PDF or a skill asset is never
+// pushed to Slack just because it appeared in the post-turn snapshot.
+const REPO_PATH_PREFIXES = ["knowledge/", "skills/", ".git/", "node_modules/"];
+
+/**
+ * New-or-changed deliverable files between two workdir snapshots.
+ * Guard: if `before` is empty the diff is unreliable (the baseline snapshot
+ * failed or the session wasn't ready), so return nothing rather than flag the
+ * entire cloned repo as "new". Repo subtrees are always excluded.
+ */
 function newDeliverables(before: Map<string, string>, after: Map<string, string>): string[] {
+  if (before.size === 0) return [];
   const result: string[] = [];
   for (const [path, sig] of after) {
+    if (REPO_PATH_PREFIXES.some((p) => path.startsWith(p))) continue;
     if (!DELIVERABLE_EXTS.has(extOf(path))) continue;
     if (before.get(path) !== sig) result.push(path);   // new or changed
   }

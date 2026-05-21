@@ -1209,6 +1209,15 @@ export class ComputerAgentServer {
       }
       const depthRaw = Number(c.req.query("depth") ?? "3");
       const depth = Number.isFinite(depthRaw) ? Math.min(Math.max(depthRaw, 1), 8) : 3;
+      // Ensure the session exists (boots substrate + clones the GAP repo) so the
+      // listing reflects the real baseline — including repo files. Without this,
+      // a pre-turn snapshot of a fresh sandbox returns empty, and the caller's
+      // before/after diff would flag every cloned repo file as "new".
+      try {
+        await sb.agent.ensureSession();
+      } catch {
+        return c.json({ entries: [] });
+      }
       const entries = await sb.agent.listWorkdir({ depth });
       return c.json({ entries });
     });
