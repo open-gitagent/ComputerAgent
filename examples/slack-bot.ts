@@ -246,6 +246,54 @@ async function slackUploadFile(
   return { ok: true };
 }
 
+// ── Workdir snapshot + deliverable detection ─────────────────────────────
+
+// Binary / data formats that are almost always intended as deliverables when
+// freshly created during a turn. We auto-attach these even without an explicit
+// [[ATTACH:]] marker, as a safety net for when the agent forgets the marker.
+// Intermediates the agent commonly writes (.py, .json, .html, .md, .txt, .log,
+// .sh) are deliberately excluded — attach those only via an explicit marker.
+const DELIVERABLE_EXTS = new Set([
+  "pdf", "pptx", "ppt", "docx", "doc", "xlsx", "xls", "csv",
+  "png", "jpg", "jpeg", "gif", "svg", "webp",
+  "zip", "tar", "gz", "mp3", "mp4", "wav",
+]);
+
+interface WorkdirEntry { path: string; type: "file" | "dir"; size: number; mtime: number; }
+
+/** Map of file path -> "size:mtime" signature, for diffing before/after a turn. */
+async function snapshotWorkdir(caBase: string, sandboxId: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    const r = await fetch(
+      `${caBase}/sandboxes/${encodeURIComponent(sandboxId)}/workdir?depth=3`,
+      { headers: caAuthHeader() },
+    );
+    if (!r.ok) return out;
+    const j = await r.json() as { entries?: WorkdirEntry[] };
+    for (const e of j.entries ?? []) {
+      if (e.type === "file") out.set(e.path, `${e.size}:${e.mtime}`);
+    }
+  } catch { /* best-effort — empty snapshot just disables auto-attach */ }
+  return out;
+}
+
+function extOf(path: string): string {
+  const base = path.split("/").pop() ?? path;
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+}
+
+/** New-or-changed deliverable files between two workdir snapshots. */
+function newDeliverables(before: Map<string, string>, after: Map<string, string>): string[] {
+  const result: string[] = [];
+  for (const [path, sig] of after) {
+    if (!DELIVERABLE_EXTS.has(extOf(path))) continue;
+    if (before.get(path) !== sig) result.push(path);   // new or changed
+  }
+  return result;
+}
+
 // ── Sandbox lifecycle helpers ────────────────────────────────────────────
 
 interface SandboxRef {
@@ -351,6 +399,10 @@ async function streamChatToSlack(
   msgTs: string,
   userText: string,
 ): Promise<void> {
+  // Snapshot the workdir BEFORE the turn so we can auto-attach any deliverable
+  // files the agent creates — a safety net for when it forgets the [[ATTACH]] marker.
+  const beforeFiles = await snapshotWorkdir(caBase, sandboxId);
+
   const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(sandboxId)}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json", "accept": "text/event-stream", ...caAuthHeader() },
@@ -467,15 +519,23 @@ async function streamChatToSlack(
   // to signal that a workdir file should be uploaded to Slack as a thread attachment.
   // Markers are stripped from the user-visible text before the final edit.
   const rawReply = finalText && finalText.trim() ? finalText : "_(no reply text)_";
-  const attachPaths: string[] = [];
+  const marked: string[] = [];
   const cleanedReply = rawReply.replace(/\[\[ATTACH:([^\]]+)\]\]/g, (_m, p) => {
-    attachPaths.push(String(p).trim());
+    marked.push(String(p).trim());
     return "";
   }).replace(/\n{3,}/g, "\n\n").trim() || rawReply;
   await maybeEdit(cleanedReply, true);
 
-  // Fetch each requested file from the sandbox workdir and upload to the Slack thread.
-  for (const path of attachPaths) {
+  // SAFETY NET: even if the agent forgot the [[ATTACH]] marker, auto-attach any
+  // deliverable files (pdf/pptx/csv/png/…) it created or changed during this turn.
+  // Merge with the explicitly-marked paths, dedupe.
+  const afterFiles = await snapshotWorkdir(caBase, sandboxId);
+  const auto = newDeliverables(beforeFiles, afterFiles);
+  const toUpload = Array.from(new Set([...marked, ...auto]));
+
+  // Fetch each file from the sandbox workdir and upload to the Slack thread.
+  let uploaded = 0;
+  for (const path of toUpload) {
     try {
       const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(sandboxId)}/artifact?path=${encodeURIComponent(path)}`, {
         headers: caAuthHeader(),
@@ -487,11 +547,19 @@ async function streamChatToSlack(
       const buf = new Uint8Array(await r.arrayBuffer());
       const filename = path.split("/").pop() || path;
       const up = await slackUploadFile(bot.token, channel, msgTs, filename, buf);
-      if (!up.ok) {
-        console.error("[slack-bot]", bot.name, "slack upload failed for", filename, up.error);
-      }
+      if (up.ok) uploaded++;
+      else console.error("[slack-bot]", bot.name, "slack upload failed for", filename, up.error);
     } catch (err) {
       console.error("[slack-bot]", bot.name, "attachment error for", path, (err as Error).message);
+    }
+  }
+
+  // If we auto-attached files the agent didn't mention, nudge the reply so the
+  // thread isn't just a bare file with stale "it's in the workdir" text.
+  if (uploaded > 0 && marked.length === 0) {
+    const noun = uploaded === 1 ? "the file" : `${uploaded} files`;
+    if (!/attach|here|below|deliver/i.test(cleanedReply)) {
+      await slackUpdate(bot.token, channel, msgTs, `${cleanedReply}\n\n_(Attached ${noun} above.)_`).catch(() => {});
     }
   }
 }

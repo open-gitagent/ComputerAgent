@@ -1198,6 +1198,21 @@ export class ComputerAgentServer {
       return c.json(summarize(sb));
     });
 
+    // GET /sandboxes/:id/workdir?depth=<n> — list the sandbox workdir tree.
+    // Used by the Slack bot to diff before/after a turn and auto-attach any
+    // deliverable files the agent produced.
+    this.app.get("/sandboxes/:id/workdir", async (c) => {
+      const sb = this.sandboxes.get(c.req.param("id"));
+      if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+      if (sb.state === "expired" || sb.state === "disposed") {
+        return c.json({ error: { code: "GONE" } }, 410);
+      }
+      const depthRaw = Number(c.req.query("depth") ?? "3");
+      const depth = Number.isFinite(depthRaw) ? Math.min(Math.max(depthRaw, 1), 8) : 3;
+      const entries = await sb.agent.listWorkdir({ depth });
+      return c.json({ entries });
+    });
+
     // GET /sandboxes/:id/artifact?path=<path> — fetch a workdir file from a live sandbox.
     // Used by the Slack bot to grab agent-generated files (PDFs, PPTs, CSVs, …) and
     // re-upload them as Slack file attachments.
