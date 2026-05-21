@@ -236,6 +236,35 @@ export class ComputerAgent {
     return body.entries;
   }
 
+  /**
+   * Ensure the harness session exists WITHOUT pushing a user message or running
+   * a turn. Boots the substrate (if needed) and creates the session, so callers
+   * can write files into the workdir (see `writeArtifact`) before the first
+   * `chat()`. Idempotent — returns the existing session id on repeat calls, and
+   * a subsequent `chat()` reuses the same session rather than creating a new one.
+   */
+  async ensureSession(): Promise<string> {
+    if (this.existingSessionId) return this.existingSessionId;
+    this.hasRegisteredOnServer = true;
+    return this.createSession(this.resolveHarnessUrl());
+  }
+
+  /**
+   * Write a file into the session workdir via the harness `PUT /fs/file`.
+   * Accepts raw bytes (binary-safe — e.g. an uploaded PDF) or a UTF-8 string.
+   * Requires a session — call `ensureSession()` (or `chat()`) first.
+   */
+  async writeArtifact(path: string, content: Uint8Array | string): Promise<void> {
+    const url = await this.requireSessionFileUrl(path);
+    const src = typeof content === "string" ? new TextEncoder().encode(content) : content;
+    // Copy into a plain ArrayBuffer (a clean BodyInit) — avoids TS 5.7's generic
+    // Uint8Array<ArrayBufferLike> mismatch and stays binary-safe.
+    const ab = new ArrayBuffer(src.byteLength);
+    new Uint8Array(ab).set(src);
+    const res = await this.fetchImpl(url, { method: "PUT", body: ab });
+    if (!res.ok) throw await asHarnessError(res);
+  }
+
   private requireSessionId(): string {
     if (!this.existingSessionId) {
       throw new Error(

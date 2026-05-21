@@ -1279,6 +1279,24 @@ export class ComputerAgentServer {
       sb.firstChatSeen = true;
       sb.lastActivityAt = new Date();
 
+      // Materialize per-turn attachments (e.g. files the user uploaded in Slack)
+      // into the workdir BEFORE the agent runs, so the agent can read them.
+      if (body.attachments && body.attachments.length > 0) {
+        try {
+          await sb.agent.ensureSession();
+          for (const a of body.attachments) {
+            const bytes = a.encoding === "base64"
+              ? Buffer.from(a.content, "base64")
+              : Buffer.from(a.content, "utf8");
+            await sb.agent.writeArtifact(a.path, bytes);
+          }
+        } catch (err) {
+          sb.state = "ready";
+          sb.currentTurn = undefined;
+          return c.json({ error: { code: "ATTACHMENT_WRITE_FAILED", message: (err as Error).message } }, 500);
+        }
+      }
+
       return streamSSE(c, async (stream) => {
         // IMPORTANT: stream.onAbort must NOT dispose the sandbox. The substrate
         // is shared across turns — only DELETE or TTL fires dispose. We just

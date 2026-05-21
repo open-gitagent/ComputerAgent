@@ -54,6 +54,16 @@ interface SlackUrlVerification {
   type: "url_verification";
   challenge: string;
 }
+interface SlackFile {
+  id: string;
+  name?: string;
+  title?: string;
+  mimetype?: string;
+  filetype?: string;
+  size?: number;
+  url_private?: string;
+  url_private_download?: string;
+}
 interface SlackAppMentionEvent {
   type: "app_mention";
   user: string;
@@ -62,7 +72,10 @@ interface SlackAppMentionEvent {
   ts: string;
   thread_ts?: string;   // when responding inside a thread
   event_ts: string;
+  files?: SlackFile[];  // present when the user attached files to the message
 }
+
+interface ChatAttachment { path: string; content: string; encoding: "base64" | "utf8"; }
 
 interface BotConfig {
   readonly name: "claudebot" | "gitagent";
@@ -195,6 +208,46 @@ async function slackUpdate(token: string, channel: string, ts: string, text: str
     body: JSON.stringify({ channel, ts, text }),
   });
   return await r.json() as SlackUpdateResp;
+}
+
+// Files uploaded by the user that exceed this are skipped (base64 in JSON gets
+// unwieldy; large docs belong in object storage, not an inline chat attachment).
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+/** Sanitize a Slack-provided filename into a safe workdir-relative path. */
+function safeFilename(name: string | undefined, idx: number): string {
+  const base = (name ?? `upload_${idx}`).split("/").pop() ?? `upload_${idx}`;
+  const cleaned = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "");
+  return cleaned || `upload_${idx}`;
+}
+
+/**
+ * Download files the user attached to a Slack message and return them as chat
+ * attachments (base64) to materialize into the sandbox workdir. Slack file URLs
+ * require the bot token as a Bearer header. Needs the `files:read` scope.
+ */
+async function downloadSlackFiles(token: string, files: SlackFile[] | undefined): Promise<{ attachments: ChatAttachment[]; names: string[]; skipped: string[] }> {
+  const attachments: ChatAttachment[] = [];
+  const names: string[] = [];
+  const skipped: string[] = [];
+  for (let i = 0; i < (files?.length ?? 0); i++) {
+    const f = files![i];
+    const url = f.url_private_download ?? f.url_private;
+    if (!url) { skipped.push(f.name ?? f.id); continue; }
+    if (f.size && f.size > MAX_UPLOAD_BYTES) { skipped.push(`${f.name ?? f.id} (too large)`); continue; }
+    try {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { skipped.push(`${f.name ?? f.id} (HTTP ${r.status})`); continue; }
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.byteLength > MAX_UPLOAD_BYTES) { skipped.push(`${f.name ?? f.id} (too large)`); continue; }
+      const path = safeFilename(f.name ?? f.title, i);
+      attachments.push({ path, content: buf.toString("base64"), encoding: "base64" });
+      names.push(path);
+    } catch (err) {
+      skipped.push(`${f.name ?? f.id} (${(err as Error).message})`);
+    }
+  }
+  return { attachments, names, skipped };
 }
 
 /**
@@ -398,15 +451,19 @@ async function streamChatToSlack(
   channel: string,
   msgTs: string,
   userText: string,
+  attachments: ChatAttachment[] = [],
 ): Promise<void> {
   // Snapshot the workdir BEFORE the turn so we can auto-attach any deliverable
   // files the agent creates — a safety net for when it forgets the [[ATTACH]] marker.
   const beforeFiles = await snapshotWorkdir(caBase, sandboxId);
 
+  const chatBody: Record<string, unknown> = { message: userText };
+  if (attachments.length > 0) chatBody.attachments = attachments;
+
   const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(sandboxId)}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json", "accept": "text/event-stream", ...caAuthHeader() },
-    body: JSON.stringify({ message: userText }),
+    body: JSON.stringify(chatBody),
   });
   if (r.status === 409) {
     await slackUpdate(bot.token, channel, msgTs,
@@ -528,9 +585,11 @@ async function streamChatToSlack(
 
   // SAFETY NET: even if the agent forgot the [[ATTACH]] marker, auto-attach any
   // deliverable files (pdf/pptx/csv/png/…) it created or changed during this turn.
-  // Merge with the explicitly-marked paths, dedupe.
+  // Merge with the explicitly-marked paths, dedupe. Exclude the user's own
+  // uploaded files — we materialized those into the workdir, don't echo them back.
   const afterFiles = await snapshotWorkdir(caBase, sandboxId);
-  const auto = newDeliverables(beforeFiles, afterFiles);
+  const uploadedPaths = new Set(attachments.map((a) => a.path));
+  const auto = newDeliverables(beforeFiles, afterFiles).filter((p) => !uploadedPaths.has(p));
   const toUpload = Array.from(new Set([...marked, ...auto]));
 
   // Fetch each file from the sandbox workdir and upload to the Slack thread.
@@ -584,8 +643,10 @@ async function handleAppMention(
   // Reply IN-THREAD when there's a thread_ts, else start a thread on the message itself.
   const threadTs = ev.thread_ts ?? ev.ts;
   const userText = stripMention(ev.text);
+  const hasFiles = (ev.files?.length ?? 0) > 0;
 
-  if (!userText) {
+  // Allow a file-only mention (no text) — the attached file IS the task context.
+  if (!userText && !hasFiles) {
     await slackPost(bot.token, ev.channel,
       `👋 Mention me with a message — e.g. \`@${bot.name} summarize this channel\``,
       threadTs);
@@ -600,12 +661,32 @@ async function handleAppMention(
   }
 
   try {
+    // Download any files the user attached and turn them into chat attachments.
+    let attachments: ChatAttachment[] = [];
+    let fileNote = "";
+    if (hasFiles) {
+      await slackUpdate(bot.token, ev.channel, placeholder.ts, "📎 Downloading your file(s)…");
+      const dl = await downloadSlackFiles(bot.token, ev.files);
+      attachments = dl.attachments;
+      if (dl.names.length > 0) {
+        fileNote = `The user attached ${dl.names.length} file(s), saved in your working directory: ${dl.names.map((n) => `\`${n}\``).join(", ")}. Read them as needed to answer.`;
+      }
+      if (dl.skipped.length > 0) {
+        await slackUpdate(bot.token, ev.channel, placeholder.ts,
+          `⚠️ Couldn't attach: ${dl.skipped.join(", ")}. Continuing…`);
+      }
+    }
+
     const sb = await ensureSandboxForThread(caBase, store, bot, ev.channel, threadTs);
     if (sb.fromSnapshot) {
       await slackUpdate(bot.token, ev.channel, placeholder.ts,
         `📦 Restoring previous context from snapshot \`${sb.fromSnapshot}\`…`);
     }
-    await streamChatToSlack(caBase, bot, sb.sandboxId, ev.channel, placeholder.ts, userText);
+    // Prepend a note about the uploaded files so the agent knows they exist and where.
+    const message = fileNote
+      ? (userText ? `${fileNote}\n\n${userText}` : fileNote)
+      : userText;
+    await streamChatToSlack(caBase, bot, sb.sandboxId, ev.channel, placeholder.ts, message, attachments);
   } catch (err) {
     const msg = (err as Error).message ?? "unknown error";
     await slackUpdate(bot.token, ev.channel, placeholder.ts, `❌ Failed: ${msg.slice(0, 600)}`);
