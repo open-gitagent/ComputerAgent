@@ -97,7 +97,6 @@ export function HomePage({
               {selected.name === "Auto" ? "Auto-select" : selected.name}
               <span className="text-gray-500">▾</span>
             </button>
-            <span className="text-sm text-gray-500">framework · {framework === "auto" ? "pre-selected by Architect" : "manual"}</span>
 
             {pickerOpen && (
               <div className="absolute top-10 left-0 z-10 w-64 rounded-xl border border-ink-600 bg-ink-700 shadow-xl overflow-hidden">
