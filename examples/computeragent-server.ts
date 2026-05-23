@@ -2302,7 +2302,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         // Agent) that drive the same general-agent repo on different harnesses.
         // GitAgent + Claude Code run multi-turn on /sandboxes; Deep Agent is
         // one-shot via /run (deepagents has no warm-sandbox support here).
-        const labelFor: Record<string, string> = { gitagent: "GitAgent", claudebot: "Claude Code" };
+        const labelFor: Record<string, string> = { gitagent: "GitAgent", claudebot: "Claude Code", agentosbuilder: "Claude Code" };
         const agentDefs = bots.map((b) => ({
           name: b.name,
           label: labelFor[b.name] ?? b.name,

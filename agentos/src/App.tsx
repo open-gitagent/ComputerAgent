@@ -18,9 +18,13 @@ function timeAgo(iso: string | null): string {
 }
 
 // The agent's name comes from its repo — "…/general-agent" → "General Agent".
+const NAME_OVERRIDES: Record<string, string> = {
+  "general-agent": "General Agent",
+  "agentos-builder": "AgentOS Builder",
+};
 function agentNameFromSource(source: string): string {
   const slug = source.split("/").pop() ?? source;
-  return slug.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return NAME_OVERRIDES[slug] ?? slug.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // Logo for an agent type (harness).

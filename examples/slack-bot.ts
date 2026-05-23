@@ -79,7 +79,7 @@ interface SlackAppMentionEvent {
 interface ChatAttachment { path: string; content: string; encoding: "base64" | "utf8"; }
 
 export interface BotConfig {
-  readonly name: "claudebot" | "gitagent";
+  readonly name: "claudebot" | "gitagent" | "agentosbuilder";
   readonly harness: "claude-agent-sdk" | "gitagent";
   readonly token: string;
   readonly signingSecret: string;
@@ -954,7 +954,7 @@ export function createSlackBotsApp(opts: SlackBotsOptions): Hono {
 export function botsFromEnv(): BotConfig[] {
   const bots: BotConfig[] = [];
   const buildOne = (
-    name: "claudebot" | "gitagent",
+    name: "claudebot" | "gitagent" | "agentosbuilder",
     harness: "claude-agent-sdk" | "gitagent",
   ): BotConfig | null => {
     const prefix = `SLACK_${name.toUpperCase()}_`;
@@ -1021,5 +1021,8 @@ export function botsFromEnv(): BotConfig[] {
   if (claudebot) bots.push(claudebot);
   const gitagent = buildOne("gitagent", "gitagent");
   if (gitagent) bots.push(gitagent);
+  // AgentOS Builder — a claude-code meta-agent that builds AgenticOS products.
+  const agentosbuilder = buildOne("agentosbuilder", "claude-agent-sdk");
+  if (agentosbuilder) bots.push(agentosbuilder);
   return bots;
 }
