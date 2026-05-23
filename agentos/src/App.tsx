@@ -49,26 +49,28 @@ export default function App() {
     setView("dashboard");
   };
 
-  if (view === "home") {
-    return (
-      <HomePage
-        onLaunch={launchFromHome}
-        onOpenDashboard={() => setView("dashboard")}
-      />
-    );
-  }
+  const openAgent = (name: string) => { setSelected(name); setView("dashboard"); };
 
   return (
     <div className="flex h-full">
-      {/* Left rail — agents */}
+      {/* Left rail — always visible (home + agents) */}
       <aside className="w-72 shrink-0 border-r border-ink-600 bg-ink-800 flex flex-col">
-        <button onClick={() => setView("home")} className="px-5 py-4 border-b border-ink-600 text-left hover:bg-ink-700/50 transition">
+        <div className="px-5 py-4 border-b border-ink-600">
           <div className="text-lg font-semibold tracking-tight flex items-center gap-2">
             <span className="h-6 w-6 rounded-md bg-ink-600 grid place-items-center text-sm">◇</span>
             AgentOS
           </div>
-          <div className="text-xs text-gray-500 mt-0.5">← home · control panel</div>
-        </button>
+        </div>
+        <div className="px-2 pt-2">
+          <button
+            onClick={() => setView("home")}
+            className={`w-full text-left rounded-lg px-3 py-2 text-sm transition flex items-center gap-2 ${
+              view === "home" ? "bg-ink-600 ring-1 ring-accent/40" : "hover:bg-ink-700"
+            }`}
+          >
+            <span>🏠</span> Home
+          </button>
+        </div>
         <div className="px-3 py-3 text-[11px] uppercase tracking-wider text-gray-500">Agents</div>
         <div className="flex-1 overflow-y-auto px-2 space-y-1">
           {err && <div className="m-2 text-xs text-red-400">{err}</div>}
@@ -76,9 +78,9 @@ export default function App() {
           {agents.map((a) => (
             <button
               key={a.name}
-              onClick={() => setSelected(a.name)}
+              onClick={() => openAgent(a.name)}
               className={`w-full text-left rounded-lg px-3 py-2.5 transition ${
-                selected === a.name ? "bg-ink-600 ring-1 ring-accent/40" : "hover:bg-ink-700"
+                view === "dashboard" && selected === a.name ? "bg-ink-600 ring-1 ring-accent/40" : "hover:bg-ink-700"
               }`}
             >
               <div className="flex items-center gap-2">
@@ -102,7 +104,9 @@ export default function App() {
 
       {/* Main */}
       <main className="flex-1 flex flex-col min-w-0">
-        {agent ? (
+        {view === "home" ? (
+          <HomePage onLaunch={launchFromHome} onOpenDashboard={() => agents[0] && openAgent(agents[0].name)} />
+        ) : agent ? (
           <>
             <header className="px-6 py-4 border-b border-ink-600 flex items-center gap-4">
               <div>
