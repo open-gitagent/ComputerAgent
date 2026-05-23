@@ -5,8 +5,14 @@ import { streamChat, stripAttachMarkers } from "../sse.ts";
 interface Msg { role: "user" | "assistant" | "status"; text: string; files?: string[]; }
 
 export function ChatTab({
-  agent, resumeSessionId, onConsumedResume,
-}: { agent: string; resumeSessionId: string | null; onConsumedResume: () => void }) {
+  agent, resumeSessionId, onConsumedResume, initialMessage, onConsumedInitial,
+}: {
+  agent: string;
+  resumeSessionId: string | null;
+  onConsumedResume: () => void;
+  initialMessage?: string | null;
+  onConsumedInitial?: () => void;
+}) {
   const [sandboxId, setSandboxId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [booting, setBooting] = useState(false);
@@ -30,6 +36,14 @@ export function ChatTab({
     onConsumedResume();
   }, [resumeSessionId]);
 
+  // From Home: auto-send the prompt the user typed on the landing page.
+  useEffect(() => {
+    if (!initialMessage) return;
+    const m = initialMessage;
+    onConsumedInitial?.();
+    void send(m);
+  }, [initialMessage]);
+
   async function boot(resume?: string): Promise<string | null> {
     setBooting(true); setErr(null);
     try {
@@ -45,13 +59,13 @@ export function ChatTab({
     }
   }
 
-  async function send() {
-    const text = input.trim();
+  async function send(textArg?: string) {
+    const text = (textArg ?? input).trim();
     if (!text || busy) return;
     let sid = sandboxId;
     if (!sid) { sid = await boot(); if (!sid) return; }
 
-    setInput("");
+    if (textArg === undefined) setInput("");
     setMsgs((m) => [...m, { role: "user", text }, { role: "status", text: "🤔 Working…" }]);
     setBusy(true);
 
@@ -138,7 +152,7 @@ export function ChatTab({
             className="flex-1 resize-none rounded-xl bg-ink-800 border border-ink-600 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
           />
           <button
-            onClick={send}
+            onClick={() => send()}
             disabled={busy || !input.trim()}
             className="px-4 rounded-xl bg-accent hover:bg-accent-soft disabled:opacity-40 text-white text-sm font-medium"
           >

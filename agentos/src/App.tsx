@@ -3,8 +3,10 @@ import { api, type Agent } from "./api.ts";
 import { LogsTab } from "./components/LogsTab.tsx";
 import { ChatTab } from "./components/ChatTab.tsx";
 import { SessionsTab } from "./components/SessionsTab.tsx";
+import { HomePage } from "./components/HomePage.tsx";
 
 type Tab = "logs" | "chat" | "sessions";
+type View = "home" | "dashboard";
 
 function timeAgo(iso: string | null): string {
   if (!iso) return "never";
@@ -16,12 +18,15 @@ function timeAgo(iso: string | null): string {
 }
 
 export default function App() {
+  const [view, setView] = useState<View>("home");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("logs");
   const [err, setErr] = useState<string | null>(null);
   // Handoff: Sessions → "Continue in chat" passes a sessionId to resume.
   const [resumeSessionId, setResumeSessionId] = useState<string | null>(null);
+  // Handoff: Home → launch a chat with a prompt.
+  const [launchMessage, setLaunchMessage] = useState<string | null>(null);
 
   useEffect(() => {
     api.agents()
@@ -36,14 +41,34 @@ export default function App() {
     setTab("chat");
   };
 
+  // From Home: open the agent's Chat tab and auto-send the prompt.
+  const launchFromHome = (agentName: string, message: string) => {
+    setSelected(agentName);
+    setTab("chat");
+    setLaunchMessage(message);
+    setView("dashboard");
+  };
+
+  if (view === "home") {
+    return (
+      <HomePage
+        onLaunch={launchFromHome}
+        onOpenDashboard={() => setView("dashboard")}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full">
       {/* Left rail — agents */}
       <aside className="w-72 shrink-0 border-r border-ink-600 bg-ink-800 flex flex-col">
-        <div className="px-5 py-4 border-b border-ink-600">
-          <div className="text-lg font-semibold tracking-tight">AgentOS</div>
-          <div className="text-xs text-gray-500">control panel</div>
-        </div>
+        <button onClick={() => setView("home")} className="px-5 py-4 border-b border-ink-600 text-left hover:bg-ink-700/50 transition">
+          <div className="text-lg font-semibold tracking-tight flex items-center gap-2">
+            <span className="h-6 w-6 rounded-md bg-ink-600 grid place-items-center text-sm">◇</span>
+            AgentOS
+          </div>
+          <div className="text-xs text-gray-500 mt-0.5">← home · control panel</div>
+        </button>
         <div className="px-3 py-3 text-[11px] uppercase tracking-wider text-gray-500">Agents</div>
         <div className="flex-1 overflow-y-auto px-2 space-y-1">
           {err && <div className="m-2 text-xs text-red-400">{err}</div>}
@@ -107,6 +132,8 @@ export default function App() {
                   agent={agent.name}
                   resumeSessionId={resumeSessionId}
                   onConsumedResume={() => setResumeSessionId(null)}
+                  initialMessage={launchMessage}
+                  onConsumedInitial={() => setLaunchMessage(null)}
                 />
               )}
               {tab === "sessions" && <SessionsTab agent={agent.name} onContinue={continueInChat} />}
