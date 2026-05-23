@@ -48,6 +48,30 @@ export interface SessionDetail {
   entries: TranscriptEntry[];
 }
 
+export interface Schedule {
+  _id: string;
+  agentName: string;
+  prompt: string;
+  kind: "interval" | "daily";
+  intervalMinutes?: number;
+  hourUtc?: number;
+  minuteUtc?: number;
+  enabled: boolean;
+  description: string;
+  nextRunAt: string;
+  lastRunAt?: string | null;
+  lastStatus?: "ok" | "error" | "running" | null;
+  lastResult?: string | null;
+}
+export interface NewSchedule {
+  agentName: string;
+  prompt: string;
+  kind: "interval" | "daily";
+  intervalMinutes?: number;
+  hourUtc?: number;
+  minuteUtc?: number;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(`/api${path}`, { headers: { accept: "application/json" } });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
@@ -58,6 +82,15 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${path} → ${r.status}`);
+  return r.json() as Promise<T>;
+}
+async function reqJSON<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const r = await fetch(`/api${path}`, {
+    method,
+    headers: { "content-type": "application/json", accept: "application/json" },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
   return r.json() as Promise<T>;
@@ -81,4 +114,12 @@ export const api = {
   chatStreamUrl: (sandboxId: string) => `/api/sandboxes/${encodeURIComponent(sandboxId)}/chat`,
   // SSE one-shot run (deepagents). Server builds the /run body from {message}.
   runStreamUrl: (agent: string) => `/api/agents/${encodeURIComponent(agent)}/run`,
+  // Schedules
+  schedules: (agent?: string) =>
+    getJSON<{ schedules: Schedule[] }>(`/schedules${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`).then((d) => d.schedules),
+  createSchedule: (s: NewSchedule) => postJSON<{ schedule: Schedule }>("/schedules", s).then((d) => d.schedule),
+  updateSchedule: (id: string, fields: Partial<NewSchedule> & { enabled?: boolean }) =>
+    reqJSON<{ schedule: Schedule }>("PATCH", `/schedules/${encodeURIComponent(id)}`, fields).then((d) => d.schedule),
+  deleteSchedule: (id: string) => reqJSON<{ ok: boolean }>("DELETE", `/schedules/${encodeURIComponent(id)}`),
+  runScheduleNow: (id: string) => postJSON<{ ok: boolean }>(`/schedules/${encodeURIComponent(id)}/run-now`, {}),
 };

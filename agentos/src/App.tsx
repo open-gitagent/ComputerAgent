@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { api, type Agent } from "./api.ts";
 import { LogsTab } from "./components/LogsTab.tsx";
 import { WorkspaceTab } from "./components/WorkspaceTab.tsx";
+import { SchedulesTab } from "./components/SchedulesTab.tsx";
 import { HomePage } from "./components/HomePage.tsx";
 
-type Tab = "chat" | "logs";
+type Tab = "chat" | "schedules" | "logs";
 type View = "home" | "dashboard";
 
 function timeAgo(iso: string | null): string {
@@ -151,7 +152,7 @@ export default function App() {
                 </div>
               </div>
               <nav className="ml-auto flex gap-1 bg-ink-800 rounded-lg p-1">
-                {(["chat", "logs"] as Tab[]).map((t) => (
+                {(["chat", "schedules", "logs"] as Tab[]).map((t) => (
                   <button
                     key={t}
                     onClick={() => setTab(t)}
@@ -174,6 +175,7 @@ export default function App() {
                   onConsumedInitial={() => setLaunchMessage(null)}
                 />
               )}
+              {tab === "schedules" && <SchedulesTab key={agent.name} agent={agent.name} agentLabel={agent.label} />}
               {tab === "logs" && <LogsTab key={agent.name} agent={agent.name} />}
             </section>
           </>

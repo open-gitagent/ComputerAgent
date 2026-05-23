@@ -2276,10 +2276,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!process.env.MONGO_URL) {
       console.error("[slack-bot] SLACK_BOTS_ENABLED=1 but MONGO_URL not set — Slack thread map needs mongo; skipping");
     } else {
-      const [{ createSlackBotsApp, botsFromEnv }, { AgentLogStore }, { createAgentOSApp }] = await Promise.all([
+      const [{ createSlackBotsApp, botsFromEnv }, { AgentLogStore }, { createAgentOSApp }, { ScheduleStore }, { startScheduler }] = await Promise.all([
         import("./slack-bot.ts"),
         import("./agent-log-store.ts"),
         import("./agentos-api.ts"),
+        import("./schedule-store.ts"),
+        import("./scheduler.ts"),
       ]);
       const bots = botsFromEnv();
       if (bots.length === 0) {
@@ -2342,9 +2344,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         } else {
           console.warn("[agentos] no LYZR proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
         }
-        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, agents: agentDefs, logStore });
+        const scheduleStore = new ScheduleStore(mongoUrl, mongoDb);
+        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, agents: agentDefs, logStore, scheduleStore });
         server.mount(agentosApp);
         console.log("AgentOS control panel API: /agentos/api/* — agents:", agentDefs.map((a) => a.name).join(", "));
+
+        // Scheduler — fires due agent schedules on a tick.
+        const u = process.env.API_AUTH_USER, p = process.env.API_AUTH_PASS;
+        const authHeader = (u && p) ? { authorization: "Basic " + Buffer.from(`${u}:${p}`).toString("base64") } : {};
+        startScheduler({ caBase, authHeader, store: scheduleStore, logStore, agents: agentDefs });
       }
     }
   }

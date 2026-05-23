@@ -16,6 +16,8 @@ import { MongoClient, type Collection } from "mongodb";
 import { randomUUID } from "node:crypto";
 import { sandboxBodyForBot } from "./slack-bot.ts";
 import { AgentLogStore } from "./agent-log-store.ts";
+import { ScheduleStore, computeNextRun, describeSchedule, type ScheduleKind } from "./schedule-store.ts";
+import { runAgentOnce } from "./scheduler.ts";
 
 /** An agent the control panel can list, chat with, and inspect. Covers both
  * Slack bots and web-only agents. */
@@ -40,6 +42,7 @@ export interface AgentOSOptions {
   readonly mongoDb: string;
   readonly agents: readonly AgentDef[];
   readonly logStore: AgentLogStore;
+  readonly scheduleStore?: ScheduleStore;
 }
 
 interface SessionDoc {
@@ -289,6 +292,82 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
       status: upstream.status,
       headers: { "content-type": upstream.headers.get("content-type") ?? "application/octet-stream" },
     });
+  });
+
+  // ── Schedules ────────────────────────────────────────────────────────────
+  const sched = opts.scheduleStore;
+  const withDesc = (s: any) => ({ ...s, description: describeSchedule(s) });
+
+  app.get("/agentos/api/schedules", async (c) => {
+    if (!sched) return c.json({ schedules: [] });
+    const agent = c.req.query("agent") || undefined;
+    const list = await sched.list(agent);
+    return c.json({ schedules: list.map(withDesc) });
+  });
+
+  app.post("/agentos/api/schedules", async (c) => {
+    if (!sched) return c.json({ error: { code: "NO_SCHEDULER" } }, 503);
+    const b = await c.req.json().catch(() => ({})) as Record<string, any>;
+    if (!b.agentName || !byName.has(String(b.agentName))) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 400);
+    if (!b.prompt || !String(b.prompt).trim()) return c.json({ error: { code: "MISSING_PROMPT" } }, 400);
+    const kind: ScheduleKind = b.kind === "daily" ? "daily" : "interval";
+    const created = await sched.create({
+      agentName: String(b.agentName),
+      prompt: String(b.prompt),
+      kind,
+      intervalMinutes: kind === "interval" ? Math.max(1, Number(b.intervalMinutes) || 60) : undefined,
+      hourUtc: kind === "daily" ? Math.min(23, Math.max(0, Number(b.hourUtc) || 0)) : undefined,
+      minuteUtc: kind === "daily" ? Math.min(59, Math.max(0, Number(b.minuteUtc) || 0)) : undefined,
+      enabled: b.enabled !== false,
+    });
+    return c.json({ schedule: withDesc(created) });
+  });
+
+  app.patch("/agentos/api/schedules/:id", async (c) => {
+    if (!sched) return c.json({ error: { code: "NO_SCHEDULER" } }, 503);
+    const id = c.req.param("id");
+    const existing = await sched.get(id);
+    if (!existing) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+    const b = await c.req.json().catch(() => ({})) as Record<string, any>;
+    const fields: Record<string, unknown> = {};
+    if (typeof b.enabled === "boolean") fields.enabled = b.enabled;
+    if (b.prompt !== undefined) fields.prompt = String(b.prompt);
+    // If cadence changed, recompute nextRunAt.
+    const spec = { kind: existing.kind, intervalMinutes: existing.intervalMinutes, hourUtc: existing.hourUtc, minuteUtc: existing.minuteUtc, ...b };
+    if (b.kind || b.intervalMinutes !== undefined || b.hourUtc !== undefined || b.minuteUtc !== undefined) {
+      Object.assign(fields, {
+        kind: spec.kind, intervalMinutes: spec.intervalMinutes, hourUtc: spec.hourUtc, minuteUtc: spec.minuteUtc,
+        nextRunAt: computeNextRun(spec as any),
+      });
+    }
+    await sched.update(id, fields);
+    const updated = await sched.get(id);
+    return c.json({ schedule: updated ? withDesc(updated) : null });
+  });
+
+  app.delete("/agentos/api/schedules/:id", async (c) => {
+    if (!sched) return c.json({ error: { code: "NO_SCHEDULER" } }, 503);
+    await sched.delete(c.req.param("id"));
+    return c.json({ ok: true });
+  });
+
+  // Manual trigger — runs now (best-effort, detached) and records the result.
+  app.post("/agentos/api/schedules/:id/run-now", async (c) => {
+    if (!sched) return c.json({ error: { code: "NO_SCHEDULER" } }, 503);
+    const s = await sched.get(c.req.param("id"));
+    if (!s) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+    const agent = byName.get(s.agentName);
+    if (!agent) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 400);
+    await sched.update(s._id, { lastRunAt: new Date(), lastStatus: "running" });
+    void (async () => {
+      const res = await runAgentOnce(caBase, caAuthHeader(), agent, s.prompt).catch((e) => ({ ok: false, text: String(e) }));
+      await sched.update(s._id, { lastStatus: res.ok ? "ok" : "error", lastResult: res.text.slice(0, 2000) });
+      await opts.logStore.append({
+        source: "schedule", bot: s.agentName, requester: "manual-run",
+        channel: null, threadTs: null, sessionId: s._id, query: s.prompt, reply: res.text, ok: res.ok,
+      }).catch(() => {});
+    })();
+    return c.json({ ok: true, running: true });
   });
 
   app.get("/agentos/api/health", (c) => c.json({ ok: true, agents: opts.agents.map((a) => a.name) }));
