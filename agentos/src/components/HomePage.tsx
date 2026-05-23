@@ -16,7 +16,7 @@ const FRAMEWORKS: FrameworkDef[] = [
   { id: "gitagent", name: "GitAgent", desc: "Code-aware agent on gitclaw", logo: "/logos/gitagent.png", agent: "gitagent" },
   { id: "claude-code", name: "Claude Code", desc: "Anthropic code-native agent", logo: "/logos/claude.svg", agent: "claude-code" },
   { id: "deep-agent", name: "Deep Agent", desc: "LangGraph deep agent · one-shot", logo: "/logos/langchain.svg", agent: "deep-agent" },
-  { id: "auto", name: "Auto", desc: "Let AgentOS pick", glyph: "✨", agent: "gitagent" },
+  { id: "auto", name: "Auto", desc: "Let AgentOS pick", logo: "/logos/auto.svg", agent: "gitagent" },
 ];
 
 function FrameworkIcon({ f, size = 32 }: { f: FrameworkDef; size?: number }) {
