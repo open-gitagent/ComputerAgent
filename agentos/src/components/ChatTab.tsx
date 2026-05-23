@@ -92,6 +92,7 @@ export function ChatTab({
     setBusy(true);
 
     let finalText = "";
+    let lastTools = 0;
     const setStatus = (s: string) => setMsgs((m) => {
       const c = [...m]; const last = c[c.length - 1];
       if (last?.role === "status") c[c.length - 1] = { role: "status", text: s };
@@ -102,12 +103,19 @@ export function ChatTab({
       streamUrl,
       text,
       {
-        onTool: (name, count) => setStatus(`🔧 ${name}… (${count} tool${count !== 1 ? "s" : ""})`),
+        onTool: (name, count) => { lastTools = count; setStatus(`🔧 ${name}… (${count} tool${count !== 1 ? "s" : ""})`); },
         onText: (t) => { finalText = t; },
         onError: (msg) => setMsgs((m) => replaceStatus(m, { role: "assistant", text: `❌ ${msg}` })),
         onDone: (t) => {
-          const { text: clean, files } = stripAttachMarkers(t || finalText || "_(no reply)_");
-          setMsgs((m) => replaceStatus(m, { role: "assistant", text: clean, files: (sandboxCapable && files.length) ? files : undefined }));
+          const raw = t || finalText;
+          const { text: clean, files } = stripAttachMarkers(raw);
+          // The agent may finish via tool calls without a closing text summary
+          // (e.g. it hit its turn limit). Don't show a bare "(no reply)".
+          const body = clean
+            || (lastTools > 0
+              ? `_(Ran ${lastTools} tool calls but didn't return a text summary — it may have hit its turn limit. Ask it to "summarize what you built" to continue, or start a New session.)_`
+              : "_(no reply)_");
+          setMsgs((m) => replaceStatus(m, { role: "assistant", text: body, files: (sandboxCapable && files.length) ? files : undefined }));
         },
       },
     ).catch((e) => setMsgs((m) => replaceStatus(m, { role: "assistant", text: `❌ ${e}` })));
