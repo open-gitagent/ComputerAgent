@@ -109,7 +109,7 @@ export function HomePage({
             value={prompt}
             onChange={(e) => { setPrompt(e.target.value); setNote(null); }}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } }}
-            placeholder="Build a customer support agent that triages incoming claims, retrieves policy docs from our knowledge base, and routes high-risk cases to a human reviewer on Slack."
+            placeholder="Ask me anything — review a GitHub PR, research a topic and send a PDF, summarize a document, dig through a repo, or write a quick script."
             rows={5}
             className="w-full resize-none bg-transparent px-1 text-[17px] leading-relaxed placeholder:text-[#b9b1a2] focus:outline-none"
           />
