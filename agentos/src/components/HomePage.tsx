@@ -65,14 +65,14 @@ export function HomePage({
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-[#faf6ef] text-[#1c1a17]">
+    <div className="h-full overflow-y-auto bg-ink-900 text-gray-100">
       {/* Brand */}
       <div className="flex items-center justify-end px-8 pt-7">
         <div className="flex items-center gap-3">
           <img src="/logos/agentos.png" alt="AgentOS" className="h-11 w-11 rounded-xl object-contain" />
           <div className="leading-tight">
             <div className="font-semibold text-[17px]">AgentOS</div>
-            <div className="text-[12px] italic text-[#8a8377]">where ideas become agents</div>
+            <div className="text-[12px] italic text-gray-500">where ideas become agents</div>
           </div>
         </div>
       </div>
@@ -80,39 +80,39 @@ export function HomePage({
       <div className="max-w-3xl mx-auto px-6 pb-20">
         {/* Greeting */}
         <div className="text-center mt-10 mb-2">
-          <h1 className="font-serif text-5xl tracking-tight" style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}>
+          <h1 className="text-5xl tracking-tight text-gray-100" style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}>
             <span className="mr-3">{emoji}</span>{word}, Shreyas
           </h1>
-          <p className="mt-4 text-lg text-[#6b6459]">What would you like to automate today?</p>
+          <p className="mt-4 text-lg text-gray-400">What would you like to automate today?</p>
         </div>
 
         {/* Prompt box */}
-        <div className="mt-8 rounded-3xl bg-white border border-[#e7e0d4] shadow-[0_2px_24px_rgba(0,0,0,0.04)] p-4">
+        <div className="mt-8 rounded-3xl bg-ink-800 border border-ink-600 shadow-[0_8px_40px_rgba(0,0,0,0.35)] p-4">
           <div className="flex items-center gap-3 mb-2 relative">
             <button
               onClick={() => setPickerOpen((o) => !o)}
-              className="inline-flex items-center gap-2 rounded-full border border-[#e3dccd] px-3.5 py-1.5 text-sm font-medium hover:bg-[#f7f3ea]"
+              className="inline-flex items-center gap-2 rounded-full border border-ink-600 px-3.5 py-1.5 text-sm font-medium text-gray-200 hover:bg-ink-700"
             >
-              <span className="text-[#a98b2f]">✦</span>
+              <span className="text-accent-soft">✦</span>
               {selected.name === "Auto" ? "Auto-select" : selected.name}
-              <span className="text-[#b3aa9a]">▾</span>
+              <span className="text-gray-500">▾</span>
             </button>
-            <span className="text-sm text-[#9b9384]">framework · {framework === "auto" ? "pre-selected by Architect" : "manual"}</span>
+            <span className="text-sm text-gray-500">framework · {framework === "auto" ? "pre-selected by Architect" : "manual"}</span>
 
             {pickerOpen && (
-              <div className="absolute top-10 left-0 z-10 w-64 rounded-xl border border-[#e7e0d4] bg-white shadow-lg overflow-hidden">
+              <div className="absolute top-10 left-0 z-10 w-64 rounded-xl border border-ink-600 bg-ink-700 shadow-xl overflow-hidden">
                 {FRAMEWORKS.map((f) => (
                   <button
                     key={f.id}
                     onClick={() => { setFramework(f.id); setPickerOpen(false); setNote(null); }}
-                    className="w-full text-left px-4 py-2.5 hover:bg-[#f7f3ea] flex items-center gap-3"
+                    className="w-full text-left px-4 py-2.5 hover:bg-ink-600 flex items-center gap-3"
                   >
                     <FrameworkIcon f={f} size={28} />
                     <span>
-                      <span className="block text-sm font-medium">{f.name}</span>
-                      <span className="block text-[11px] text-[#9b9384]">{f.desc}</span>
+                      <span className="block text-sm font-medium text-gray-100">{f.name}</span>
+                      <span className="block text-[11px] text-gray-500">{f.desc}</span>
                     </span>
-                    {f.id === framework && <span className="ml-auto text-[#a98b2f]">✓</span>}
+                    {f.id === framework && <span className="ml-auto text-accent-soft">✓</span>}
                   </button>
                 ))}
               </div>
@@ -125,18 +125,18 @@ export function HomePage({
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } }}
             placeholder="Ask me anything — review a GitHub PR, research a topic and send a PDF, summarize a document, dig through a repo, or write a quick script."
             rows={5}
-            className="w-full resize-none bg-transparent px-1 text-[17px] leading-relaxed placeholder:text-[#b9b1a2] focus:outline-none"
+            className="w-full resize-none bg-transparent px-1 text-[17px] leading-relaxed text-gray-100 placeholder:text-gray-600 focus:outline-none"
           />
 
           <div className="flex items-center mt-1">
-            <button className="h-10 w-10 rounded-full bg-[#17150f] text-[#faf6ef] grid place-items-center text-xl" title="Attach (coming soon)">+</button>
+            <button className="h-10 w-10 rounded-full bg-ink-600 text-gray-300 grid place-items-center text-xl hover:bg-ink-500" title="Attach (coming soon)">+</button>
             <div className="ml-auto flex items-center gap-2">
-              <button className="h-10 w-10 rounded-full bg-[#17150f] text-[#faf6ef] grid place-items-center" title="Voice (coming soon)">🎤</button>
+              <button className="h-10 w-10 rounded-full bg-ink-600 text-gray-300 grid place-items-center hover:bg-ink-500" title="Voice (coming soon)">🎤</button>
               <button
                 onClick={submit}
                 disabled={!prompt.trim()}
                 className={`h-10 w-10 rounded-full grid place-items-center text-lg transition ${
-                  prompt.trim() ? "bg-[#17150f] text-[#faf6ef] hover:opacity-90" : "bg-[#cfc7b8] text-white cursor-not-allowed"
+                  prompt.trim() ? "bg-accent text-white hover:bg-accent-soft" : "bg-ink-600 text-gray-600 cursor-not-allowed"
                 }`}
                 title="Send"
               >↑</button>
@@ -144,13 +144,13 @@ export function HomePage({
           </div>
         </div>
 
-        {note && <div className="mt-3 text-sm text-[#b4502a]">{note}</div>}
+        {note && <div className="mt-3 text-sm text-amber-400">{note}</div>}
 
         {/* Framework picker grid */}
         <div className="mt-10">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-[11px] tracking-[0.18em] text-[#9b9384] uppercase">Pick a framework</span>
-            <button onClick={() => { setFramework("auto"); setNote(null); }} className="text-[12px] text-[#9b9384] hover:text-[#6b6459] font-mono">auto-select</button>
+            <span className="text-[11px] tracking-[0.18em] text-gray-500 uppercase">Pick a framework</span>
+            <button onClick={() => { setFramework("auto"); setNote(null); }} className="text-[12px] text-gray-500 hover:text-gray-300 font-mono">auto-select</button>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {FRAMEWORKS.map((f) => {
@@ -160,16 +160,16 @@ export function HomePage({
                   key={f.id}
                   onClick={() => { setFramework(f.id); setNote(null); }}
                   className={`text-left rounded-2xl border px-4 py-3.5 transition ${
-                    active ? "border-[#17150f] bg-white shadow-sm" : "border-[#e7e0d4] bg-white/60 hover:bg-white"
+                    active ? "border-accent bg-ink-700" : "border-ink-600 bg-ink-800 hover:bg-ink-700"
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
                     <FrameworkIcon f={f} size={32} />
-                    <span className="font-semibold text-sm">{f.name}</span>
-                    {active && <span className="ml-auto text-[#a98b2f]">✓</span>}
+                    <span className="font-semibold text-sm text-gray-100">{f.name}</span>
+                    {active && <span className="ml-auto text-accent-soft">✓</span>}
                   </div>
-                  <div className="mt-1.5 text-[12px] text-[#9b9384] truncate">{f.desc}</div>
-                  {!f.agent && <div className="mt-1 text-[10px] text-[#c08a3e]">not connected yet</div>}
+                  <div className="mt-1.5 text-[12px] text-gray-500 truncate">{f.desc}</div>
+                  {!f.agent && <div className="mt-1 text-[10px] text-amber-400">not connected yet</div>}
                 </button>
               );
             })}
@@ -177,7 +177,7 @@ export function HomePage({
         </div>
 
         <div className="mt-12 text-center">
-          <button onClick={onOpenDashboard} className="text-sm text-[#8a8377] hover:text-[#5b5448] underline underline-offset-4">
+          <button onClick={onOpenDashboard} className="text-sm text-gray-500 hover:text-gray-300 underline underline-offset-4">
             Open control panel →
           </button>
         </div>
