@@ -2295,9 +2295,48 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
         // AgentOS control-panel API — backs the private dashboard at
         // agentos.clawagent.sh. Mounted at /agentos/api/*, stays behind Basic Auth.
-        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, bots, logStore });
+        //
+        // Agents = the Slack bots (mapped) + web-only agents (Claude Code, Deep
+        // Agent) that drive the same general-agent repo on different harnesses.
+        // GitAgent + Claude Code run multi-turn on /sandboxes; Deep Agent is
+        // one-shot via /run (deepagents has no warm-sandbox support here).
+        const labelFor: Record<string, string> = { gitagent: "GitAgent", claudebot: "Claude Code" };
+        const agentDefs = bots.map((b) => ({
+          name: b.name,
+          label: labelFor[b.name] ?? b.name,
+          harness: b.harness,
+          source: b.source,
+          model: b.model,
+          envs: b.extraEnvs,
+          gitToken: b.gitToken,
+        }));
+        const anthropicKey = process.env.ANTHROPIC_API_KEY;
+        const generalAgentSource = process.env.AGENTOS_GENERAL_SOURCE
+          ?? bots.find((b) => b.name === "gitagent")?.source
+          ?? "github.com/shreyas-lyzr/general-agent";
+        const githubToken = process.env.GITHUB_TOKEN;
+        if (anthropicKey) {
+          // Claude Code — claude-agent-sdk on the same repo, real Anthropic model
+          // (the repo's agent.yaml `preferred` model). Multi-turn via /sandboxes.
+          if (!agentDefs.some((a) => a.name === "claude-code")) {
+            agentDefs.push({
+              name: "claude-code", label: "Claude Code", harness: "claude-agent-sdk",
+              source: generalAgentSource, model: undefined,
+              envs: { ANTHROPIC_API_KEY: anthropicKey }, gitToken: githubToken,
+            });
+          }
+          // Deep Agent — deepagents on the same repo. One-shot via /run.
+          agentDefs.push({
+            name: "deep-agent", label: "Deep Agent", harness: "deepagents",
+            source: generalAgentSource, model: undefined,
+            envs: { ANTHROPIC_API_KEY: anthropicKey }, gitToken: githubToken,
+          });
+        } else {
+          console.warn("[agentos] ANTHROPIC_API_KEY not set — Claude Code / Deep Agent agents not registered");
+        }
+        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, agents: agentDefs, logStore });
         server.mount(agentosApp);
-        console.log("AgentOS control panel API: /agentos/api/* (agents, logs, sessions, chat-sandbox)");
+        console.log("AgentOS control panel API: /agentos/api/* — agents:", agentDefs.map((a) => a.name).join(", "));
       }
     }
   }

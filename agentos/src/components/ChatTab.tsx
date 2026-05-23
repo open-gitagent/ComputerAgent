@@ -5,9 +5,10 @@ import { streamChat, stripAttachMarkers } from "../sse.ts";
 interface Msg { role: "user" | "assistant" | "status"; text: string; files?: string[]; }
 
 export function ChatTab({
-  agent, resumeSessionId, onConsumedResume, initialMessage, onConsumedInitial,
+  agent, sandboxCapable, resumeSessionId, onConsumedResume, initialMessage, onConsumedInitial,
 }: {
   agent: string;
+  sandboxCapable: boolean;
   resumeSessionId: string | null;
   onConsumedResume: () => void;
   initialMessage?: string | null;
@@ -62,8 +63,16 @@ export function ChatTab({
   async function send(textArg?: string) {
     const text = (textArg ?? input).trim();
     if (!text || busy) return;
-    let sid = sandboxId;
-    if (!sid) { sid = await boot(); if (!sid) return; }
+
+    // Resolve where to stream: warm sandbox (multi-turn) or one-shot /run.
+    let streamUrl: string;
+    let curSandbox = sandboxId;
+    if (sandboxCapable) {
+      if (!curSandbox) { curSandbox = await boot(); if (!curSandbox) return; }
+      streamUrl = api.chatStreamUrl(curSandbox);
+    } else {
+      streamUrl = api.runStreamUrl(agent);   // deepagents: fresh run each message
+    }
 
     if (textArg === undefined) setInput("");
     setMsgs((m) => [...m, { role: "user", text }, { role: "status", text: "🤔 Working…" }]);
@@ -77,7 +86,7 @@ export function ChatTab({
     });
 
     await streamChat(
-      api.chatStreamUrl(sid),
+      streamUrl,
       text,
       {
         onTool: (name, count) => setStatus(`🔧 ${name}… (${count} tool${count !== 1 ? "s" : ""})`),
@@ -85,20 +94,22 @@ export function ChatTab({
         onError: (msg) => setMsgs((m) => replaceStatus(m, { role: "assistant", text: `❌ ${msg}` })),
         onDone: (t) => {
           const { text: clean, files } = stripAttachMarkers(t || finalText || "_(no reply)_");
-          setMsgs((m) => replaceStatus(m, { role: "assistant", text: clean, files: files.length ? files : undefined }));
+          setMsgs((m) => replaceStatus(m, { role: "assistant", text: clean, files: (sandboxCapable && files.length) ? files : undefined }));
         },
       },
     ).catch((e) => setMsgs((m) => replaceStatus(m, { role: "assistant", text: `❌ ${e}` })));
 
     setBusy(false);
     // Persist the web turn to the audit log.
-    if (sessionId) api.logWebTurn({ bot: agent, sessionId, query: text, reply: finalText, ok: true }).catch(() => {});
+    api.logWebTurn({ bot: agent, sessionId: sessionId ?? `oneshot-${agent}`, query: text, reply: finalText, ok: true }).catch(() => {});
   }
 
   return (
     <div className="h-full flex flex-col">
       <div className="px-6 py-2.5 border-b border-ink-700 flex items-center gap-3 text-xs text-gray-500">
-        {sandboxId ? (
+        {!sandboxCapable ? (
+          <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-amber-400" /> one-shot mode — each message is an independent run (no memory across turns)</span>
+        ) : sandboxId ? (
           <>
             <span className="h-2 w-2 rounded-full bg-emerald-400" />
             <span className="font-mono">{sessionId}</span>

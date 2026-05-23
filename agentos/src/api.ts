@@ -4,9 +4,11 @@
 
 export interface Agent {
   name: string;
+  label: string;
   harness: string;
   source: string;
   model: string | null;
+  sandboxCapable: boolean;
   sessionCount: number;
   activeSandboxes: number;
   lastActivity: string | null;
@@ -77,4 +79,6 @@ export const api = {
     postJSON<{ ok: boolean }>("/logs", { ...entry, requester: "web" }),
   // SSE chat — caller reads the stream. Path goes through the same /api proxy.
   chatStreamUrl: (sandboxId: string) => `/api/sandboxes/${encodeURIComponent(sandboxId)}/chat`,
+  // SSE one-shot run (deepagents). Server builds the /run body from {message}.
+  runStreamUrl: (agent: string) => `/api/agents/${encodeURIComponent(agent)}/run`,
 };

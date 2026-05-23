@@ -83,7 +83,7 @@ export default function App() {
             >
               <div className="flex items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${a.activeSandboxes > 0 ? "bg-emerald-400" : "bg-gray-600"}`} />
-                <span className="font-medium text-sm">{a.name}</span>
+                <span className="font-medium text-sm">{a.label}</span>
                 <span className="ml-auto text-[10px] rounded bg-ink-500 px-1.5 py-0.5 text-gray-400">{a.harness}</span>
               </div>
               <div className="mt-1 text-[11px] text-gray-500 truncate">{a.source}</div>
@@ -106,9 +106,10 @@ export default function App() {
           <>
             <header className="px-6 py-4 border-b border-ink-600 flex items-center gap-4">
               <div>
-                <div className="text-base font-semibold">{agent.name}</div>
+                <div className="text-base font-semibold">{agent.label}</div>
                 <div className="text-xs text-gray-500">
                   {agent.harness} · {agent.model ?? "default model"}
+                  {!agent.sandboxCapable && <span className="ml-2 text-amber-400/80">one-shot</span>}
                 </div>
               </div>
               <nav className="ml-auto flex gap-1 bg-ink-800 rounded-lg p-1">
@@ -130,6 +131,7 @@ export default function App() {
               {tab === "chat" && (
                 <ChatTab
                   agent={agent.name}
+                  sandboxCapable={agent.sandboxCapable}
                   resumeSessionId={resumeSessionId}
                   onConsumedResume={() => setResumeSessionId(null)}
                   initialMessage={launchMessage}

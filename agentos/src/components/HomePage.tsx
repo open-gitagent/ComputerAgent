@@ -13,8 +13,8 @@ interface FrameworkDef {
 
 const FRAMEWORKS: FrameworkDef[] = [
   { id: "gitagent", name: "GitAgent", desc: "Code-aware agent on gitclaw", glyph: "⌥", agent: "gitagent" },
-  { id: "claude-code", name: "Claude Code", desc: "Anthropic code-native agent", glyph: "✳", agent: null },
-  { id: "deep-agent", name: "Deep Agent", desc: "LangGraph deep agent", glyph: "❖", agent: null },
+  { id: "claude-code", name: "Claude Code", desc: "Anthropic code-native agent", glyph: "✳", agent: "claude-code" },
+  { id: "deep-agent", name: "Deep Agent", desc: "LangGraph deep agent · one-shot", glyph: "❖", agent: "deep-agent" },
   { id: "auto", name: "Auto", desc: "Let AgentOS pick", glyph: "✨", agent: "gitagent" },
 ];
 

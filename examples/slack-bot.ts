@@ -387,13 +387,24 @@ function newDeliverables(before: Map<string, string>, after: Map<string, string>
 
 // ── Sandbox lifecycle helpers ────────────────────────────────────────────
 
+/** Minimal runtime config needed to build a sandbox for an agent. BotConfig
+ * satisfies this structurally, as do the AgentOS web-agent defs. */
+export interface AgentRuntimeSpec {
+  name: string;
+  harness: string;
+  source: string;
+  model?: string;
+  extraEnvs?: Record<string, string>;
+  gitToken?: string;
+}
+
 /**
- * Build the POST /sandboxes body for a bot + sessionId. Single source of truth
- * for an agent's runtime config (harness, runtime, Lyzr model + envs, gitToken,
- * mongo session store, S3 auto-save, TTLs) so the Slack flow and the AgentOS
- * web console create identically-configured sandboxes. Secrets stay server-side.
+ * Build the POST /sandboxes body for an agent + sessionId. Single source of truth
+ * for an agent's runtime config (harness, runtime, model + envs, gitToken, mongo
+ * session store, S3 auto-save, TTLs) so the Slack flow and the AgentOS web console
+ * create identically-configured sandboxes. Secrets stay server-side.
  */
-export function sandboxBodyForBot(bot: BotConfig, sessionId: string): Record<string, unknown> {
+export function sandboxBodyForBot(bot: AgentRuntimeSpec, sessionId: string): Record<string, unknown> {
   const body: Record<string, unknown> = {
     source: bot.source,
     harness: bot.harness,

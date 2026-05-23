@@ -14,15 +14,31 @@
 import { Hono } from "hono";
 import { MongoClient, type Collection } from "mongodb";
 import { randomUUID } from "node:crypto";
-import { type BotConfig, sandboxBodyForBot } from "./slack-bot.ts";
+import { sandboxBodyForBot } from "./slack-bot.ts";
 import { AgentLogStore } from "./agent-log-store.ts";
+
+/** An agent the control panel can list, chat with, and inspect. Covers both
+ * Slack bots and web-only agents. */
+export interface AgentDef {
+  name: string;        // stable id, e.g. "gitagent" | "claude-code" | "deep-agent"
+  label: string;       // display name, e.g. "GitAgent"
+  harness: string;     // "gitagent" | "claude-agent-sdk" | "deepagents"
+  source: string;
+  model?: string;
+  envs?: Record<string, string>;
+  gitToken?: string;
+}
+
+// deepagents has no warm-sandbox support on this server, so it runs one-shot
+// via POST /run instead of the multi-turn /sandboxes path.
+const sandboxCapable = (harness: string) => harness !== "deepagents";
 
 export interface AgentOSOptions {
   /** Loopback base URL of the ComputerAgent server. Default http://127.0.0.1:9100. */
   readonly caBase?: string;
   readonly mongoUrl: string;
   readonly mongoDb: string;
-  readonly bots: readonly BotConfig[];
+  readonly agents: readonly AgentDef[];
   readonly logStore: AgentLogStore;
 }
 
@@ -68,7 +84,7 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
   const sessionsColl = async (): Promise<Collection<SessionDoc>> =>
     (await db()).collection<SessionDoc>("sessions");
 
-  const byName = new Map<string, BotConfig>(opts.bots.map((b) => [b.name, b]));
+  const byName = new Map<string, AgentDef>(opts.agents.map((a) => [a.name, a]));
   const app = new Hono();
 
   // ── Agents list + per-agent stats ──────────────────────────────────────
@@ -85,8 +101,8 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
 
     const threads = await threadsColl();
     const out = [];
-    for (const b of opts.bots) {
-      const docs = await threads.find({ bot: b.name }).toArray();
+    for (const a of opts.agents) {
+      const docs = await threads.find({ bot: a.name }).toArray();
       const sessionIds = new Set(docs.map((d) => d.sessionId));
       let active = 0;
       for (const sid of sessionIds) {
@@ -98,14 +114,16 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
         return t && (!acc || t > acc) ? t : acc;
       }, null);
       out.push({
-        name: b.name,
-        harness: b.harness,
-        source: b.source,
-        model: b.model ?? null,
+        name: a.name,
+        label: a.label,
+        harness: a.harness,
+        source: a.source,
+        model: a.model ?? null,
+        sandboxCapable: sandboxCapable(a.harness),
         sessionCount: sessionIds.size,
         activeSandboxes: active,
         lastActivity: lastActivity ? lastActivity.toISOString() : null,
-        logCount: await opts.logStore.count(b.name),
+        logCount: await opts.logStore.count(a.name),
       });
     }
     return c.json({ agents: out });
@@ -183,11 +201,17 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
   // gitToken) server-side. Pass an existing sessionId to resume that thread's
   // conversation memory; otherwise a fresh console session is minted.
   app.post("/agentos/api/agents/:name/chat-sandbox", async (c) => {
-    const bot = byName.get(c.req.param("name"));
-    if (!bot) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 404);
+    const agent = byName.get(c.req.param("name"));
+    if (!agent) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 404);
+    if (!sandboxCapable(agent.harness)) {
+      return c.json({ error: { code: "NO_SANDBOX", message: `${agent.label} runs one-shot — use /run` } }, 400);
+    }
     const body = await c.req.json().catch(() => ({})) as { sessionId?: string };
-    const sessionId = body.sessionId || `agentos-${bot.name}-${randomUUID().slice(0, 12)}`;
-    const sandboxBody = sandboxBodyForBot(bot, sessionId);
+    const sessionId = body.sessionId || `agentos-${agent.name}-${randomUUID().slice(0, 12)}`;
+    const sandboxBody = sandboxBodyForBot(
+      { name: agent.name, harness: agent.harness, source: agent.source, model: agent.model, extraEnvs: agent.envs, gitToken: agent.gitToken },
+      sessionId,
+    );
     const r = await fetch(`${caBase}/sandboxes`, {
       method: "POST",
       headers: { "content-type": "application/json", ...caAuthHeader() },
@@ -198,7 +222,38 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
       return c.json({ error: { code: "SANDBOX_CREATE_FAILED", detail: text.slice(0, 300) } }, 502);
     }
     const j = await r.json() as { sandboxId: string };
-    return c.json({ sandboxId: j.sandboxId, sessionId, bot: bot.name });
+    return c.json({ sandboxId: j.sandboxId, sessionId, bot: agent.name });
+  });
+
+  // ── One-shot run (for deepagents, which has no warm-sandbox support) ─────
+  // Streams a fresh POST /run back to the browser. No conversation memory
+  // across turns — each message is an independent run.
+  app.post("/agentos/api/agents/:name/run", async (c) => {
+    const agent = byName.get(c.req.param("name"));
+    if (!agent) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 404);
+    const body = await c.req.json().catch(() => ({})) as { message?: string };
+    const runBody: Record<string, unknown> = {
+      source: agent.source,
+      harness: agent.harness,
+      runtime: "bwrap",
+      options: { permissionMode: "bypassPermissions", settingSources: ["project"] },
+      envs: agent.envs ?? {},
+      message: body.message ?? "",
+    };
+    if (agent.model) runBody.model = agent.model;
+    if (agent.gitToken) runBody.gitToken = agent.gitToken;
+    const upstream = await fetch(`${caBase}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream", ...caAuthHeader() },
+      body: JSON.stringify(runBody),
+    });
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: {
+        "content-type": upstream.headers.get("content-type") ?? "text/event-stream",
+        "cache-control": "no-cache",
+      },
+    });
   });
 
   // ── SSE chat proxy ───────────────────────────────────────────────────────
@@ -236,7 +291,7 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     });
   });
 
-  app.get("/agentos/api/health", (c) => c.json({ ok: true, agents: opts.bots.map((b) => b.name) }));
+  app.get("/agentos/api/health", (c) => c.json({ ok: true, agents: opts.agents.map((a) => a.name) }));
 
   return app;
 }
