@@ -1009,6 +1009,15 @@ export function botsFromEnv(): BotConfig[] {
     if (exaKey) {
       extraEnvs.EXA_API_KEY = exaKey;
     }
+    // Vercel token for the agentos-builder publish-ui skill (deploys built UIs).
+    // Lives only in the service env; injected into the sandbox so the skill's
+    // tool reads it via process.env.VERCEL_TOKEN — never hardcoded in the repo.
+    const vercelToken = process.env[`${prefix}VERCEL_TOKEN`] ?? process.env.VERCEL_TOKEN;
+    if (vercelToken) {
+      extraEnvs.VERCEL_TOKEN = vercelToken;
+      const vercelTeam = process.env[`${prefix}VERCEL_TEAM_ID`] ?? process.env.VERCEL_TEAM_ID;
+      if (vercelTeam) extraEnvs.VERCEL_TEAM_ID = vercelTeam;
+    }
     return {
       name, harness, token, signingSecret, source,
       ...(model ? { model } : {}),
