@@ -57,7 +57,7 @@ export default function App() {
       <aside className="w-72 shrink-0 border-r border-ink-600 bg-ink-800 flex flex-col">
         <div className="px-5 py-4 border-b border-ink-600">
           <div className="text-lg font-semibold tracking-tight flex items-center gap-2">
-            <span className="h-6 w-6 rounded-md bg-ink-600 grid place-items-center text-sm">◇</span>
+            <img src="/logos/agentos.png" alt="AgentOS" className="h-7 w-7 rounded-md object-contain" />
             AgentOS
           </div>
         </div>

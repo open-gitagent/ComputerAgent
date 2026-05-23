@@ -69,7 +69,7 @@ export function HomePage({
       {/* Brand */}
       <div className="flex items-center justify-end px-8 pt-7">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-xl bg-[#17150f] text-[#faf6ef] grid place-items-center text-lg">◇</div>
+          <img src="/logos/agentos.png" alt="AgentOS" className="h-11 w-11 rounded-xl object-contain" />
           <div className="leading-tight">
             <div className="font-semibold text-[17px]">AgentOS</div>
             <div className="text-[12px] italic text-[#8a8377]">where ideas become agents</div>
