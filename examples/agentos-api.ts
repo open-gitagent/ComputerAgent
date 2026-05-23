@@ -201,6 +201,41 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     return c.json({ sandboxId: j.sandboxId, sessionId, bot: bot.name });
   });
 
+  // ── SSE chat proxy ───────────────────────────────────────────────────────
+  // Streams a turn from the loopback /sandboxes/:id/chat back to the browser so
+  // the SPA only ever talks to /agentos/api/* (one Caddy proxy path, no need to
+  // expose the raw /sandboxes surface on the agentos subdomain).
+  app.post("/agentos/api/sandboxes/:id/chat", async (c) => {
+    const id = c.req.param("id");
+    const body = await c.req.text();
+    const upstream = await fetch(`${caBase}/sandboxes/${encodeURIComponent(id)}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream", ...caAuthHeader() },
+      body,
+    });
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: {
+        "content-type": upstream.headers.get("content-type") ?? "text/event-stream",
+        "cache-control": "no-cache",
+      },
+    });
+  });
+
+  // Artifact passthrough — lets the SPA download files the agent produced.
+  app.get("/agentos/api/sandboxes/:id/artifact", async (c) => {
+    const id = c.req.param("id");
+    const path = c.req.query("path") ?? "";
+    const upstream = await fetch(
+      `${caBase}/sandboxes/${encodeURIComponent(id)}/artifact?path=${encodeURIComponent(path)}`,
+      { headers: caAuthHeader() },
+    );
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: { "content-type": upstream.headers.get("content-type") ?? "application/octet-stream" },
+    });
+  });
+
   app.get("/agentos/api/health", (c) => c.json({ ok: true, agents: opts.bots.map((b) => b.name) }));
 
   return app;
