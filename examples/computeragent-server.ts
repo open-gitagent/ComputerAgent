@@ -2341,6 +2341,24 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             source: generalAgentSource, model: undefined,
             envs: { ...anthropicEnvs }, gitToken: githubToken,
           });
+          // AgentOS Builder — claude-code meta-agent that builds + deploys AgenticOS
+          // products. Always available in the panel, even before its Slack bot is
+          // configured. Carries the Vercel + deploy-Anthropic keys for publish-ui.
+          if (!agentDefs.some((a) => a.name === "agentosbuilder")) {
+            const deployAnthropic = process.env.DEPLOY_ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY;
+            agentDefs.push({
+              name: "agentosbuilder", label: "Claude Code", harness: "claude-agent-sdk",
+              source: process.env.AGENTOS_BUILDER_SOURCE ?? "github.com/open-gitagent/agentos-builder",
+              model: undefined,
+              envs: {
+                ...anthropicEnvs,
+                ...(process.env.VERCEL_TOKEN ? { VERCEL_TOKEN: process.env.VERCEL_TOKEN } : {}),
+                ...(process.env.VERCEL_TEAM_ID ? { VERCEL_TEAM_ID: process.env.VERCEL_TEAM_ID } : {}),
+                ...(deployAnthropic ? { DEPLOY_ANTHROPIC_API_KEY: deployAnthropic } : {}),
+              },
+              gitToken: githubToken,
+            });
+          }
         } else {
           console.warn("[agentos] no LYZR proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
         }
