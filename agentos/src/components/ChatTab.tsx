@@ -30,11 +30,25 @@ export function ChatTab({
   // Reset the console when the agent changes.
   useEffect(() => { setSandboxId(null); setSessionId(null); setMsgs([]); setErr(null); }, [agent]);
 
-  // If asked to resume a session, boot a sandbox pinned to it.
+  // If asked to resume a session, load its transcript into the view and boot a
+  // sandbox pinned to it so the user can continue the conversation.
   useEffect(() => {
     if (!resumeSessionId) return;
-    boot(resumeSessionId);
+    const sid = resumeSessionId;
     onConsumedResume();
+    (async () => {
+      try {
+        const d = await api.session(sid);
+        const prior: Msg[] = d.entries.map((e) => ({
+          role: e.type.includes("user") ? "user" : "assistant",
+          text: e.text,
+        }));
+        setMsgs(prior.length ? prior : [{ role: "status", text: "Resumed — no stored transcript. Continue below." }]);
+      } catch {
+        setMsgs([{ role: "status", text: "Resumed session — memory is loaded. Continue below." }]);
+      }
+      await boot(sid);
+    })();
   }, [resumeSessionId]);
 
   // From Home: auto-send the prompt the user typed on the landing page.
@@ -51,7 +65,6 @@ export function ChatTab({
       const r = await api.chatSandbox(agent, resume);
       setSandboxId(r.sandboxId);
       setSessionId(r.sessionId);
-      if (resume) setMsgs([{ role: "status", text: `Resumed session ${resume} — its memory is loaded. Send a message to continue.` }]);
       return r.sandboxId;
     } catch (e) {
       setErr(String(e)); return null;

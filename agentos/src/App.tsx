@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, type Agent } from "./api.ts";
 import { LogsTab } from "./components/LogsTab.tsx";
-import { ChatTab } from "./components/ChatTab.tsx";
-import { SessionsTab } from "./components/SessionsTab.tsx";
+import { WorkspaceTab } from "./components/WorkspaceTab.tsx";
 import { HomePage } from "./components/HomePage.tsx";
 
-type Tab = "logs" | "chat" | "sessions";
+type Tab = "chat" | "logs";
 type View = "home" | "dashboard";
 
 function timeAgo(iso: string | null): string {
@@ -27,9 +26,8 @@ export default function App() {
   const [view, setView] = useState<View>("home");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("logs");
+  const [tab, setTab] = useState<Tab>("chat");
   const [err, setErr] = useState<string | null>(null);
-  const [resumeSessionId, setResumeSessionId] = useState<string | null>(null);
   const [launchMessage, setLaunchMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -38,8 +36,8 @@ export default function App() {
 
   const agent = agents.find((a) => a.name === selected) ?? null;
 
-  const openAgent = (name: string) => { setSelected(name); setView("dashboard"); };
-  const continueInChat = (sessionId: string) => { setResumeSessionId(sessionId); setTab("chat"); };
+  // Clicking an agent defaults to the Chat workspace (session list + chat).
+  const openAgent = (name: string) => { setSelected(name); setTab("chat"); setView("dashboard"); };
 
   // From Home: open the agent (type) and auto-send the prompt.
   const launchFromHome = (agentName: string, message: string) => {
@@ -116,7 +114,7 @@ export default function App() {
                 </div>
               </div>
               <nav className="ml-auto flex gap-1 bg-ink-800 rounded-lg p-1">
-                {(["logs", "chat", "sessions"] as Tab[]).map((t) => (
+                {(["chat", "logs"] as Tab[]).map((t) => (
                   <button
                     key={t}
                     onClick={() => setTab(t)}
@@ -130,19 +128,16 @@ export default function App() {
               </nav>
             </header>
             <section className="flex-1 min-h-0">
-              {tab === "logs" && <LogsTab key={agent.name} agent={agent.name} />}
               {tab === "chat" && (
-                <ChatTab
+                <WorkspaceTab
                   key={agent.name}
                   agent={agent.name}
                   sandboxCapable={agent.sandboxCapable}
-                  resumeSessionId={resumeSessionId}
-                  onConsumedResume={() => setResumeSessionId(null)}
                   initialMessage={launchMessage}
                   onConsumedInitial={() => setLaunchMessage(null)}
                 />
               )}
-              {tab === "sessions" && <SessionsTab key={agent.name} agent={agent.name} onContinue={continueInChat} />}
+              {tab === "logs" && <LogsTab key={agent.name} agent={agent.name} />}
             </section>
           </>
         ) : (
