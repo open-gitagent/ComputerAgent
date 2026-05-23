@@ -2310,29 +2310,37 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           envs: b.extraEnvs,
           gitToken: b.gitToken,
         }));
-        const anthropicKey = process.env.ANTHROPIC_API_KEY;
         const generalAgentSource = process.env.AGENTOS_GENERAL_SOURCE
           ?? bots.find((b) => b.name === "gitagent")?.source
           ?? "github.com/shreyas-lyzr/general-agent";
         const githubToken = process.env.GITHUB_TOKEN;
-        if (anthropicKey) {
-          // Claude Code — claude-agent-sdk on the same repo, real Anthropic model
-          // (the repo's agent.yaml `preferred` model). Multi-turn via /sandboxes.
+        // claude-agent-sdk + deepagents speak the Anthropic Messages API. Route
+        // them through the in-process Lyzr proxy when enabled (same backend as
+        // GitAgent — the proxy overrides the model), else use a real Anthropic key.
+        let anthropicEnvs: Record<string, string> | null = null;
+        if (process.env.LYZR_PROXY_ENABLED === "1") {
+          const port = process.env.LYZR_PROXY_PORT ?? "8788";
+          anthropicEnvs = { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: "lyzr-via-proxy" };
+        } else if (process.env.ANTHROPIC_API_KEY) {
+          anthropicEnvs = { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY };
+        }
+        if (anthropicEnvs) {
+          // Claude Code — claude-agent-sdk on the same repo. Multi-turn via /sandboxes.
           if (!agentDefs.some((a) => a.name === "claude-code")) {
             agentDefs.push({
               name: "claude-code", label: "Claude Code", harness: "claude-agent-sdk",
               source: generalAgentSource, model: undefined,
-              envs: { ANTHROPIC_API_KEY: anthropicKey }, gitToken: githubToken,
+              envs: { ...anthropicEnvs }, gitToken: githubToken,
             });
           }
           // Deep Agent — deepagents on the same repo. One-shot via /run.
           agentDefs.push({
             name: "deep-agent", label: "Deep Agent", harness: "deepagents",
             source: generalAgentSource, model: undefined,
-            envs: { ANTHROPIC_API_KEY: anthropicKey }, gitToken: githubToken,
+            envs: { ...anthropicEnvs }, gitToken: githubToken,
           });
         } else {
-          console.warn("[agentos] ANTHROPIC_API_KEY not set — Claude Code / Deep Agent agents not registered");
+          console.warn("[agentos] no LYZR proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
         }
         const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, agents: agentDefs, logStore });
         server.mount(agentosApp);
