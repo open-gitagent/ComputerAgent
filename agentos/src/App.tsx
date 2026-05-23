@@ -52,6 +52,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
   const [err, setErr] = useState<string | null>(null);
   const [launchMessage, setLaunchMessage] = useState<string | null>(null);
+  const [agentsOpen, setAgentsOpen] = useState(true);
 
   useEffect(() => {
     api.agents().then(setAgents).catch((e) => setErr(String(e)));
@@ -90,32 +91,45 @@ export default function App() {
             <span>🏠</span> Home
           </button>
         </div>
-        <div className="px-3 py-3 text-[11px] uppercase tracking-wider text-gray-500">Agents</div>
-        <div className="flex-1 overflow-y-auto px-2 space-y-1">
-          {err && <div className="m-2 text-xs text-red-400">{err}</div>}
-          {agents.length === 0 && !err && <div className="m-2 text-xs text-gray-500">Loading…</div>}
-          {agents.map((a) => (
-            <button
-              key={a.name}
-              onClick={() => openAgent(a.name)}
-              className={`w-full text-left rounded-lg px-3 py-2.5 transition ${
-                view === "dashboard" && selected === a.name ? "bg-ink-600 ring-1 ring-accent/40" : "hover:bg-ink-700"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span className={`h-2 w-2 rounded-full ${a.activeSandboxes > 0 ? "bg-emerald-400" : "bg-gray-600"}`} />
-                <span className="font-medium text-sm">{agentNameFromSource(a.source)}</span>
-                <TypeBadge agent={a} className="ml-auto" />
-              </div>
-              <div className="mt-1 text-[11px] text-gray-500 truncate">{a.source}</div>
-              <div className="mt-1.5 flex gap-3 text-[10px] text-gray-500">
-                <span>{a.sessionCount} sessions</span>
-                <span>{a.logCount} logs</span>
-                <span>{timeAgo(a.lastActivity)}</span>
-              </div>
-            </button>
-          ))}
+        {/* Agents folder (file-system style) */}
+        <div className="px-2 pt-2">
+          <button
+            onClick={() => setAgentsOpen((o) => !o)}
+            className="w-full flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg hover:bg-ink-700 text-gray-300"
+          >
+            <span className="w-3 text-[10px] text-gray-500">{agentsOpen ? "▾" : "▸"}</span>
+            <span>{agentsOpen ? "📂" : "📁"}</span>
+            <span className="font-medium">Agents</span>
+            <span className="ml-auto text-[10px] text-gray-600">{agents.length}</span>
+          </button>
         </div>
+        {agentsOpen && (
+          <div className="flex-1 overflow-y-auto pl-3 ml-4 border-l border-ink-700 space-y-1 mt-1 mr-2">
+            {err && <div className="m-2 text-xs text-red-400">{err}</div>}
+            {agents.length === 0 && !err && <div className="m-2 text-xs text-gray-500">Loading…</div>}
+            {agents.map((a) => (
+              <button
+                key={a.name}
+                onClick={() => openAgent(a.name)}
+                className={`w-full text-left rounded-lg px-3 py-2.5 transition ${
+                  view === "dashboard" && selected === a.name ? "bg-ink-600 ring-1 ring-accent/40" : "hover:bg-ink-700"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full shrink-0 ${a.activeSandboxes > 0 ? "bg-emerald-400" : "bg-gray-600"}`} />
+                  <span className="font-medium text-sm truncate">{agentNameFromSource(a.source)}</span>
+                  <TypeBadge agent={a} className="ml-auto" />
+                </div>
+                <div className="mt-1 text-[11px] text-gray-500 truncate">{a.source}</div>
+                <div className="mt-1.5 flex gap-3 text-[10px] text-gray-500">
+                  <span>{a.sessionCount} sessions</span>
+                  <span>{a.logCount} logs</span>
+                  <span>{timeAgo(a.lastActivity)}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="px-4 py-3 border-t border-ink-600 text-[10px] text-gray-600">agentos.clawagent.sh</div>
       </aside>
 
