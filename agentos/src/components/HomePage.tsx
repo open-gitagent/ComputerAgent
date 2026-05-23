@@ -6,17 +6,31 @@ interface FrameworkDef {
   id: Framework;
   name: string;
   desc: string;
-  glyph: string;
+  logo?: string;   // image src; falls back to glyph
+  glyph?: string;
   // Backend agent name this maps to (null = not connected yet).
   agent: string | null;
 }
 
 const FRAMEWORKS: FrameworkDef[] = [
-  { id: "gitagent", name: "GitAgent", desc: "Code-aware agent on gitclaw", glyph: "⌥", agent: "gitagent" },
-  { id: "claude-code", name: "Claude Code", desc: "Anthropic code-native agent", glyph: "✳", agent: "claude-code" },
-  { id: "deep-agent", name: "Deep Agent", desc: "LangGraph deep agent · one-shot", glyph: "❖", agent: "deep-agent" },
+  { id: "gitagent", name: "GitAgent", desc: "Code-aware agent on gitclaw", logo: "/logos/gitagent.png", agent: "gitagent" },
+  { id: "claude-code", name: "Claude Code", desc: "Anthropic code-native agent", logo: "/logos/claude.svg", agent: "claude-code" },
+  { id: "deep-agent", name: "Deep Agent", desc: "LangGraph deep agent · one-shot", logo: "/logos/langchain.svg", agent: "deep-agent" },
   { id: "auto", name: "Auto", desc: "Let AgentOS pick", glyph: "✨", agent: "gitagent" },
 ];
+
+function FrameworkIcon({ f, size = 32 }: { f: FrameworkDef; size?: number }) {
+  return (
+    <span
+      className="grid place-items-center rounded-lg bg-white border border-[#e7e0d4] shrink-0 overflow-hidden"
+      style={{ height: size, width: size }}
+    >
+      {f.logo
+        ? <img src={f.logo} alt={f.name} className="object-contain" style={{ height: size * 0.62, width: size * 0.62 }} />
+        : <span className="text-[#a98b2f]">{f.glyph}</span>}
+    </span>
+  );
+}
 
 function greeting(): { word: string; emoji: string } {
   const h = new Date().getHours();
@@ -93,7 +107,7 @@ export function HomePage({
                     onClick={() => { setFramework(f.id); setPickerOpen(false); setNote(null); }}
                     className="w-full text-left px-4 py-2.5 hover:bg-[#f7f3ea] flex items-center gap-3"
                   >
-                    <span className="h-7 w-7 grid place-items-center rounded-lg bg-[#17150f] text-[#faf6ef] text-sm">{f.glyph}</span>
+                    <FrameworkIcon f={f} size={28} />
                     <span>
                       <span className="block text-sm font-medium">{f.name}</span>
                       <span className="block text-[11px] text-[#9b9384]">{f.desc}</span>
@@ -150,7 +164,7 @@ export function HomePage({
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <span className="h-8 w-8 grid place-items-center rounded-lg bg-[#17150f] text-[#faf6ef] text-sm">{f.glyph}</span>
+                    <FrameworkIcon f={f} size={32} />
                     <span className="font-semibold text-sm">{f.name}</span>
                     {active && <span className="ml-auto text-[#a98b2f]">✓</span>}
                   </div>
