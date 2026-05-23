@@ -22,6 +22,29 @@ function agentNameFromSource(source: string): string {
   return slug.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Logo for an agent type (harness).
+function typeLogo(harness: string): string | null {
+  if (harness === "gitagent") return "/logos/gitagent.png";
+  if (harness === "claude-agent-sdk") return "/logos/claude.svg";
+  if (harness === "deepagents") return "/logos/langchain.svg";
+  return null;
+}
+
+// Type pill: small logo + label (GitAgent / Claude Code / Deep Agent).
+function TypeBadge({ agent, className = "" }: { agent: Agent; className?: string }) {
+  const logo = typeLogo(agent.harness);
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-[10px] rounded bg-accent/20 text-accent-soft pl-1 pr-2 py-0.5 ${className}`}>
+      {logo && (
+        <span className="h-4 w-4 grid place-items-center rounded bg-white shrink-0">
+          <img src={logo} alt="" className="h-2.5 w-2.5 object-contain" />
+        </span>
+      )}
+      {agent.label}
+    </span>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState<View>("home");
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -82,7 +105,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${a.activeSandboxes > 0 ? "bg-emerald-400" : "bg-gray-600"}`} />
                 <span className="font-medium text-sm">{agentNameFromSource(a.source)}</span>
-                <span className="ml-auto text-[10px] rounded bg-accent/20 text-accent-soft px-1.5 py-0.5">{a.label}</span>
+                <TypeBadge agent={a} className="ml-auto" />
               </div>
               <div className="mt-1 text-[11px] text-gray-500 truncate">{a.source}</div>
               <div className="mt-1.5 flex gap-3 text-[10px] text-gray-500">
@@ -106,7 +129,7 @@ export default function App() {
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-base font-semibold">{agentNameFromSource(agent.source)}</span>
-                  <span className="text-[10px] rounded bg-accent/20 text-accent-soft px-1.5 py-0.5">{agent.label}</span>
+                  <TypeBadge agent={agent} />
                 </div>
                 <div className="text-xs text-gray-500">
                   {agent.harness} · {agent.model ?? "default model"}
