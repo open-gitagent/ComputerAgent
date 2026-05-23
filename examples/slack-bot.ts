@@ -1018,6 +1018,12 @@ export function botsFromEnv(): BotConfig[] {
       const vercelTeam = process.env[`${prefix}VERCEL_TEAM_ID`] ?? process.env.VERCEL_TEAM_ID;
       if (vercelTeam) extraEnvs.VERCEL_TEAM_ID = vercelTeam;
     }
+    // Real Anthropic key for the DEPLOYED app (the built AgenticOS api-server reads
+    // AI_INTEGRATIONS_ANTHROPIC_API_KEY). Exposed under a distinct name so it doesn't
+    // collide with the agent's own ANTHROPIC_API_KEY (which is the Lyzr-proxy stub
+    // for claude-agent-sdk). The publish-ui skill pushes this to Vercel as a secret.
+    const deployAnthropic = process.env.DEPLOY_ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY;
+    if (deployAnthropic) extraEnvs.DEPLOY_ANTHROPIC_API_KEY = deployAnthropic;
     return {
       name, harness, token, signingSecret, source,
       ...(model ? { model } : {}),
