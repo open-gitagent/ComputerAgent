@@ -17,6 +17,7 @@ export function WorkspaceTab({
 }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
   // resumeId = the session to load into the chat (null = fresh chat).
   // chatKey forces ChatTab to remount when switching sessions / starting new.
   const [resumeId, setResumeId] = useState<string | null>(null);
@@ -39,9 +40,25 @@ export function WorkspaceTab({
 
   return (
     <div className="h-full flex">
+      {/* Collapsed: thin rail with an expand button + new-chat shortcut */}
+      {collapsed && (
+        <div className="w-11 shrink-0 border-r border-ink-700 flex flex-col items-center py-3 gap-3">
+          <button onClick={() => setCollapsed(false)} title="Show sessions"
+            className="h-7 w-7 grid place-items-center rounded hover:bg-ink-700 text-gray-400">»</button>
+          <button onClick={newChat} title="New chat"
+            className="h-7 w-7 grid place-items-center rounded bg-accent hover:bg-accent-soft text-white text-sm">+</button>
+          <div className="mt-1 text-[10px] text-gray-600 [writing-mode:vertical-rl] rotate-180 tracking-wide">
+            {sessions.length} sessions
+          </div>
+        </div>
+      )}
+
       {/* Session list */}
+      {!collapsed && (
       <div className="w-72 shrink-0 border-r border-ink-700 flex flex-col">
         <div className="px-4 py-3 border-b border-ink-700 flex items-center gap-2">
+          <button onClick={() => setCollapsed(true)} title="Collapse"
+            className="h-6 w-6 grid place-items-center rounded hover:bg-ink-700 text-gray-400 -ml-1">«</button>
           <span className="text-xs text-gray-400">{sessions.length} session{sessions.length !== 1 ? "s" : ""}</span>
           <button onClick={newChat} className="ml-auto text-xs px-2.5 py-1 rounded bg-accent hover:bg-accent-soft text-white">+ New chat</button>
         </div>
@@ -70,6 +87,7 @@ export function WorkspaceTab({
           ))}
         </div>
       </div>
+      )}
 
       {/* Chat */}
       <div className="flex-1 min-w-0">
