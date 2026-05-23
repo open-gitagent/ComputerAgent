@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api.ts";
 import { streamChat, stripAttachMarkers } from "../sse.ts";
 
-interface Msg { role: "user" | "assistant" | "status"; text: string; files?: string[]; }
+interface Msg { role: "user" | "assistant" | "status"; text: string; files?: string[]; canContinue?: boolean; }
+
+const CONTINUE_PROMPT = "Continue from where you left off — keep building until the project is complete, then summarize what you built and give me the deploy URL.";
 
 export function ChatTab({
   agent, sandboxCapable, resumeSessionId, onConsumedResume, initialMessage, onConsumedInitial,
@@ -110,12 +112,18 @@ export function ChatTab({
           const raw = t || finalText;
           const { text: clean, files } = stripAttachMarkers(raw);
           // The agent may finish via tool calls without a closing text summary
-          // (e.g. it hit its turn limit). Don't show a bare "(no reply)".
+          // (e.g. it hit its turn limit). Don't show a bare "(no reply)" — and
+          // offer a one-click Continue so the build can finish in this session.
+          const toolOnly = !clean && lastTools > 0;
           const body = clean
-            || (lastTools > 0
-              ? `_(Ran ${lastTools} tool calls but didn't return a text summary — it may have hit its turn limit. Ask it to "summarize what you built" to continue, or start a New session.)_`
+            || (toolOnly
+              ? `_(Ran ${lastTools} tool calls but stopped without a summary — likely its per-turn limit. Click Continue to keep building in this session.)_`
               : "_(no reply)_");
-          setMsgs((m) => replaceStatus(m, { role: "assistant", text: body, files: (sandboxCapable && files.length) ? files : undefined }));
+          setMsgs((m) => replaceStatus(m, {
+            role: "assistant", text: body,
+            files: (sandboxCapable && files.length) ? files : undefined,
+            canContinue: toolOnly,
+          }));
         },
       },
     ).catch((e) => setMsgs((m) => replaceStatus(m, { role: "assistant", text: `❌ ${e}` })));
@@ -166,6 +174,12 @@ export function ChatTab({
                         className="text-xs underline text-indigo-300 hover:text-indigo-200">📎 {f.split("/").pop()}</a>
                     ))}
                   </div>
+                )}
+                {m.canContinue && !busy && (
+                  <button onClick={() => send(CONTINUE_PROMPT)}
+                    className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-accent hover:bg-accent-soft text-white">
+                    Continue building →
+                  </button>
                 )}
               </div>
             </div>
