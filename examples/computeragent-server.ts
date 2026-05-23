@@ -2276,22 +2276,28 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!process.env.MONGO_URL) {
       console.error("[slack-bot] SLACK_BOTS_ENABLED=1 but MONGO_URL not set — Slack thread map needs mongo; skipping");
     } else {
-      const [{ createSlackBotsApp, botsFromEnv }] = await Promise.all([
+      const [{ createSlackBotsApp, botsFromEnv }, { AgentLogStore }, { createAgentOSApp }] = await Promise.all([
         import("./slack-bot.ts"),
+        import("./agent-log-store.ts"),
+        import("./agentos-api.ts"),
       ]);
       const bots = botsFromEnv();
       if (bots.length === 0) {
         console.error("[slack-bot] SLACK_BOTS_ENABLED=1 but no bot has all of TOKEN+SIGNING_SECRET+SOURCE; skipping");
       } else {
         const caBase = `http://${process.env.HOST ?? "127.0.0.1"}:${Number(process.env.PORT ?? 8787)}`;
-        const slackApp = createSlackBotsApp({
-          caBase,
-          mongoUrl: process.env.MONGO_URL,
-          mongoDb: process.env.MONGO_DATABASE ?? "computeragent-test",
-          bots,
-        });
+        const mongoUrl = process.env.MONGO_URL;
+        const mongoDb = process.env.MONGO_DATABASE ?? "computeragent-test";
+        const logStore = new AgentLogStore(mongoUrl, mongoDb);
+        const slackApp = createSlackBotsApp({ caBase, mongoUrl, mongoDb, bots, logStore });
         server.mount(slackApp);
         slackBotNames = bots.map((b) => b.name);
+
+        // AgentOS control-panel API — backs the private dashboard at
+        // agentos.clawagent.sh. Mounted at /agentos/api/*, stays behind Basic Auth.
+        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, bots, logStore });
+        server.mount(agentosApp);
+        console.log("AgentOS control panel API: /agentos/api/* (agents, logs, sessions, chat-sandbox)");
       }
     }
   }

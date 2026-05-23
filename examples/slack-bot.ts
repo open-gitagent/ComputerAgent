@@ -30,6 +30,7 @@
 import { Hono } from "hono";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { MongoClient, type Collection } from "mongodb";
+import { AgentLogStore } from "./agent-log-store.ts";
 
 // ── Loopback auth ────────────────────────────────────────────────────────
 //
@@ -77,7 +78,7 @@ interface SlackAppMentionEvent {
 
 interface ChatAttachment { path: string; content: string; encoding: "base64" | "utf8"; }
 
-interface BotConfig {
+export interface BotConfig {
   readonly name: "claudebot" | "gitagent";
   readonly harness: "claude-agent-sdk" | "gitagent";
   readonly token: string;
@@ -386,6 +387,32 @@ function newDeliverables(before: Map<string, string>, after: Map<string, string>
 
 // ── Sandbox lifecycle helpers ────────────────────────────────────────────
 
+/**
+ * Build the POST /sandboxes body for a bot + sessionId. Single source of truth
+ * for an agent's runtime config (harness, runtime, Lyzr model + envs, gitToken,
+ * mongo session store, S3 auto-save, TTLs) so the Slack flow and the AgentOS
+ * web console create identically-configured sandboxes. Secrets stay server-side.
+ */
+export function sandboxBodyForBot(bot: BotConfig, sessionId: string): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    source: bot.source,
+    harness: bot.harness,
+    runtime: "bwrap",
+    options: { permissionMode: "bypassPermissions", settingSources: ["project"] },
+    sessionId,
+    sessionStore: { kind: "mongo" },
+    autoSave: {
+      stateStore: { kind: "s3", options: { prefix: `slack/${bot.name}/` } },
+    },
+    envs: bot.extraEnvs ?? {},
+    idleTtlMs: 30 * 60_000,    // 30 min idle
+    ttlMs: 4 * 60 * 60_000,    // 4h hard cap per thread
+  };
+  if (bot.model) body.model = bot.model;
+  if (bot.gitToken) body.gitToken = bot.gitToken;
+  return body;
+}
+
 interface SandboxRef {
   sandboxId: string;
   fresh: boolean;       // true if just created (or restored), false if reusing live one
@@ -441,22 +468,7 @@ async function ensureSandboxForThread(
   }
 
   // ── Path C: brand-new sandbox
-  const body: Record<string, unknown> = {
-    source: bot.source,
-    harness: bot.harness,
-    runtime: "bwrap",
-    options: { permissionMode: "bypassPermissions", settingSources: ["project"] },
-    sessionId,
-    sessionStore: { kind: "mongo" },
-    autoSave: {
-      stateStore: { kind: "s3", options: { prefix: `slack/${bot.name}/` } },
-    },
-    envs: bot.extraEnvs ?? {},
-    idleTtlMs: 30 * 60_000,    // 30 min idle
-    ttlMs: 4 * 60 * 60_000,    // 4h hard cap per thread
-  };
-  if (bot.model) body.model = bot.model;
-  if (bot.gitToken) body.gitToken = bot.gitToken;
+  const body = sandboxBodyForBot(bot, sessionId);
 
   const r = await fetch(`${caBase}/sandboxes`, {
     method: "POST",
@@ -693,8 +705,24 @@ async function streamChatToSlack(
 async function sendOwnerAuditLog(
   token: string,
   bot: BotConfig,
-  ctx: { requester: string; channel: string; threadTs: string; query: string; reply: string },
+  ctx: { requester: string; channel: string; threadTs: string; query: string; reply: string; ok?: boolean },
+  logStore?: AgentLogStore,
 ): Promise<void> {
+  // Durable persistence (for the AgentOS control panel) — best-effort.
+  if (logStore) {
+    void logStore.append({
+      source: "slack",
+      bot: bot.name,
+      requester: ctx.requester,
+      channel: ctx.channel,
+      threadTs: ctx.threadTs,
+      sessionId: `slack-${ctx.channel}-${ctx.threadTs}`,
+      query: ctx.query,
+      reply: ctx.reply,
+      ok: ctx.ok ?? true,
+    }).catch((err) => console.error("[slack-bot]", bot.name, "log persist failed:", (err as Error).message));
+  }
+
   const owner = process.env.SLACK_AUDIT_USER_ID ?? process.env.SLACK_APPROVER_USER_ID;
   if (!owner) return;
   // Don't fully spam the log with huge bodies — clamp each field.
@@ -735,6 +763,7 @@ async function handleAppMention(
   store: SlackThreadStore,
   bot: BotConfig,
   ev: SlackAppMentionEvent,
+  logStore?: AgentLogStore,
 ): Promise<void> {
   // Reply IN-THREAD when there's a thread_ts, else start a thread on the message itself.
   const threadTs = ev.thread_ts ?? ev.ts;
@@ -816,7 +845,8 @@ async function handleAppMention(
       threadTs,
       query: userText || message,
       reply: result?.replyText ?? "",
-    });
+      ok: true,
+    }, logStore);
   } catch (err) {
     const msg = (err as Error).message ?? "unknown error";
     await slackUpdate(bot.token, ev.channel, placeholder.ts, `❌ Failed: ${msg.slice(0, 600)}`);
@@ -827,7 +857,8 @@ async function handleAppMention(
       threadTs,
       query: stripMention(ev.text),
       reply: `❌ Failed: ${msg.slice(0, 600)}`,
-    });
+      ok: false,
+    }, logStore);
   }
 }
 
@@ -842,6 +873,8 @@ export interface SlackBotsOptions {
   readonly mongoDb: string;
   /** Bots to expose. */
   readonly bots: readonly BotConfig[];
+  /** Optional durable audit-log store; when set, every request is persisted. */
+  readonly logStore?: AgentLogStore;
 }
 
 export function createSlackBotsApp(opts: SlackBotsOptions): Hono {
@@ -888,7 +921,7 @@ export function createSlackBotsApp(opts: SlackBotsOptions): Hono {
     if (parsed.type === "event_callback" && parsed.event?.type === "app_mention") {
       // ACK immediately so Slack doesn't retry. Real work happens detached.
       const ev = parsed.event;
-      void handleAppMention(caBase, store, bot, ev).catch((err) => {
+      void handleAppMention(caBase, store, bot, ev, opts.logStore).catch((err) => {
         console.error("[slack-bot]", bot.name, "handler crashed:", err);
       });
       return c.json({ ok: true });
