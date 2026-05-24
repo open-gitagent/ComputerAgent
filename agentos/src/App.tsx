@@ -81,9 +81,12 @@ export default function App() {
       {/* Left rail */}
       <aside className="w-72 shrink-0 border-r border-ink-600 bg-ink-800 flex flex-col">
         <div className="px-5 py-4 border-b border-ink-600">
-          <div className="text-lg font-semibold tracking-tight flex items-center gap-2">
-            <img src="/logos/agentos.png" alt="AgentOS" className="h-7 w-7 rounded-md object-contain" />
-            AgentOS
+          <div className="flex items-center gap-2.5">
+            <img src="/logos/agentos.png" alt="ComputerAgent" className="h-8 w-8 rounded-md object-contain" />
+            <div className="leading-tight">
+              <div className="text-sm font-semibold tracking-tight">ComputerAgent</div>
+              <div className="text-[11px] text-accent-soft/80 font-mono">Console</div>
+            </div>
           </div>
         </div>
         <div className="px-2 pt-2">

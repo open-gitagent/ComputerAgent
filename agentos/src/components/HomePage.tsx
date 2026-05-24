@@ -69,17 +69,27 @@ export function HomePage({
       {/* Brand */}
       <div className="flex items-center justify-end px-8 pt-7">
         <div className="flex items-center gap-3">
-          <img src="/logos/agentos.png" alt="AgentOS" className="h-11 w-11 rounded-xl object-contain" />
-          <div className="leading-tight">
-            <div className="font-semibold text-[17px]">AgentOS</div>
+          <img src="/logos/agentos.png" alt="ComputerAgent" className="h-11 w-11 rounded-xl object-contain" />
+          <div className="leading-tight text-right">
+            <div className="font-semibold text-[17px]">ComputerAgent Console</div>
             <div className="text-[12px] italic text-gray-500">where ideas become agents</div>
           </div>
         </div>
       </div>
 
       <div className="max-w-3xl mx-auto px-6 pb-20">
+        {/* Hero — the retro CRT in the field (warm palette + brand mark) */}
+        <div className="mt-6 relative rounded-2xl overflow-hidden border border-ink-600 h-52">
+          <img src="/logos/hero.jpg" alt="ComputerAgent" className="w-full h-full object-cover object-center" />
+          <div className="absolute inset-0 bg-gradient-to-t from-ink-900 via-ink-900/30 to-transparent" />
+          <div className="absolute bottom-3 left-4 right-4 flex items-end justify-between">
+            <span className="text-[11px] uppercase tracking-[0.2em] text-sand/90">ComputerAgent · Research Labs</span>
+            <span className="h-2 w-2 rounded-full bg-accent-soft shadow-[0_0_10px] shadow-accent-soft" />
+          </div>
+        </div>
+
         {/* Greeting */}
-        <div className="text-center mt-10 mb-2">
+        <div className="text-center mt-8 mb-2">
           <h1 className="text-5xl tracking-tight text-gray-100" style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}>
             <span className="mr-3">{emoji}</span>{word}, Shreyas
           </h1>

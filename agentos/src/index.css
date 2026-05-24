@@ -5,10 +5,10 @@
 html, body, #root { height: 100%; }
 body {
   margin: 0;
-  background: #0a0b0f;
-  color: #e5e7eb;
+  background: #0e0b07;
+  color: #e7e2d8;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-* { scrollbar-width: thin; scrollbar-color: #2a2f3a transparent; }
+* { scrollbar-width: thin; scrollbar-color: #3e3020 transparent; }
 *::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-thumb { background: #2a2f3a; border-radius: 4px; }
+*::-webkit-scrollbar-thumb { background: #3e3020; border-radius: 4px; }

@@ -4,17 +4,20 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Warm dark "retro terminal" palette (sepia-tinted near-black).
         ink: {
-          900: "#0a0b0f",
-          800: "#101218",
-          700: "#171a22",
-          600: "#1e222c",
-          500: "#2a2f3a",
+          900: "#0e0b07",
+          800: "#17120c",
+          700: "#221a11",
+          600: "#2f2417",
+          500: "#3e3020",
         },
+        // CRT-green accent (the glowing monitor).
         accent: {
-          DEFAULT: "#6366f1",
-          soft: "#818cf8",
+          DEFAULT: "#16a34a",
+          soft: "#4ade80",
         },
+        sand: "#d9c7a3",
       },
       fontFamily: {
         mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
