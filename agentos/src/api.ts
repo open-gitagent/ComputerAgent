@@ -18,7 +18,7 @@ export interface Agent {
 export interface LogEntry {
   _id: string;
   ts: string;
-  source: "slack" | "web";
+  source: "slack" | "web" | "schedule";
   bot: string;
   requester: string;
   channel: string | null;
