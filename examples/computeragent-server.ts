@@ -2359,19 +2359,26 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               gitToken: githubToken,
             });
           }
-          // GAP Promoter — claude-code agent that converts repos to the GitAgent
-          // Protocol, opens PRs, and submits to the Open GAP registry. Needs a
-          // GitHub token in its sandbox (GH_TOKEN/GITHUB_TOKEN) to fork + PR.
+          // GAP Promoter — gitagent (gitclaw) agent that converts repos to the
+          // GitAgent Protocol, opens PRs, and submits to the Open GAP registry.
+          // Runs on gitagent via the Lyzr-direct path (openai:<model> + gitclaw
+          // base url), with a GitHub token in its sandbox (GH_TOKEN/GITHUB_TOKEN).
           if (!agentDefs.some((a) => a.name === "gap-promoter")) {
             const promoterToken = process.env.GAP_PROMOTER_GITHUB_TOKEN ?? githubToken;
+            const lyzrBase = process.env.LYZR_UPSTREAM_BASE;
+            const lyzrToken = process.env.LYZR_UPSTREAM_TOKEN;
+            const lyzrModel = process.env.LYZR_UPSTREAM_MODEL;
+            const gitEnvs: Record<string, string> = {};
+            if (lyzrBase && lyzrToken) {
+              gitEnvs.GITCLAW_MODEL_BASE_URL = lyzrBase.replace(/\/+$/, "") + "/v4";
+              gitEnvs.OPENAI_API_KEY = lyzrToken;
+            }
+            if (promoterToken) { gitEnvs.GITHUB_TOKEN = promoterToken; gitEnvs.GH_TOKEN = promoterToken; }
             agentDefs.push({
-              name: "gap-promoter", label: "Claude Code", harness: "claude-agent-sdk",
+              name: "gap-promoter", label: "GitAgent", harness: "gitagent",
               source: process.env.GAP_PROMOTER_SOURCE ?? "github.com/open-gitagent/gap-promoter",
-              model: undefined,
-              envs: {
-                ...anthropicEnvs,
-                ...(promoterToken ? { GITHUB_TOKEN: promoterToken, GH_TOKEN: promoterToken } : {}),
-              },
+              model: lyzrModel ? `openai:${lyzrModel}` : undefined,
+              envs: gitEnvs,
               gitToken: promoterToken,
             });
           }
