@@ -21,6 +21,7 @@ function timeAgo(iso: string | null): string {
 const NAME_OVERRIDES: Record<string, string> = {
   "general-agent": "General Agent",
   "agentos-builder": "AgentOS Builder",
+  "gap-promoter": "GAP Promoter",
 };
 function agentNameFromSource(source: string): string {
   const slug = source.split("/").pop() ?? source;

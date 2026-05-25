@@ -2359,6 +2359,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               gitToken: githubToken,
             });
           }
+          // GAP Promoter — claude-code agent that converts repos to the GitAgent
+          // Protocol, opens PRs, and submits to the Open GAP registry. Needs a
+          // GitHub token in its sandbox (GH_TOKEN/GITHUB_TOKEN) to fork + PR.
+          if (!agentDefs.some((a) => a.name === "gap-promoter")) {
+            const promoterToken = process.env.GAP_PROMOTER_GITHUB_TOKEN ?? githubToken;
+            agentDefs.push({
+              name: "gap-promoter", label: "Claude Code", harness: "claude-agent-sdk",
+              source: process.env.GAP_PROMOTER_SOURCE ?? "github.com/open-gitagent/gap-promoter",
+              model: undefined,
+              envs: {
+                ...anthropicEnvs,
+                ...(promoterToken ? { GITHUB_TOKEN: promoterToken, GH_TOKEN: promoterToken } : {}),
+              },
+              gitToken: promoterToken,
+            });
+          }
         } else {
           console.warn("[agentos] no LYZR proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
         }
