@@ -18,14 +18,14 @@ Run:
   python3 scripts/test-lyzr-backend.py
   python3 scripts/test-lyzr-backend.py --base https://api.clawagent.sh
 """
-import argparse, json, sys, time
+import argparse, json, os, sys, time
 import urllib.request, urllib.error
 
 # ── Shared with test-sandboxes.py ────────────────────────────────────────
-BASE_URL = "https://api.clawagent.sh"
-LYZR_TOKEN = "${LYZR_TOKEN}"
-LYZR_MODEL = "697a4a76496e0831bdde546c"
-LYZR_BASE = "https://agent-dev.test.studio.lyzr.ai"
+BASE_URL = os.environ.get("BASE_URL", "https://api.clawagent.sh")
+LYZR_TOKEN = os.environ.get("LYZR_TOKEN", "")  # required — export it; never hardcode
+LYZR_MODEL = os.environ.get("LYZR_MODEL", "697a4a76496e0831bdde546c")
+LYZR_BASE = os.environ.get("LYZR_BASE", "https://agent-dev.test.studio.lyzr.ai")
 GAP_SOURCE = "github.com/shreyas-lyzr/pdf-agent"
 PROXY_URL = "http://127.0.0.1:8788"   # in-process on EC2
 

@@ -2382,19 +2382,33 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               gitToken: promoterToken,
             });
           }
-          // Framework Translator — claude-code agent that translates AI-agent code
-          // across frameworks (LangGraph, CrewAI, OpenAI Agents SDK, AutoGen, …).
+          // Framework Translator — translates AI-agent code across frameworks
+          // (LangGraph, CrewAI, OpenAI Agents SDK, AutoGen, …, Lyzr ADK).
+          // Runs on the gitagent (gitclaw) harness via the Lyzr-direct path
+          // (GITCLAW_MODEL_BASE_URL + OPENAI_API_KEY + model openai:<lyzrModel>),
+          // same wiring as gap-promoter — NOT the Anthropic proxy. gitagent reads
+          // agent.yaml runtime.max_turns (4000) and is built for the Lyzr model's
+          // tool-use loop. Keeps EXA_API_KEY (exa-research). Uses the GAP_PROMOTER
+          // PAT (shared with gap-promoter, per explicit request) so it can push the
+          // translated code / open PRs; falls back to the shared GITHUB_TOKEN.
           if (!agentDefs.some((a) => a.name === "framework-translator")) {
+            const lyzrBase = process.env.LYZR_UPSTREAM_BASE;
+            const lyzrToken = process.env.LYZR_UPSTREAM_TOKEN;
+            const lyzrModel = process.env.LYZR_UPSTREAM_MODEL;
+            const ftGitToken = process.env.GAP_PROMOTER_GITHUB_TOKEN ?? githubToken;
+            const ftEnvs: Record<string, string> = {};
+            if (lyzrBase && lyzrToken) {
+              ftEnvs.GITCLAW_MODEL_BASE_URL = lyzrBase.replace(/\/+$/, "") + "/v4";
+              ftEnvs.OPENAI_API_KEY = lyzrToken;
+            }
+            if (process.env.EXA_API_KEY) ftEnvs.EXA_API_KEY = process.env.EXA_API_KEY;
+            if (ftGitToken) { ftEnvs.GITHUB_TOKEN = ftGitToken; ftEnvs.GH_TOKEN = ftGitToken; }
             agentDefs.push({
-              name: "framework-translator", label: "Claude Code", harness: "claude-agent-sdk",
+              name: "framework-translator", label: "GitAgent", harness: "gitagent",
               source: process.env.FRAMEWORK_TRANSLATOR_SOURCE ?? "github.com/shreyas-lyzr/framework-translator-agent",
-              model: undefined,
-              envs: {
-                ...anthropicEnvs,
-                ...(process.env.EXA_API_KEY ? { EXA_API_KEY: process.env.EXA_API_KEY } : {}),
-                ...(githubToken ? { GITHUB_TOKEN: githubToken, GH_TOKEN: githubToken } : {}),
-              },
-              gitToken: githubToken,
+              model: lyzrModel ? `openai:${lyzrModel}` : undefined,
+              envs: ftEnvs,
+              gitToken: ftGitToken,
             });
           }
         } else {
