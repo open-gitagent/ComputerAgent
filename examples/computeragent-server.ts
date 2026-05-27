@@ -2382,6 +2382,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               gitToken: promoterToken,
             });
           }
+          // Framework Translator — claude-code agent that translates AI-agent code
+          // across frameworks (LangGraph, CrewAI, OpenAI Agents SDK, AutoGen, …).
+          if (!agentDefs.some((a) => a.name === "framework-translator")) {
+            agentDefs.push({
+              name: "framework-translator", label: "Claude Code", harness: "claude-agent-sdk",
+              source: process.env.FRAMEWORK_TRANSLATOR_SOURCE ?? "github.com/shreyas-lyzr/framework-translator-agent",
+              model: undefined,
+              envs: {
+                ...anthropicEnvs,
+                ...(process.env.EXA_API_KEY ? { EXA_API_KEY: process.env.EXA_API_KEY } : {}),
+                ...(githubToken ? { GITHUB_TOKEN: githubToken, GH_TOKEN: githubToken } : {}),
+              },
+              gitToken: githubToken,
+            });
+          }
         } else {
           console.warn("[agentos] no LYZR proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
         }

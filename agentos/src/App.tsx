@@ -22,6 +22,7 @@ const NAME_OVERRIDES: Record<string, string> = {
   "general-agent": "General Agent",
   "agentos-builder": "AgentOS Builder",
   "gap-promoter": "GAP Promoter",
+  "framework-translator-agent": "Framework Translator",
 };
 function agentNameFromSource(source: string): string {
   const slug = source.split("/").pop() ?? source;
