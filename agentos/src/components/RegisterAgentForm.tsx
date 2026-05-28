@@ -9,7 +9,9 @@
  * reports back the agent name on success.
  */
 import { useState } from "react";
+import { Plus } from "lucide-react";
 import { api, type RegisterAgentInput } from "../api.ts";
+import { Button } from "./ui/button.tsx";
 
 const HARNESS_OPTIONS = ["claude-agent-sdk", "gitagent", "deepagents"] as const;
 
@@ -54,12 +56,14 @@ export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: stri
 
   if (!open) {
     return (
-      <button
+      <Button
         onClick={() => setOpen(true)}
-        className="text-xs px-3 py-1.5 rounded-md bg-accent/20 text-accent hover:bg-accent/30 transition-colors"
+        size="sm"
+        className="w-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm"
       >
-        + Register agent
-      </button>
+        <Plus className="h-4 w-4" />
+        Register agent
+      </Button>
     );
   }
 
