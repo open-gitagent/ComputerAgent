@@ -421,8 +421,32 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
   // Builds the SAME sandbox config the Slack flow uses (Lyzr model, envs,
   // gitToken) server-side. Pass an existing sessionId to resume that thread's
   // conversation memory; otherwise a fresh console session is minted.
+  // Look up an agent by name — in-memory first, then the Mongo registry.
+  // Registry agents have no auth/envs persisted; the server's own env (forwarded
+  // via inheritEssentialHostEnv) provides ANTHROPIC_API_KEY etc.
+  async function resolveAgent(name: string): Promise<AgentDef | undefined> {
+    const inMem = byName.get(name);
+    if (inMem) return inMem;
+    try {
+      const doc = await (await registryColl()).findOne({ _id: name });
+      if (!doc) return undefined;
+      const srcStr = typeof doc.source === "string"
+        ? doc.source
+        : (doc.source as { url?: string; path?: string })?.url ?? (doc.source as { path?: string })?.path ?? "";
+      return {
+        name: doc._id,
+        label: doc.label ?? doc._id,
+        harness: doc.harness ?? "claude-agent-sdk",
+        source: srcStr,
+        model: doc.model,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
   app.post("/agentos/api/agents/:name/chat-sandbox", async (c) => {
-    const agent = byName.get(c.req.param("name"));
+    const agent = await resolveAgent(c.req.param("name"));
     if (!agent) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 404);
     if (!sandboxCapable(agent.harness)) {
       return c.json({ error: { code: "NO_SANDBOX", message: `${agent.label} runs one-shot — use /run` } }, 400);
@@ -450,7 +474,7 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
   // Streams a fresh POST /run back to the browser. No conversation memory
   // across turns — each message is an independent run.
   app.post("/agentos/api/agents/:name/run", async (c) => {
-    const agent = byName.get(c.req.param("name"));
+    const agent = await resolveAgent(c.req.param("name"));
     if (!agent) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 404);
     const body = await c.req.json().catch(() => ({})) as { message?: string };
     const runBody: Record<string, unknown> = {
