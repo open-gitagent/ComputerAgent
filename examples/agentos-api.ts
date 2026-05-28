@@ -12,13 +12,77 @@
  * basic_auth and injects the Node API credential when proxying /api/* here.
  */
 import { Hono } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
+import type { MiddlewareHandler } from "hono";
 import { MongoClient, type Collection } from "mongodb";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { IdentitySource, type IdentitySource as IdentitySourceT } from "@open-gitagent/protocol";
 import { sandboxBodyForBot } from "./slack-bot.ts";
 import { AgentLogStore } from "./agent-log-store.ts";
 import { ScheduleStore, computeNextRun, describeSchedule, type ScheduleKind } from "./schedule-store.ts";
 import { runAgentOnce } from "./scheduler.ts";
+
+// ── Cookie-based session auth ───────────────────────────────────────────────
+// HMAC-signed cookie (no DB session table — stateless). Format:
+//   <user>.<exp_ms>.<base64url(hmac_sha256(secret, user.exp))>
+// The secret is AGENTOS_SESSION_SECRET in env (regenerate to invalidate
+// every existing session); falls back to a per-process random secret so
+// dev works without env setup.
+const SESSION_SECRET =
+  process.env.AGENTOS_SESSION_SECRET || randomBytes(32).toString("hex");
+const SESSION_COOKIE = "agentos_session";
+const SESSION_MAX_AGE_SEC = 7 * 24 * 60 * 60; // 7 days
+
+function signSession(user: string, expMs: number): string {
+  const data = `${user}.${expMs}`;
+  const sig = createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
+  return `${data}.${sig}`;
+}
+
+function verifySession(cookie: string): { user: string; exp: number } | null {
+  const parts = cookie.split(".");
+  if (parts.length !== 3) return null;
+  const [user, expStr, sig] = parts;
+  const expected = createHmac("sha256", SESSION_SECRET).update(`${user}.${expStr}`).digest("base64url");
+  // constant-time compare
+  const a = Buffer.from(sig, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  const exp = Number.parseInt(expStr, 10);
+  if (!Number.isFinite(exp) || Date.now() > exp) return null;
+  return { user, exp };
+}
+
+function checkBasic(header: string | undefined): string | null {
+  if (!header || !header.startsWith("Basic ")) return null;
+  const expectedUser = process.env.API_AUTH_USER;
+  const expectedPass = process.env.API_AUTH_PASS;
+  if (!expectedUser || !expectedPass) return null;
+  try {
+    const [user, pass] = Buffer.from(header.slice(6), "base64").toString().split(":");
+    if (user === expectedUser && pass === expectedPass) return user;
+  } catch { /* malformed */ }
+  return null;
+}
+
+/** Hono middleware enforcing auth: cookie session OR genuine Basic header
+ * (curl users). Returns 401 if neither. Sets c.var.user on success. */
+const requireAuth: MiddlewareHandler = async (c, next) => {
+  const cookie = getCookie(c, SESSION_COOKIE);
+  if (cookie) {
+    const session = verifySession(cookie);
+    if (session) {
+      c.set("user", session.user);
+      return next();
+    }
+  }
+  const basicUser = checkBasic(c.req.header("authorization"));
+  if (basicUser) {
+    c.set("user", basicUser);
+    return next();
+  }
+  return c.json({ error: { code: "UNAUTHENTICATED" } }, 401);
+};
 
 /**
  * Normalize a stored `source` field (string | IdentitySource | undefined) into a
@@ -162,6 +226,53 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
 
   const byName = new Map<string, AgentDef>(opts.agents.map((a) => [a.name, a]));
   const app = new Hono();
+
+  // ── Auth: login / logout / me ──────────────────────────────────────────
+  // These three endpoints are PUBLIC (not gated by requireAuth). Everything
+  // else under /agentos/api/* is mounted AFTER the requireAuth middleware
+  // below, so the surface is locked down by default.
+
+  app.post("/agentos/api/login", async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { user?: string; pass?: string };
+    const expectedUser = process.env.API_AUTH_USER;
+    const expectedPass = process.env.API_AUTH_PASS;
+    if (!expectedUser || !expectedPass) {
+      return c.json({ error: { code: "AUTH_NOT_CONFIGURED" } }, 503);
+    }
+    if (body.user !== expectedUser || body.pass !== expectedPass) {
+      // 401 with no body discrimination — don't help bruteforcers.
+      return c.json({ error: { code: "INVALID_CREDENTIALS" } }, 401);
+    }
+    const expMs = Date.now() + SESSION_MAX_AGE_SEC * 1000;
+    const token = signSession(body.user, expMs);
+    setCookie(c, SESSION_COOKIE, token, {
+      httpOnly: true,
+      secure: true,            // Caddy terminates TLS so all real-world requests are https
+      sameSite: "Strict",
+      maxAge: SESSION_MAX_AGE_SEC,
+      path: "/",
+    });
+    return c.json({ ok: true, user: body.user });
+  });
+
+  app.post("/agentos/api/logout", (c) => {
+    deleteCookie(c, SESSION_COOKIE, { path: "/" });
+    return c.json({ ok: true });
+  });
+
+  app.get("/agentos/api/me", (c) => {
+    const cookie = getCookie(c, SESSION_COOKIE);
+    if (cookie) {
+      const session = verifySession(cookie);
+      if (session) return c.json({ user: session.user, source: "cookie" });
+    }
+    const basicUser = checkBasic(c.req.header("authorization"));
+    if (basicUser) return c.json({ user: basicUser, source: "basic" });
+    return c.json({ user: null }, 401);
+  });
+
+  // Everything else under /agentos/api/* requires auth.
+  app.use("/agentos/api/*", requireAuth);
 
   // ── Agents list + per-agent stats ──────────────────────────────────────
   app.get("/agentos/api/agents", async (c) => {
