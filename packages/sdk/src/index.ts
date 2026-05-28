@@ -15,6 +15,12 @@ export type {
   UsageRollup,
 } from "./types.js";
 export type { Substrate, BootHarnessOptions, BootedHarness } from "./substrate.js";
+export type {
+  AgentTelemetry,
+  AgentConstructedInfo,
+  ChatStartInfo,
+  ChatEndInfo,
+} from "./telemetry.js";
 export type { FsTreeEntry, HarnessEvent, IdentitySource, UserMessage } from "@computeragent/protocol";
 export {
   HarnessProtocolError,

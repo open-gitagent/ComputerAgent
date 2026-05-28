@@ -12,10 +12,54 @@ import { ChatHandle } from "./chat-handle.js";
 import { asHarnessError } from "./errors.js";
 import { consumeSseEvents } from "./sse-client.js";
 import type { Substrate, BootedHarness } from "./substrate.js";
-import type { ChatInput, ComputerAgentOptions, PermissionDecision, ToolCallContext } from "./types.js";
+import type { AgentTelemetry } from "./telemetry.js";
+import type {
+  ChatInput,
+  ChatResult,
+  ComputerAgentOptions,
+  PermissionDecision,
+  ToolCallContext,
+} from "./types.js";
 
 const DEFAULT_HARNESS_URL = "http://127.0.0.1:7700";
 const DEFAULT_LOADER = "gitagentprotocol";
+
+/** Run a telemetry callback fire-and-forget — never let telemetry break a chat. */
+function safeFireTelemetry(fn: (() => void | Promise<void>) | undefined): void {
+  if (!fn) return;
+  try {
+    const r = fn();
+    if (r && typeof (r as Promise<unknown>).then === "function") {
+      (r as Promise<unknown>).catch(() => {});
+    }
+  } catch {
+    /* swallow — telemetry must never break an agent run */
+  }
+}
+
+/** Best-effort extract user message text from a ChatInput for the telemetry hook. */
+function extractMessageText(input: ChatInput): string {
+  if (typeof input === "string") return input;
+  if (Array.isArray(input)) {
+    const first = input.find((m) => m && typeof m === "object");
+    if (first && typeof (first as { content?: unknown }).content === "string") {
+      return (first as { content: string }).content;
+    }
+    return JSON.stringify(input).slice(0, 500);
+  }
+  return JSON.stringify(input).slice(0, 500);
+}
+
+/** Best-effort extract final assistant text from a ChatResult for the telemetry hook. */
+function extractReplyText(result: ChatResult): string | undefined {
+  for (let i = result.messages.length - 1; i >= 0; i--) {
+    const m = result.messages[i] as Record<string, unknown> | undefined;
+    if (!m || typeof m !== "object") continue;
+    if (typeof m.content === "string") return m.content;
+    if (typeof (m as { text?: unknown }).text === "string") return (m as { text: string }).text;
+  }
+  return undefined;
+}
 
 function isSubstrate(r: unknown): r is Substrate {
   return typeof r === "object" && r !== null && typeof (r as Substrate).bootHarness === "function";
@@ -128,7 +172,26 @@ export class ComputerAgent {
     } else {
       this.effectiveOptions = undefined;
     }
+
+    // ── Fire telemetry: this agent now exists. ────────────────────────────
+    // The Mongo telemetry impl upserts a doc into `agent_registry` so the
+    // AgentOS dashboard shows the agent immediately, even in library-mode
+    // deployments where the SDK is just an npm dep inside the customer's
+    // worker. Fire-and-forget; telemetry exceptions never propagate.
+    this.telemetry = opts.telemetry;
+    if (this.telemetry?.onAgentConstructed) {
+      safeFireTelemetry(() =>
+        this.telemetry!.onAgentConstructed!({
+          source: this.source,
+          harness: opts.harness,
+          model: opts.model,
+          baseUrl: opts.baseUrl,
+        }),
+      );
+    }
   }
+
+  private readonly telemetry: AgentTelemetry | undefined;
 
   /** Stable session id. Available only after the first `.chat()` (or if explicitly passed). */
   get sessionId(): string | undefined {
@@ -159,6 +222,8 @@ export class ComputerAgent {
       this.bootingPromise = null;
       await b.shutdown();
     }
+    // Release telemetry resources (e.g. close a Mongo client). Fire-and-forget.
+    if (this.telemetry?.onClose) safeFireTelemetry(() => this.telemetry!.onClose!());
   }
 
   /**
@@ -318,7 +383,7 @@ export class ComputerAgent {
     const events = this.openTurnEventStream(sessionIdPromise, harnessUrlPromise);
     const onPerm = this.opts.onToolCall ? this.wrapOnToolCall(this.opts.onToolCall) : undefined;
 
-    return new ChatHandle({
+    const handle = new ChatHandle({
       sessionIdPromise,
       events,
       harnessUrlPromise,
@@ -326,6 +391,59 @@ export class ComputerAgent {
       onPermissionRequest: onPerm,
       logger: this.logger,
     });
+
+    // ── Telemetry: fire onChatStart now, attach onChatEnd to the result ──
+    // ChatHandle.then() is memoized via result() — so attaching our own
+    // .then alongside the caller's await is safe; both consumers see the
+    // same resolved value. Fire-and-forget; never break the chat.
+    if (this.telemetry) {
+      const t0 = Date.now();
+      let ctx: unknown = undefined;
+      if (this.telemetry.onChatStart) {
+        try {
+          ctx = this.telemetry.onChatStart({
+            sessionIdPromise,
+            message: extractMessageText(input),
+          });
+        } catch {
+          /* swallow */
+        }
+      }
+      if (this.telemetry.onChatEnd) {
+        const tel = this.telemetry;
+        Promise.resolve(handle as PromiseLike<ChatResult>).then(
+          (result) => {
+            safeFireTelemetry(() =>
+              tel.onChatEnd!({
+                context: ctx,
+                sessionId: result.sessionId,
+                ok: true,
+                durationMs: Date.now() - t0,
+                usage: {
+                  inputTokens: result.usage.inputTokens,
+                  outputTokens: result.usage.outputTokens,
+                  costUsd: result.usage.costUsd,
+                },
+                reply: extractReplyText(result),
+              }),
+            );
+          },
+          (err: unknown) => {
+            safeFireTelemetry(() =>
+              tel.onChatEnd!({
+                context: ctx,
+                sessionId: this.existingSessionId ?? "",
+                ok: false,
+                error: err instanceof Error ? err.message : String(err),
+                durationMs: Date.now() - t0,
+              }),
+            );
+          },
+        );
+      }
+    }
+
+    return handle;
   }
 
   // ── private ─────────────────────────────────────────────────────────────
