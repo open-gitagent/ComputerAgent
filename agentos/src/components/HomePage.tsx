@@ -1,4 +1,12 @@
 import { useMemo, useState } from "react";
+import { Sparkles, ArrowUp, Plus, Mic, Check } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "./ui/button.tsx";
+import { Textarea } from "./ui/textarea.tsx";
+import { Card } from "./ui/card.tsx";
+import { Badge } from "./ui/badge.tsx";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.tsx";
+import { cn } from "../lib/cn.ts";
 
 export type Framework = "gitagent" | "claude-code" | "deep-agent" | "auto";
 
@@ -6,28 +14,31 @@ interface FrameworkDef {
   id: Framework;
   name: string;
   desc: string;
-  logo?: string;   // image src; falls back to glyph
-  glyph?: string;
-  // Backend agent name this maps to (null = not connected yet).
+  logo?: string;
   agent: string | null;
 }
 
 const FRAMEWORKS: FrameworkDef[] = [
-  { id: "gitagent", name: "GitAgent", desc: "Code-aware agent on gitclaw", logo: "/logos/gitagent.png", agent: "gitagent" },
-  { id: "claude-code", name: "Claude Code", desc: "Anthropic code-native agent", logo: "/logos/claude.svg", agent: "claude-code" },
-  { id: "deep-agent", name: "Deep Agent", desc: "LangGraph deep agent · one-shot", logo: "/logos/langchain.svg", agent: "deep-agent" },
-  { id: "auto", name: "Auto", desc: "Let AgentOS pick", logo: "/logos/auto.svg", agent: "gitagent" },
+  { id: "gitagent",    name: "GitAgent",    desc: "Code-aware agent on gitclaw",        logo: "/logos/gitagent.png",   agent: "gitagent" },
+  { id: "claude-code", name: "Claude Code", desc: "Anthropic code-native agent",        logo: "/logos/claude.svg",     agent: "claude-code" },
+  { id: "deep-agent",  name: "Deep Agent",  desc: "LangGraph deep agent · one-shot",    logo: "/logos/langchain.svg",  agent: "deep-agent" },
+  { id: "auto",        name: "Auto",        desc: "Let AgentOS pick",                    logo: "/logos/auto.svg",       agent: "gitagent" },
 ];
 
 function FrameworkIcon({ f, size = 32 }: { f: FrameworkDef; size?: number }) {
   return (
     <span
-      className="grid place-items-center rounded-lg bg-white border border-[#e7e0d4] shrink-0 overflow-hidden"
+      className="grid place-items-center rounded-md bg-white shrink-0 overflow-hidden"
       style={{ height: size, width: size }}
     >
-      {f.logo
-        ? <img src={f.logo} alt={f.name} className="object-contain" style={{ height: size * 0.62, width: size * 0.62 }} />
-        : <span className="text-[#a98b2f]">{f.glyph}</span>}
+      {f.logo && (
+        <img
+          src={f.logo}
+          alt={f.name}
+          className="object-contain"
+          style={{ height: size * 0.62, width: size * 0.62 }}
+        />
+      )}
     </span>
   );
 }
@@ -49,7 +60,6 @@ export function HomePage({
   const [framework, setFramework] = useState<Framework>("auto");
   const [prompt, setPrompt] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
   const { word, emoji } = useMemo(greeting, []);
 
   const selected = FRAMEWORKS.find((f) => f.id === framework)!;
@@ -58,108 +68,134 @@ export function HomePage({
     const msg = prompt.trim();
     if (!msg) return;
     if (!selected.agent) {
-      setNote(`${selected.name} isn't connected yet — only GitAgent is live. Pick GitAgent or Auto.`);
+      toast.error(`${selected.name} isn't connected yet`, {
+        description: "Only GitAgent is live. Pick GitAgent or Auto.",
+      });
       return;
     }
     onLaunch(selected.agent, msg);
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-ink-900 text-gray-100">
+    <div className="h-full overflow-y-auto bg-background text-foreground">
       {/* Brand */}
       <div className="flex items-center justify-end px-8 pt-7">
         <div className="flex items-center gap-3">
           <img src="/logos/agentos.png" alt="ComputerAgent" className="h-11 w-11 rounded-xl object-contain" />
           <div className="leading-tight text-right">
-            <div className="font-semibold text-[17px]">ComputerAgent Console</div>
-            <div className="text-[12px] italic text-gray-500">where ideas become agents</div>
+            <div className="font-semibold text-[15px] tracking-tight">ComputerAgent Console</div>
+            <div className="text-[12px] italic text-muted-foreground">where ideas become agents</div>
           </div>
         </div>
       </div>
 
       <div className="max-w-3xl mx-auto px-6 pb-20">
-        {/* Hero — the retro CRT in the field (warm palette + brand mark) */}
-        <div className="mt-6 relative rounded-2xl overflow-hidden border border-ink-600 h-52">
+        {/* Hero — the retro CRT in the field */}
+        <div className="mt-6 relative rounded-2xl overflow-hidden border border-border h-52">
           <img src="/logos/hero.jpg" alt="ComputerAgent" className="w-full h-full object-cover object-center" />
-          <div className="absolute inset-0 bg-gradient-to-t from-ink-900 via-ink-900/30 to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-background via-background/30 to-transparent" />
           <div className="absolute bottom-3 left-4 right-4 flex items-end justify-between">
-            <span className="text-[11px] uppercase tracking-[0.2em] text-sand/90">ComputerAgent · Research Labs</span>
-            <span className="h-2 w-2 rounded-full bg-accent-soft shadow-[0_0_10px] shadow-accent-soft" />
+            <span className="text-[11px] uppercase tracking-[0.2em] text-sand/80">
+              ComputerAgent · Research Labs
+            </span>
+            <span className="h-2 w-2 rounded-full bg-primary shadow-[0_0_10px_hsl(var(--primary))]" />
           </div>
         </div>
 
         {/* Greeting */}
         <div className="text-center mt-8 mb-2">
-          <h1 className="text-5xl tracking-tight text-gray-100" style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}>
-            <span className="mr-3">{emoji}</span>{word}, Shreyas
+          <h1
+            className="text-5xl tracking-tight"
+            style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}
+          >
+            <span className="mr-3">{emoji}</span>
+            {word}, Shreyas
           </h1>
-          <p className="mt-4 text-lg text-gray-400">What would you like to automate today?</p>
+          <p className="mt-4 text-base text-muted-foreground">What would you like to automate today?</p>
         </div>
 
         {/* Prompt box */}
-        <div className="mt-8 rounded-3xl bg-ink-800 border border-ink-600 shadow-[0_8px_40px_rgba(0,0,0,0.35)] p-4">
-          <div className="flex items-center gap-3 mb-2 relative">
-            <button
-              onClick={() => setPickerOpen((o) => !o)}
-              className="inline-flex items-center gap-2 rounded-full border border-ink-600 px-3.5 py-1.5 text-sm font-medium text-gray-200 hover:bg-ink-700"
-            >
-              <span className="text-accent-soft">✦</span>
-              {selected.name === "Auto" ? "Auto-select" : selected.name}
-              <span className="text-gray-500">▾</span>
-            </button>
-
-            {pickerOpen && (
-              <div className="absolute top-10 left-0 z-10 w-64 rounded-xl border border-ink-600 bg-ink-700 shadow-xl overflow-hidden">
-                {FRAMEWORKS.map((f) => (
-                  <button
-                    key={f.id}
-                    onClick={() => { setFramework(f.id); setPickerOpen(false); setNote(null); }}
-                    className="w-full text-left px-4 py-2.5 hover:bg-ink-600 flex items-center gap-3"
-                  >
-                    <FrameworkIcon f={f} size={28} />
-                    <span>
-                      <span className="block text-sm font-medium text-gray-100">{f.name}</span>
-                      <span className="block text-[11px] text-gray-500">{f.desc}</span>
-                    </span>
-                    {f.id === framework && <span className="ml-auto text-accent-soft">✓</span>}
-                  </button>
-                ))}
-              </div>
-            )}
+        <Card className="mt-8 p-4 shadow-[0_8px_40px_rgba(0,0,0,0.35)] rounded-2xl">
+          <div className="flex items-center gap-3 mb-2">
+            <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="rounded-full">
+                  <Sparkles className="h-3.5 w-3.5 text-primary" />
+                  {selected.name === "Auto" ? "Auto-select" : selected.name}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-72 p-1.5">
+                <div className="space-y-0.5">
+                  {FRAMEWORKS.map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => {
+                        setFramework(f.id);
+                        setPickerOpen(false);
+                      }}
+                      className={cn(
+                        "w-full text-left rounded-md px-2 py-2 hover:bg-accent transition-colors flex items-center gap-2.5",
+                        f.id === framework && "bg-accent",
+                      )}
+                    >
+                      <FrameworkIcon f={f} size={28} />
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-sm font-medium truncate">{f.name}</span>
+                        <span className="block text-[11px] text-muted-foreground truncate">{f.desc}</span>
+                      </span>
+                      {f.id === framework && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                    </button>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
 
-          <textarea
+          <Textarea
             value={prompt}
-            onChange={(e) => { setPrompt(e.target.value); setNote(null); }}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } }}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                submit();
+              }
+            }}
             placeholder="Ask me anything — review a GitHub PR, research a topic and send a PDF, summarize a document, dig through a repo, or write a quick script."
             rows={5}
-            className="w-full resize-none bg-transparent px-1 text-[17px] leading-relaxed text-gray-100 placeholder:text-gray-600 focus:outline-none"
+            className="border-0 px-1 text-[16px] leading-relaxed bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 resize-none"
           />
 
           <div className="flex items-center mt-1">
-            <button className="h-10 w-10 rounded-full bg-ink-600 text-gray-300 grid place-items-center text-xl hover:bg-ink-500" title="Attach (coming soon)">+</button>
+            <Button variant="ghost" size="icon" className="rounded-full h-10 w-10" title="Attach (coming soon)" disabled>
+              <Plus className="h-4 w-4" />
+            </Button>
             <div className="ml-auto flex items-center gap-2">
-              <button className="h-10 w-10 rounded-full bg-ink-600 text-gray-300 grid place-items-center hover:bg-ink-500" title="Voice (coming soon)">🎤</button>
-              <button
+              <Button variant="ghost" size="icon" className="rounded-full h-10 w-10" title="Voice (coming soon)" disabled>
+                <Mic className="h-4 w-4" />
+              </Button>
+              <Button
                 onClick={submit}
                 disabled={!prompt.trim()}
-                className={`h-10 w-10 rounded-full grid place-items-center text-lg transition ${
-                  prompt.trim() ? "bg-accent text-white hover:bg-accent-soft" : "bg-ink-600 text-gray-600 cursor-not-allowed"
-                }`}
-                title="Send"
-              >↑</button>
+                size="icon"
+                className="rounded-full h-10 w-10"
+                title="Send (Cmd+Enter)"
+              >
+                <ArrowUp className="h-4 w-4" />
+              </Button>
             </div>
           </div>
-        </div>
-
-        {note && <div className="mt-3 text-sm text-amber-400">{note}</div>}
+        </Card>
 
         {/* Framework picker grid */}
         <div className="mt-10">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-[11px] tracking-[0.18em] text-gray-500 uppercase">Pick a framework</span>
-            <button onClick={() => { setFramework("auto"); setNote(null); }} className="text-[12px] text-gray-500 hover:text-gray-300 font-mono">auto-select</button>
+            <span className="text-[11px] tracking-[0.18em] text-muted-foreground uppercase">Pick a framework</span>
+            <button
+              onClick={() => setFramework("auto")}
+              className="text-[12px] text-muted-foreground hover:text-foreground font-mono transition-colors"
+            >
+              auto-select
+            </button>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {FRAMEWORKS.map((f) => {
@@ -167,18 +203,25 @@ export function HomePage({
               return (
                 <button
                   key={f.id}
-                  onClick={() => { setFramework(f.id); setNote(null); }}
-                  className={`text-left rounded-2xl border px-4 py-3.5 transition ${
-                    active ? "border-accent bg-ink-700" : "border-ink-600 bg-ink-800 hover:bg-ink-700"
-                  }`}
+                  onClick={() => setFramework(f.id)}
+                  className={cn(
+                    "text-left rounded-xl border px-4 py-3.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    active
+                      ? "border-primary bg-muted"
+                      : "border-border bg-card hover:bg-muted/60",
+                  )}
                 >
                   <div className="flex items-center gap-2.5">
                     <FrameworkIcon f={f} size={32} />
-                    <span className="font-semibold text-sm text-gray-100">{f.name}</span>
-                    {active && <span className="ml-auto text-accent-soft">✓</span>}
+                    <span className="font-semibold text-sm flex-1">{f.name}</span>
+                    {active && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
                   </div>
-                  <div className="mt-1.5 text-[12px] text-gray-500 truncate">{f.desc}</div>
-                  {!f.agent && <div className="mt-1 text-[10px] text-amber-400">not connected yet</div>}
+                  <div className="mt-1.5 text-[12px] text-muted-foreground truncate">{f.desc}</div>
+                  {!f.agent && (
+                    <Badge variant="warning" className="mt-1.5 text-[9px]">
+                      not connected yet
+                    </Badge>
+                  )}
                 </button>
               );
             })}
@@ -186,7 +229,10 @@ export function HomePage({
         </div>
 
         <div className="mt-12 text-center">
-          <button onClick={onOpenDashboard} className="text-sm text-gray-500 hover:text-gray-300 underline underline-offset-4">
+          <button
+            onClick={onOpenDashboard}
+            className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors"
+          >
             Open control panel →
           </button>
         </div>

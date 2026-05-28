@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from "react-resizable-panels";
+import { Plus, PanelLeftClose, MessageSquare } from "lucide-react";
 import { api, type SessionSummary } from "../api.ts";
 import { ChatTab } from "./ChatTab.tsx";
+import { Button } from "./ui/button.tsx";
+import { Badge } from "./ui/badge.tsx";
+import { Skeleton } from "./ui/skeleton.tsx";
+import { EmptyState } from "./composite/EmptyState.tsx";
+import { cn } from "../lib/cn.ts";
 
-/**
- * Combined workspace: session list on the left, live chat on the right.
- * Clicking a session resumes it in the chat (loads its transcript + memory).
- * "New chat" starts a fresh session.
- */
 export function WorkspaceTab({
-  agent, sandboxCapable, initialMessage, onConsumedInitial,
+  agent,
+  sandboxCapable,
+  initialMessage,
+  onConsumedInitial,
 }: {
   agent: string;
   sandboxCapable: boolean;
@@ -18,8 +23,6 @@ export function WorkspaceTab({
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
-  // resumeId = the session to load into the chat (null = fresh chat).
-  // chatKey forces ChatTab to remount when switching sessions / starting new.
   const [resumeId, setResumeId] = useState<string | null>(null);
   const [chatKey, setChatKey] = useState<string>(() => `new-${Date.now()}`);
 
@@ -32,80 +35,138 @@ export function WorkspaceTab({
   };
   useEffect(loadSessions, [agent]);
 
-  // Reset to a fresh chat whenever the agent changes.
-  useEffect(() => { setResumeId(null); setChatKey(`new-${agent}-${Date.now()}`); }, [agent]);
+  useEffect(() => {
+    setResumeId(null);
+    setChatKey(`new-${agent}-${Date.now()}`);
+  }, [agent]);
 
-  const openSession = (sid: string) => { setResumeId(sid); setChatKey(`s-${sid}-${Date.now()}`); };
-  const newChat = async () => {
-    // Drop the server-side pin so the next boot mints a fresh session.
-    try { await fetch(`/api/agents/${encodeURIComponent(agent)}/chat-pin`, { method: "DELETE" }); } catch { /* ignore */ }
+  const openSession = (sid: string) => {
+    setResumeId(sid);
+    setChatKey(`s-${sid}-${Date.now()}`);
+  };
+  const newChat = () => {
     setResumeId(null);
     setChatKey(`new-${Date.now()}`);
   };
 
-  return (
-    <div className="h-full flex">
-      {/* Collapsed: thin rail with an expand button + new-chat shortcut */}
-      {collapsed && (
-        <div className="w-11 shrink-0 border-r border-ink-700 flex flex-col items-center py-3 gap-3">
-          <button onClick={() => setCollapsed(false)} title="Show sessions"
-            className="h-7 w-7 grid place-items-center rounded hover:bg-ink-700 text-gray-400">»</button>
-          <button onClick={newChat} title="New chat"
-            className="h-7 w-7 grid place-items-center rounded bg-accent hover:bg-accent-soft text-white text-sm">+</button>
-          <div className="mt-1 text-[10px] text-gray-600 [writing-mode:vertical-rl] rotate-180 tracking-wide">
+  if (collapsed) {
+    return (
+      <div className="h-full flex">
+        <div className="w-11 shrink-0 border-r border-border flex flex-col items-center py-3 gap-2 bg-card">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setCollapsed(false)}
+            title="Show sessions"
+            className="h-8 w-8"
+          >
+            <PanelLeftClose className="h-4 w-4 rotate-180" />
+          </Button>
+          <Button onClick={newChat} size="icon" title="New chat" className="h-8 w-8">
+            <Plus className="h-4 w-4" />
+          </Button>
+          <div className="mt-1 text-[10px] text-muted-foreground [writing-mode:vertical-rl] rotate-180 tracking-wide">
             {sessions.length} sessions
           </div>
         </div>
-      )}
+        <div className="flex-1 min-w-0">
+          <ChatTab
+            key={chatKey}
+            agent={agent}
+            sandboxCapable={sandboxCapable}
+            resumeSessionId={resumeId}
+            onConsumedResume={() => {}}
+            initialMessage={initialMessage}
+            onConsumedInitial={() => {
+              onConsumedInitial?.();
+              loadSessions();
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
 
-      {/* Session list */}
-      {!collapsed && (
-      <div className="w-72 shrink-0 border-r border-ink-700 flex flex-col">
-        <div className="px-4 py-3 border-b border-ink-700 flex items-center gap-2">
-          <button onClick={() => setCollapsed(true)} title="Collapse"
-            className="h-6 w-6 grid place-items-center rounded hover:bg-ink-700 text-gray-400 -ml-1">«</button>
-          <span className="text-xs text-gray-400">{sessions.length} session{sessions.length !== 1 ? "s" : ""}</span>
-          <button onClick={newChat} className="ml-auto text-xs px-2.5 py-1 rounded bg-accent hover:bg-accent-soft text-white">+ New chat</button>
+  return (
+    <PanelGroup orientation="horizontal" className="h-full">
+      <Panel defaultSize={22} minSize={15} maxSize={35} className="bg-card border-r border-border flex flex-col">
+        <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setCollapsed(true)}
+            title="Collapse"
+            className="h-7 w-7 -ml-1"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            {sessions.length} session{sessions.length !== 1 ? "s" : ""}
+          </span>
+          <Button variant="default" size="sm" onClick={newChat} className="ml-auto">
+            <Plus className="h-3 w-3" />
+            New chat
+          </Button>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {loading && <div className="p-4 text-gray-500 text-sm">Loading…</div>}
-          {!loading && sessions.length === 0 && (
-            <div className="p-4 text-gray-600 text-xs">
-              {sandboxCapable ? "No sessions yet. Start a chat →" : "One-shot agent — runs aren't saved as sessions."}
+          {loading && (
+            <div className="p-3 space-y-2">
+              <Skeleton className="h-14 w-full" />
+              <Skeleton className="h-14 w-full" />
+              <Skeleton className="h-14 w-full" />
             </div>
+          )}
+          {!loading && sessions.length === 0 && (
+            <EmptyState
+              icon={MessageSquare}
+              title={sandboxCapable ? "No sessions yet" : "One-shot agent"}
+              body={sandboxCapable ? "Start a chat to create your first session." : "Runs aren't saved as sessions."}
+            />
           )}
           {sessions.map((s) => (
             <button
               key={s.sessionId}
               onClick={() => openSession(s.sessionId)}
-              className={`w-full text-left px-4 py-3 border-b border-ink-800 transition ${
-                resumeId === s.sessionId ? "bg-ink-700" : "hover:bg-ink-800/60"
-              }`}
+              className={cn(
+                "w-full text-left px-4 py-3 border-b border-border/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                resumeId === s.sessionId ? "bg-muted ring-1 ring-primary/40" : "hover:bg-muted/40",
+              )}
             >
-              <div className="text-xs text-gray-300 font-mono truncate">{s.sessionId.replace(/^slack-/, "")}</div>
-              <div className="mt-1 flex items-center gap-2 text-[10px] text-gray-600">
-                {s.sandboxId && <span className="rounded bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5">warm</span>}
-                {s.snapshotId && <span className="rounded bg-ink-500 px-1.5 py-0.5">snapshot</span>}
+              <div className="text-xs font-mono truncate text-foreground/90">{s.sessionId.replace(/^slack-/, "")}</div>
+              <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                {s.sandboxId && (
+                  <Badge variant="success" className="text-[9px] py-0">
+                    warm
+                  </Badge>
+                )}
+                {s.snapshotId && (
+                  <Badge variant="secondary" className="text-[9px] py-0">
+                    snapshot
+                  </Badge>
+                )}
                 <span className="ml-auto">{s.lastMessageAt ? new Date(s.lastMessageAt).toLocaleString() : ""}</span>
               </div>
             </button>
           ))}
         </div>
-      </div>
-      )}
+      </Panel>
 
-      {/* Chat */}
-      <div className="flex-1 min-w-0">
+      <PanelResizeHandle className="w-1 bg-transparent hover:bg-primary/40 transition-colors" />
+
+      <Panel className="min-w-0">
         <ChatTab
           key={chatKey}
           agent={agent}
           sandboxCapable={sandboxCapable}
           resumeSessionId={resumeId}
-          onConsumedResume={() => { /* consumed by remount */ }}
+          onConsumedResume={() => {}}
           initialMessage={initialMessage}
-          onConsumedInitial={() => { onConsumedInitial?.(); loadSessions(); }}
+          onConsumedInitial={() => {
+            onConsumedInitial?.();
+            loadSessions();
+          }}
         />
-      </div>
-    </div>
+      </Panel>
+    </PanelGroup>
   );
 }
