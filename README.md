@@ -4,6 +4,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-278%20passing-brightgreen)](#status)
 [![Packages](https://img.shields.io/badge/packages-13-blue)](#packages)
+[![Discussions](https://img.shields.io/github/discussions/open-gitagent/ComputerAgent?logo=github&label=Discussions)](https://github.com/open-gitagent/ComputerAgent/discussions)
+[![GitHub stars](https://img.shields.io/github/stars/open-gitagent/ComputerAgent?style=social)](https://github.com/open-gitagent/ComputerAgent/stargazers)
 
 > **Run any AI agent, anywhere, with any loop, and any memory backend.**
 >
@@ -274,6 +276,16 @@ console.log(`${report.passed} passed, ${report.failed.length} failed`);
 ```
 
 If your implementation passes the suite, it's a drop-in replacement.
+
+## Community
+
+Questions, ideas, build journals — head to **[Discussions](https://github.com/open-gitagent/ComputerAgent/discussions)**. Issues are for actionable bugs and feature requests.
+
+If ComputerAgent helps you build something, **⭐ star the repo** — it makes a real difference for discoverability. While you're there, the open protocol this implements lives at **[open-gitagent/opengap](https://github.com/open-gitagent/opengap)** — give that a star too.
+
+### Star history
+
+[![Star History Chart](https://api.star-history.com/svg?repos=open-gitagent/ComputerAgent&type=Date)](https://star-history.com/#open-gitagent/ComputerAgent&Date)
 
 ## License
 
