@@ -485,24 +485,9 @@ importers:
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
-      '@computeragent/engine-claude-agent-sdk':
-        specifier: workspace:*
-        version: link:../engine-claude-agent-sdk
       '@computeragent/harness-server':
         specifier: workspace:*
         version: link:../harness-server
-      '@computeragent/identity-gitagentprotocol':
-        specifier: workspace:*
-        version: link:../identity-gitagentprotocol
-      '@computeragent/runtime-bwrap':
-        specifier: workspace:*
-        version: link:../runtime-bwrap
-      '@computeragent/runtime-e2b':
-        specifier: workspace:*
-        version: link:../runtime-e2b
-      '@computeragent/runtime-local':
-        specifier: workspace:*
-        version: link:../runtime-local
       '@computeragent/testing':
         specifier: workspace:*
         version: link:../testing
