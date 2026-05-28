@@ -11279,7 +11279,7 @@ function finalize(ctx, schema) {
     result.$schema = "http://json-schema.org/draft-07/schema#";
   } else if (ctx.target === "draft-04") {
     result.$schema = "http://json-schema.org/draft-04/schema#";
-  } else if (ctx.target === "openapi-3.0") {} else {}
+  } else if (ctx.target === "openapi-3.0") {}
   if (ctx.external?.uri) {
     const id = ctx.external.registry.get(schema)?.id;
     if (!id)
@@ -11540,7 +11540,7 @@ var formatMap, stringProcessor = (schema, ctx, _json, _params) => {
     if (val === undefined) {
       if (ctx.unrepresentable === "throw") {
         throw new Error("Literal `undefined` cannot be represented in JSON Schema");
-      } else {}
+      }
     } else if (typeof val === "bigint") {
       if (ctx.unrepresentable === "throw") {
         throw new Error("BigInt literals cannot be represented in JSON Schema");
@@ -121173,7 +121173,7 @@ class JSONSchemaGenerator2 {
               if (val === undefined) {
                 if (this.unrepresentable === "throw") {
                   throw new Error("Literal `undefined` cannot be represented in JSON Schema");
-                } else {}
+                }
               } else if (typeof val === "bigint") {
                 if (this.unrepresentable === "throw") {
                   throw new Error("BigInt literals cannot be represented in JSON Schema");
@@ -129586,115 +129586,6 @@ var require_browser = __commonJS((exports, module) => {
   };
 });
 
-// ../../../node_modules/has-flag/index.js
-var require_has_flag = __commonJS((exports, module) => {
-  module.exports = (flag, argv = process.argv) => {
-    const prefix = flag.startsWith("-") ? "" : flag.length === 1 ? "-" : "--";
-    const position = argv.indexOf(prefix + flag);
-    const terminatorPosition = argv.indexOf("--");
-    return position !== -1 && (terminatorPosition === -1 || position < terminatorPosition);
-  };
-});
-
-// ../../../node_modules/supports-color/index.js
-var require_supports_color = __commonJS((exports, module) => {
-  var os2 = __require("os");
-  var tty = __require("tty");
-  var hasFlag = require_has_flag();
-  var { env: env2 } = process;
-  var forceColor;
-  if (hasFlag("no-color") || hasFlag("no-colors") || hasFlag("color=false") || hasFlag("color=never")) {
-    forceColor = 0;
-  } else if (hasFlag("color") || hasFlag("colors") || hasFlag("color=true") || hasFlag("color=always")) {
-    forceColor = 1;
-  }
-  if ("FORCE_COLOR" in env2) {
-    if (env2.FORCE_COLOR === "true") {
-      forceColor = 1;
-    } else if (env2.FORCE_COLOR === "false") {
-      forceColor = 0;
-    } else {
-      forceColor = env2.FORCE_COLOR.length === 0 ? 1 : Math.min(parseInt(env2.FORCE_COLOR, 10), 3);
-    }
-  }
-  function translateLevel(level) {
-    if (level === 0) {
-      return false;
-    }
-    return {
-      level,
-      hasBasic: true,
-      has256: level >= 2,
-      has16m: level >= 3
-    };
-  }
-  function supportsColor(haveStream, streamIsTTY) {
-    if (forceColor === 0) {
-      return 0;
-    }
-    if (hasFlag("color=16m") || hasFlag("color=full") || hasFlag("color=truecolor")) {
-      return 3;
-    }
-    if (hasFlag("color=256")) {
-      return 2;
-    }
-    if (haveStream && !streamIsTTY && forceColor === undefined) {
-      return 0;
-    }
-    const min = forceColor || 0;
-    if (env2.TERM === "dumb") {
-      return min;
-    }
-    if (process.platform === "win32") {
-      const osRelease = os2.release().split(".");
-      if (Number(osRelease[0]) >= 10 && Number(osRelease[2]) >= 10586) {
-        return Number(osRelease[2]) >= 14931 ? 3 : 2;
-      }
-      return 1;
-    }
-    if ("CI" in env2) {
-      if (["TRAVIS", "CIRCLECI", "APPVEYOR", "GITLAB_CI", "GITHUB_ACTIONS", "BUILDKITE"].some((sign) => (sign in env2)) || env2.CI_NAME === "codeship") {
-        return 1;
-      }
-      return min;
-    }
-    if ("TEAMCITY_VERSION" in env2) {
-      return /^(9\.(0*[1-9]\d*)\.|\d{2,}\.)/.test(env2.TEAMCITY_VERSION) ? 1 : 0;
-    }
-    if (env2.COLORTERM === "truecolor") {
-      return 3;
-    }
-    if ("TERM_PROGRAM" in env2) {
-      const version5 = parseInt((env2.TERM_PROGRAM_VERSION || "").split(".")[0], 10);
-      switch (env2.TERM_PROGRAM) {
-        case "iTerm.app":
-          return version5 >= 3 ? 3 : 2;
-        case "Apple_Terminal":
-          return 2;
-      }
-    }
-    if (/-256(color)?$/i.test(env2.TERM)) {
-      return 2;
-    }
-    if (/^screen|^xterm|^vt100|^vt220|^rxvt|color|ansi|cygwin|linux/i.test(env2.TERM)) {
-      return 1;
-    }
-    if ("COLORTERM" in env2) {
-      return 1;
-    }
-    return min;
-  }
-  function getSupportLevel(stream2) {
-    const level = supportsColor(stream2, stream2 && stream2.isTTY);
-    return translateLevel(level);
-  }
-  module.exports = {
-    supportsColor: getSupportLevel,
-    stdout: translateLevel(supportsColor(true, tty.isatty(1))),
-    stderr: translateLevel(supportsColor(true, tty.isatty(2)))
-  };
-});
-
 // ../../node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/node.js
 var require_node = __commonJS((exports, module) => {
   var tty = __require("tty");
@@ -129708,7 +129599,7 @@ var require_node = __commonJS((exports, module) => {
   exports.destroy = util5.deprecate(() => {}, "Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.");
   exports.colors = [6, 2, 3, 4, 5, 1];
   try {
-    const supportsColor = require_supports_color();
+    const supportsColor = (()=>{throw new Error("Cannot require module "+"supports-color");})();
     if (supportsColor && (supportsColor.stderr || supportsColor).level >= 2) {
       exports.colors = [
         20,
@@ -146161,7 +146052,7 @@ function determineRequestsReferrer(request, { referrerURLCallback, referrerOrigi
   if (request.referrer === "no-referrer" || request.referrerPolicy === "") {
     return null;
   }
-  const policy = request.referrerPolicy;
+  const policy2 = request.referrerPolicy;
   if (request.referrer === "about:client") {
     return "no-referrer";
   }
@@ -146178,7 +146069,7 @@ function determineRequestsReferrer(request, { referrerURLCallback, referrerOrigi
     referrerOrigin = referrerOriginCallback(referrerOrigin);
   }
   const currentURL = new URL(request.url);
-  switch (policy) {
+  switch (policy2) {
     case "no-referrer":
       return "no-referrer";
     case "origin":
@@ -146214,18 +146105,18 @@ function determineRequestsReferrer(request, { referrerURLCallback, referrerOrigi
       }
       return referrerURL;
     default:
-      throw new TypeError(`Invalid referrerPolicy: ${policy}`);
+      throw new TypeError(`Invalid referrerPolicy: ${policy2}`);
   }
 }
 function parseReferrerPolicyFromHeader(headers) {
   const policyTokens = (headers.get("referrer-policy") || "").split(/[,\s]+/);
-  let policy = "";
+  let policy2 = "";
   for (const token of policyTokens) {
     if (token && ReferrerPolicy.has(token)) {
-      policy = token;
+      policy2 = token;
     }
   }
-  return policy;
+  return policy2;
 }
 var ReferrerPolicy, DEFAULT_REFERRER_POLICY = "strict-origin-when-cross-origin";
 var init_referrer = __esm(() => {
@@ -173324,7 +173215,14 @@ var CreateSessionBody = exports_external.object({
   options: exports_external.record(exports_external.string(), exports_external.unknown()).optional(),
   streamingInput: exports_external.boolean().optional(),
   sessionStore: SessionStoreConfig.optional(),
-  attachments: exports_external.array(Attachment).optional()
+  attachments: exports_external.array(Attachment).optional(),
+  policy: exports_external.object({
+    kind: exports_external.literal("srs"),
+    endpoint: exports_external.string().min(1),
+    apiKey: exports_external.string().min(1),
+    policyId: exports_external.string().min(1),
+    principalId: exports_external.string().min(1)
+  }).optional()
 });
 var CreateSessionResponse = exports_external.object({
   sessionId: exports_external.string(),
@@ -173806,6 +173704,7 @@ class Session {
   cleanup;
   auditSink;
   sessionStore;
+  policyDecider;
   status = "pending";
   userQueue = [];
   userResolvers = [];
@@ -173814,7 +173713,7 @@ class Session {
   engineStarted = false;
   abortController = new AbortController;
   events;
-  constructor(sessionId, engineName, loaderName, workdir, engineOptions, envs, capabilities, identity, cleanup, replayBufferSize = 1000, auditSink, sessionStore) {
+  constructor(sessionId, engineName, loaderName, workdir, engineOptions, envs, capabilities, identity, cleanup, replayBufferSize = 1000, auditSink, sessionStore, policyDecider) {
     this.sessionId = sessionId;
     this.engineName = engineName;
     this.loaderName = loaderName;
@@ -173826,6 +173725,7 @@ class Session {
     this.cleanup = cleanup;
     this.auditSink = auditSink;
     this.sessionStore = sessionStore;
+    this.policyDecider = policyDecider;
     this.events = new ReplayBuffer(replayBufferSize);
   }
   claimEngineStart() {
@@ -173914,6 +173814,79 @@ class Session {
       waiter(item);
     else
       this.userQueue.push(item);
+  }
+}
+
+// ../harness-server/dist/services/srs-policy-decider.js
+class SrsPolicyDecider {
+  endpoint;
+  apiKey;
+  policyId;
+  principalId;
+  policyCache = null;
+  cachePromise = null;
+  constructor(cfg) {
+    this.endpoint = cfg.endpoint.replace(/\/+$/, "");
+    this.apiKey = cfg.apiKey;
+    this.policyId = cfg.policyId;
+    this.principalId = cfg.principalId;
+  }
+  async loadPolicy() {
+    if (this.policyCache)
+      return;
+    if (this.cachePromise)
+      return this.cachePromise;
+    this.cachePromise = (async () => {
+      const r = await fetch(`${this.endpoint}/v1/rai/policies/${encodeURIComponent(this.policyId)}`, {
+        headers: { "x-api-key": this.apiKey }
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        throw new Error(`SRS policy fetch failed (${r.status}): ${text.slice(0, 200)}`);
+      }
+      const doc2 = await r.json();
+      this.policyCache = { cedar: doc2.cedar_guardrail, opa: doc2.opa_guardrail };
+    })();
+    try {
+      await this.cachePromise;
+    } finally {
+      this.cachePromise = null;
+    }
+  }
+  async evaluate(ctx) {
+    try {
+      await this.loadPolicy();
+    } catch (err) {
+      return { allowed: false, deniedBy: "srs", reason: `policy load failed: ${err.message}` };
+    }
+    const body = {
+      cedar_guardrail: this.policyCache?.cedar ?? undefined,
+      opa_guardrail: this.policyCache?.opa ?? undefined,
+      tool_name: ctx.toolName,
+      tool_args: ctx.toolArgs,
+      principal_id: this.principalId,
+      bundle_id: ctx.agentName,
+      bundle_name: ctx.agentName
+    };
+    try {
+      const r = await fetch(`${this.endpoint}/v1/guardrails/evaluate-tool-call`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": this.apiKey },
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        return { allowed: false, deniedBy: "srs", reason: `SRS ${r.status}: ${text.slice(0, 200)}` };
+      }
+      const out = await r.json();
+      return {
+        allowed: !!out.allowed,
+        ...out.denied_by ? { deniedBy: out.denied_by } : {},
+        ...out.reason ? { reason: out.reason } : {}
+      };
+    } catch (err) {
+      return { allowed: false, deniedBy: "srs", reason: `SRS unreachable: ${err.message}` };
+    }
   }
 }
 
@@ -174139,7 +174112,14 @@ async function createSession(deps, registry2, body) {
   const final = result.harden ? result.harden(merged) : merged;
   const rawStore = body.sessionStore ? resolveStore(deps.sessionStores, body.sessionStore) : undefined;
   const sessionStore = rawStore && deps.validateStoreEntries ? wrapValidatingStore(rawStore) : rawStore;
-  const session = new Session(sessionId, body.engine, body.identity.loader, workdir, final, body.envs ?? {}, engine.capabilities, result.metadata, result.cleanup, 1000, deps.auditSink, sessionStore);
+  const policyDecider = body.policy ? new SrsPolicyDecider({
+    kind: "srs",
+    endpoint: body.policy.endpoint,
+    apiKey: body.policy.apiKey,
+    policyId: body.policy.policyId,
+    principalId: body.policy.principalId
+  }) : undefined;
+  const session = new Session(sessionId, body.engine, body.identity.loader, workdir, final, body.envs ?? {}, engine.capabilities, result.metadata, result.cleanup, 1000, deps.auditSink, sessionStore, policyDecider);
   if (body.messages) {
     for (const m of body.messages)
       session.pushUserMessage(m);
@@ -174444,6 +174424,39 @@ async function runSession(engine, session, logger = nopLogger) {
             toolName: req.toolName,
             risk: req.risk
           });
+          if (session.policyDecider) {
+            try {
+              const decision = await session.policyDecider.evaluate({
+                agentName: session.identity.name,
+                sessionId: session.sessionId,
+                toolName: req.toolName,
+                toolArgs: req.input ?? {},
+                principalId: session.identity.name
+              });
+              logger.info("session.policy_decision", {
+                sessionId: session.sessionId,
+                callId: req.callId,
+                toolName: req.toolName,
+                allowed: decision.allowed,
+                deniedBy: decision.deniedBy
+              });
+              if (!decision.allowed) {
+                return {
+                  behavior: "deny",
+                  message: decision.reason ?? `policy denied (${decision.deniedBy ?? "policy"})`,
+                  interrupt: true
+                };
+              }
+              return { behavior: "allow", updatedInput: req.input ?? {} };
+            } catch (err) {
+              logger.warn("session.policy_error", { sessionId: session.sessionId, error: err.message });
+              return {
+                behavior: "deny",
+                message: `policy decider error: ${err.message}`,
+                interrupt: true
+              };
+            }
+          }
           channel.push({
             kind: "ca_permission_request",
             sessionId: session.sessionId,
@@ -174949,6 +174962,32 @@ function buildCanUseTool(onPermissionRequest) {
     return onPermissionRequest({ callId, toolName, input, risk });
   };
 }
+function buildPreToolUseHook(onPermissionRequest) {
+  return async (input, toolUseID) => {
+    if (input.hook_event_name !== "PreToolUse")
+      return {};
+    const callId = toolUseID ?? `call_${cryptoRandomId()}`;
+    const toolName = input.tool_name;
+    const toolInput = input.tool_input;
+    const risk = classifyRisk(toolName, toolInput);
+    const decision = await onPermissionRequest({ callId, toolName, input: toolInput, risk });
+    if (decision.behavior === "deny") {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: decision.message ?? "denied by policy"
+        }
+      };
+    }
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow"
+      }
+    };
+  };
+}
 function cryptoRandomId() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -175091,6 +175130,10 @@ class ClaudeAgentEngine {
       includePartialMessages: true,
       abortController,
       canUseTool: buildCanUseTool(ctx.onPermissionRequest),
+      hooks: {
+        ...ctx.options.hooks ?? {},
+        PreToolUse: [{ hooks: [buildPreToolUseHook(ctx.onPermissionRequest)] }]
+      },
       ...ctx.budget?.maxUsd !== undefined ? { maxBudgetUsd: ctx.budget.maxUsd } : {},
       ...storeOpts
     };

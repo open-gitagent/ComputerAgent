@@ -592,6 +592,7 @@ interface SandboxBody {
   sessionId?: string;
   debug?: boolean;
   sessionStore?: { kind: string; options?: unknown };
+  policy?: { kind: "srs"; endpoint: string; apiKey: string; policyId: string; principalId: string };
   attachments?: Array<{ path: string; content: string; encoding?: "utf8" | "base64" }>;
   idleTtlMs?: number;
   ttlMs?: number;
@@ -1152,6 +1153,7 @@ export class ComputerAgentServer {
         ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
         ...(body.debug ? { debug: true } : {}),
         ...(body.sessionStore ? { sessionStore: body.sessionStore as never } : {}),
+        ...(body.policy ? { policy: body.policy as never } : {}),
         ...(body.attachments && body.attachments.length > 0 ? { attachments: body.attachments } : {}),
       });
 
@@ -2276,12 +2278,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!process.env.MONGO_URL) {
       console.error("[slack-bot] SLACK_BOTS_ENABLED=1 but MONGO_URL not set — Slack thread map needs mongo; skipping");
     } else {
-      const [{ createSlackBotsApp, botsFromEnv }, { AgentLogStore }, { createAgentOSApp }, { ScheduleStore }, { startScheduler }] = await Promise.all([
+      const [{ createSlackBotsApp, botsFromEnv }, { AgentLogStore }, { createAgentOSApp }, { ScheduleStore }, { startScheduler }, { AgentPolicyStore }] = await Promise.all([
         import("./slack-bot.ts"),
         import("./agent-log-store.ts"),
         import("./agentos-api.ts"),
         import("./schedule-store.ts"),
         import("./scheduler.ts"),
+        import("./agent-policy-store.ts"),
       ]);
       const bots = botsFromEnv();
       if (bots.length === 0) {
@@ -2329,10 +2332,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         if (anthropicEnvs) {
           // Claude Code — claude-agent-sdk on the same repo. Multi-turn via /sandboxes.
           if (!agentDefs.some((a) => a.name === "claude-code")) {
+            const claudeCodeModel = process.env.CLAUDE_CODE_MODEL;
+            const cEnvs: Record<string, string> = { ...anthropicEnvs };
+            if (claudeCodeModel) cEnvs.ANTHROPIC_MODEL = claudeCodeModel;
             agentDefs.push({
               name: "claude-code", label: "Claude Code", harness: "claude-agent-sdk",
-              source: generalAgentSource, model: undefined,
-              envs: { ...anthropicEnvs }, gitToken: githubToken,
+              source: generalAgentSource, model: claudeCodeModel,
+              envs: cEnvs, gitToken: githubToken,
             });
           }
           // Deep Agent — deepagents on the same repo. One-shot via /run.
@@ -2414,15 +2420,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         } else {
           console.warn("[agentos] no LYZR proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
         }
+        const onlyEnv = process.env.AGENTOS_AGENTS_ONLY;
+        const filteredAgentDefs = onlyEnv
+          ? agentDefs.filter((a) => onlyEnv.split(",").map((s) => s.trim()).includes(a.name))
+          : agentDefs;
         const scheduleStore = new ScheduleStore(mongoUrl, mongoDb);
-        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, agents: agentDefs, logStore, scheduleStore });
+        const policyStore = new AgentPolicyStore(mongoUrl, mongoDb);
+        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, agents: filteredAgentDefs, logStore, scheduleStore, policyStore });
         server.mount(agentosApp);
-        console.log("AgentOS control panel API: /agentos/api/* — agents:", agentDefs.map((a) => a.name).join(", "));
+        console.log("AgentOS control panel API: /agentos/api/* — agents:", filteredAgentDefs.map((a) => a.name).join(", "));
 
         // Scheduler — fires due agent schedules on a tick.
         const u = process.env.API_AUTH_USER, p = process.env.API_AUTH_PASS;
         const authHeader = (u && p) ? { authorization: "Basic " + Buffer.from(`${u}:${p}`).toString("base64") } : {};
-        startScheduler({ caBase, authHeader, store: scheduleStore, logStore, agents: agentDefs });
+        startScheduler({ caBase, authHeader, store: scheduleStore, logStore, agents: filteredAgentDefs });
       }
     }
   }

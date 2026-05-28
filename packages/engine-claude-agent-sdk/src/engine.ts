@@ -8,7 +8,7 @@ import type {
   UserMessage,
 } from "@computeragent/protocol";
 import { nopLogger } from "@computeragent/protocol";
-import { buildCanUseTool } from "./permission-bridge.js";
+import { buildCanUseTool, buildPreToolUseHook } from "./permission-bridge.js";
 import { deriveEngineUuid } from "./derive-uuid.js";
 
 const CAPABILITIES: EngineCapabilities = {
@@ -106,6 +106,14 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
       includePartialMessages: true,
       abortController,
       canUseTool: buildCanUseTool(ctx.onPermissionRequest),
+      // PreToolUse hook — fires even in bypassPermissions mode (where canUseTool
+      // is skipped) and its deny overrides any other permission decision. The
+      // harness routes this to its policy decider; without one, the hook
+      // returns allow and falls through to canUseTool / the default flow.
+      hooks: {
+        ...((ctx.options as { hooks?: ClaudeAgentOptions["hooks"] }).hooks ?? {}),
+        PreToolUse: [{ hooks: [buildPreToolUseHook(ctx.onPermissionRequest)] }],
+      },
       ...(ctx.budget?.maxUsd !== undefined ? { maxBudgetUsd: ctx.budget.maxUsd } : {}),
       ...storeOpts,
     };

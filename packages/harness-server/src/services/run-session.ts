@@ -1,4 +1,4 @@
-import type { EngineDriver, HarnessEvent, Logger } from "@computeragent/protocol";
+import type { EngineDriver, HarnessEvent, Logger, PermissionResult } from "@computeragent/protocol";
 import { nopLogger } from "@computeragent/protocol";
 import type { Session } from "../session.js";
 import { EventChannel } from "../event-channel.js";
@@ -64,6 +64,42 @@ export async function runSession(
             toolName: req.toolName,
             risk: req.risk,
           });
+          // Policy gate — if bound, consult before SSE round-trip. Deny short-circuits
+          // with a behavior:"deny" PermissionResult; allow short-circuits with allow
+          // (skip the SSE event entirely, no client mediation needed).
+          if (session.policyDecider) {
+            try {
+              const decision = await session.policyDecider.evaluate({
+                agentName: session.identity.name,
+                sessionId: session.sessionId,
+                toolName: req.toolName,
+                toolArgs: (req.input as Record<string, unknown>) ?? {},
+                principalId: session.identity.name,
+              });
+              logger.info("session.policy_decision", {
+                sessionId: session.sessionId,
+                callId: req.callId,
+                toolName: req.toolName,
+                allowed: decision.allowed,
+                deniedBy: decision.deniedBy,
+              });
+              if (!decision.allowed) {
+                return {
+                  behavior: "deny",
+                  message: decision.reason ?? `policy denied (${decision.deniedBy ?? "policy"})`,
+                  interrupt: true,
+                } as PermissionResult;
+              }
+              return { behavior: "allow", updatedInput: (req.input as Record<string, unknown>) ?? {} } as PermissionResult;
+            } catch (err) {
+              logger.warn("session.policy_error", { sessionId: session.sessionId, error: (err as Error).message });
+              return {
+                behavior: "deny",
+                message: `policy decider error: ${(err as Error).message}`,
+                interrupt: true,
+              } as PermissionResult;
+            }
+          }
           channel.push({
             kind: "ca_permission_request",
             sessionId: session.sessionId,
