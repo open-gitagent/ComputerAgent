@@ -170,7 +170,7 @@ describe("body.options merging", () => {
     const wrappedEngine = {
       name: engine.name,
       capabilities: engine.capabilities,
-      async *startSession(ctx: import("@computeragent/protocol").EngineContext<unknown>) {
+      async *startSession(ctx: import("@open-gitagent/protocol").EngineContext<unknown>) {
         seenOptions = ctx.options;
         for await (const ev of engine.startSession(ctx)) yield ev;
       },

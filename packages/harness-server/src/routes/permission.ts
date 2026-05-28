@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { PermissionDecisionBody } from "@computeragent/protocol";
-import type { PermissionResult } from "@computeragent/protocol";
+import { PermissionDecisionBody } from "@open-gitagent/protocol";
+import type { PermissionResult } from "@open-gitagent/protocol";
 import type { ServerContext } from "../app.js";
 import { BadRequest, NotFound } from "../error-mapper.js";
 

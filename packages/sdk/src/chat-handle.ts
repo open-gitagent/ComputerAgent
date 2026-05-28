@@ -1,5 +1,5 @@
-import type { HarnessEvent, Logger } from "@computeragent/protocol";
-import { nopLogger } from "@computeragent/protocol";
+import type { HarnessEvent, Logger } from "@open-gitagent/protocol";
+import { nopLogger } from "@open-gitagent/protocol";
 import type { ChatResult, PermissionDecision, UsageRollup } from "./types.js";
 import { decisionToBody } from "./types.js";
 

@@ -1,6 +1,6 @@
 {
   "name": "computeragent",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Run any AI agent, anywhere, with any loop, and any memory backend. The umbrella entry point for the ComputerAgent stack — re-exports the SDK + the local substrate so `npm install computeragent` is the one-line install.",
   "license": "MIT",
   "type": "module",
@@ -12,7 +12,11 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "src", "README.md"],
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
   "keywords": [
     "ai-agents",
     "agent-framework",
@@ -38,8 +42,8 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@computeragent/sdk": "workspace:*",
-    "@computeragent/runtime-local": "workspace:*"
+    "@open-gitagent/sdk": "workspace:*",
+    "@open-gitagent/runtime-local": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

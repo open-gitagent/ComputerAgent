@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { HealthResponse } from "@computeragent/protocol";
+import type { HealthResponse } from "@open-gitagent/protocol";
 import type { ServerContext } from "../app.js";
 
 const HARNESS_VERSION = "0.1.0";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ClaudeAgentOptions } from "@computeragent/protocol";
+import type { ClaudeAgentOptions } from "@open-gitagent/protocol";
 import { gapToClaudeAgentOptions } from "./claude-agent-sdk.js";
 import type { GapManifest } from "../manifest.js";
 

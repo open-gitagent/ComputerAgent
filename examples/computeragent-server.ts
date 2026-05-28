@@ -53,7 +53,7 @@ import type {
   TaskStore,
   TaskStatus,
   TaskSummary,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 import { mongoTaskStoreBuilder } from "@computeragent/task-store-mongo";
 import { s3StateStoreBuilder } from "@computeragent/state-store-s3";
 

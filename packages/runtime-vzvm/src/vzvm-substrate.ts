@@ -2,8 +2,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { NodeSSH } from "node-ssh";
-import type { BootHarnessOptions, BootedHarness, Substrate } from "@computeragent/sdk";
-import { createLogger } from "@computeragent/protocol";
+import type { BootHarnessOptions, BootedHarness, Substrate } from "@open-gitagent/sdk";
+import { createLogger } from "@open-gitagent/protocol";
 import { tartClone, tartDelete, tartIp, tartRunBackground, tartStop } from "./tart.js";
 
 const HARNESS_PORT = 7700;

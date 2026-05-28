@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import type { IdentityLoader, IdentityLoadResult } from "@computeragent/protocol";
+import type { IdentityLoader, IdentityLoadResult } from "@open-gitagent/protocol";
 import { GapManifest } from "./manifest.js";
 import { materialize } from "./source-resolver.js";
 import { mirrorSkillsForClaude } from "./skills.js";
@@ -32,7 +32,7 @@ export class GitAgentProtocolLoader implements IdentityLoader<unknown> {
   readonly name = "gitagentprotocol";
 
   async load(args: {
-    source: import("@computeragent/protocol").IdentitySource;
+    source: import("@open-gitagent/protocol").IdentitySource;
     targetEngine: string;
     workdir: string;
   }): Promise<IdentityLoadResult<unknown>> {

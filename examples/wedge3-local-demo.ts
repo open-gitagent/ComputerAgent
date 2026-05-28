@@ -10,8 +10,8 @@
  *   ANTHROPIC_API_KEY=sk-ant-... bun run examples/wedge3-local-demo.ts
  */
 
-import { ComputerAgent } from "@computeragent/sdk";
-import { LocalSubstrate } from "@computeragent/runtime-local";
+import { ComputerAgent } from "@open-gitagent/sdk";
+import { LocalSubstrate } from "@open-gitagent/runtime-local";
 
 const anthropicKey = process.env.ANTHROPIC_API_KEY;
 if (!anthropicKey) {

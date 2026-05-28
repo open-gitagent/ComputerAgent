@@ -7,7 +7,7 @@
  * sink) doesn't take the harness server down or corrupt other sessions.
  */
 import { describe, expect, it } from "vitest";
-import type { SessionKey, SessionStore, SessionStoreEntry } from "@computeragent/protocol";
+import type { SessionKey, SessionStore, SessionStoreEntry } from "@open-gitagent/protocol";
 import { MockEngine, MockLoader, collectSseEvents } from "@computeragent/testing";
 import { createHarnessServer } from "./app.js";
 

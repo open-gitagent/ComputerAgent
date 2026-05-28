@@ -1,5 +1,5 @@
 import type { GCHookResult, GCPreToolUseContext } from "gitclaw";
-import type { PermissionRequest, PermissionResult } from "@computeragent/protocol";
+import type { PermissionRequest, PermissionResult } from "@open-gitagent/protocol";
 import { classifyRisk } from "./risk.js";
 
 /**

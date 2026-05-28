@@ -1,4 +1,4 @@
-import type { TaskStore } from "@computeragent/protocol";
+import type { TaskStore } from "@open-gitagent/protocol";
 import { MongoTaskStore, type MongoTaskStoreOptions } from "./mongo-store.js";
 
 /**

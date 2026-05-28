@@ -44,27 +44,15 @@ importers:
       '@computeragent/llm-proxy-openai':
         specifier: workspace:*
         version: link:../packages/llm-proxy-openai
-      '@computeragent/protocol':
-        specifier: workspace:*
-        version: link:../packages/protocol
       '@computeragent/runtime-bwrap':
         specifier: workspace:*
         version: link:../packages/runtime-bwrap
       '@computeragent/runtime-e2b':
         specifier: workspace:*
         version: link:../packages/runtime-e2b
-      '@computeragent/runtime-local':
-        specifier: workspace:*
-        version: link:../packages/runtime-local
       '@computeragent/runtime-vzvm':
         specifier: workspace:*
         version: link:../packages/runtime-vzvm
-      '@computeragent/sdk':
-        specifier: workspace:*
-        version: link:../packages/sdk
-      '@computeragent/session-store-mongo':
-        specifier: workspace:*
-        version: link:../packages/session-store-mongo
       '@computeragent/state-store-s3':
         specifier: workspace:*
         version: link:../packages/state-store-s3
@@ -74,6 +62,18 @@ importers:
       '@hono/node-server':
         specifier: ^1.13.0
         version: 1.19.14(hono@4.12.18)
+      '@open-gitagent/protocol':
+        specifier: workspace:*
+        version: link:../packages/protocol
+      '@open-gitagent/runtime-local':
+        specifier: workspace:*
+        version: link:../packages/runtime-local
+      '@open-gitagent/sdk':
+        specifier: workspace:*
+        version: link:../packages/sdk
+      '@open-gitagent/session-store-mongo':
+        specifier: workspace:*
+        version: link:../packages/session-store-mongo
       computeragent:
         specifier: workspace:*
         version: link:../packages/computeragent
@@ -96,10 +96,10 @@ importers:
 
   packages/agent-registry-mongo:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@computeragent/sdk':
+      '@open-gitagent/sdk':
         specifier: workspace:*
         version: link:../sdk
       mongodb:
@@ -115,7 +115,7 @@ importers:
 
   packages/cli:
     dependencies:
-      '@computeragent/sdk':
+      '@open-gitagent/sdk':
         specifier: workspace:*
         version: link:../sdk
       citty:
@@ -131,10 +131,10 @@ importers:
 
   packages/computeragent:
     dependencies:
-      '@computeragent/runtime-local':
+      '@open-gitagent/runtime-local':
         specifier: workspace:*
         version: link:../runtime-local
-      '@computeragent/sdk':
+      '@open-gitagent/sdk':
         specifier: workspace:*
         version: link:../sdk
     devDependencies:
@@ -162,7 +162,7 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.132
         version: 0.2.136(@cfworker/json-schema@4.1.1)(zod@4.4.3)
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
       uuid:
@@ -181,9 +181,6 @@ importers:
 
   packages/engine-deepagents:
     dependencies:
-      '@computeragent/protocol':
-        specifier: workspace:*
-        version: link:../protocol
       '@langchain/anthropic':
         specifier: ^1.3.0
         version: 1.3.29(@langchain/core@1.1.46(openai@6.10.0(ws@8.20.0)(zod@3.25.76))(ws@8.20.0))
@@ -193,6 +190,9 @@ importers:
       '@langchain/langgraph':
         specifier: ^1.3.0
         version: 1.3.0(@langchain/core@1.1.46(openai@6.10.0(ws@8.20.0)(zod@3.25.76))(ws@8.20.0))(openai@6.10.0(ws@8.20.0)(zod@3.25.76))(ws@8.20.0)(zod-to-json-schema@3.25.2(zod@3.25.76))(zod@3.25.76)
+      '@open-gitagent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       deepagents:
         specifier: ^1.10.2
         version: 1.10.2(langsmith@0.7.1(openai@6.10.0(ws@8.20.0)(zod@3.25.76))(ws@8.20.0))(openai@6.10.0(ws@8.20.0)(zod@3.25.76))(ws@8.20.0)(zod-to-json-schema@3.25.2(zod@3.25.76))
@@ -212,7 +212,7 @@ importers:
 
   packages/engine-gitagent:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
       gitclaw:
@@ -231,7 +231,7 @@ importers:
 
   packages/harness-server:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
       hono:
@@ -256,7 +256,7 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.132
         version: 0.2.136(@cfworker/json-schema@4.1.1)(zod@4.4.3)
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
       simple-git:
@@ -306,13 +306,13 @@ importers:
 
   packages/runtime-bwrap:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@computeragent/runtime-local':
+      '@open-gitagent/runtime-local':
         specifier: workspace:*
         version: link:../runtime-local
-      '@computeragent/sdk':
+      '@open-gitagent/sdk':
         specifier: workspace:*
         version: link:../sdk
     devDependencies:
@@ -325,10 +325,10 @@ importers:
 
   packages/runtime-e2b:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@computeragent/sdk':
+      '@open-gitagent/sdk':
         specifier: workspace:*
         version: link:../sdk
       e2b:
@@ -377,15 +377,6 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.132
         version: 0.2.136(@cfworker/json-schema@4.1.1)(zod@4.4.3)
-      '@computeragent/protocol':
-        specifier: workspace:*
-        version: link:../protocol
-      '@computeragent/sdk':
-        specifier: workspace:*
-        version: link:../sdk
-      '@computeragent/session-store-mongo':
-        specifier: workspace:*
-        version: link:../session-store-mongo
       '@langchain/anthropic':
         specifier: ^1.3.0
         version: 1.3.29(@langchain/core@1.1.46(openai@6.10.0(ws@8.20.0)(zod@4.4.3))(ws@8.20.0))
@@ -395,6 +386,15 @@ importers:
       '@langchain/langgraph':
         specifier: ^1.3.0
         version: 1.3.0(@langchain/core@1.1.46(openai@6.10.0(ws@8.20.0)(zod@4.4.3))(ws@8.20.0))(openai@6.10.0(ws@8.20.0)(zod@4.4.3))(ws@8.20.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
+      '@open-gitagent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@open-gitagent/sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      '@open-gitagent/session-store-mongo':
+        specifier: workspace:*
+        version: link:../session-store-mongo
       deepagents:
         specifier: ^1.10.2
         version: 1.10.2(langsmith@0.7.1(openai@6.10.0(ws@8.20.0)(zod@4.4.3))(ws@8.20.0))(openai@6.10.0(ws@8.20.0)(zod@4.4.3))(ws@8.20.0)(zod-to-json-schema@3.25.2(zod@4.4.3))
@@ -432,10 +432,10 @@ importers:
 
   packages/runtime-vzvm:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@computeragent/sdk':
+      '@open-gitagent/sdk':
         specifier: workspace:*
         version: link:../sdk
       node-ssh:
@@ -481,7 +481,7 @@ importers:
 
   packages/sdk:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
@@ -503,7 +503,7 @@ importers:
 
   packages/session-store-mongo:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
       mongodb:
@@ -519,7 +519,7 @@ importers:
 
   packages/session-store-sqlite:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
       better-sqlite3:
@@ -547,7 +547,7 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.700.0
         version: 3.1048.0
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
@@ -560,7 +560,7 @@ importers:
 
   packages/task-store-mongo:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
       mongodb:
@@ -576,7 +576,7 @@ importers:
 
   packages/testing:
     dependencies:
-      '@computeragent/protocol':
+      '@open-gitagent/protocol':
         specifier: workspace:*
         version: link:../protocol
     devDependencies:

@@ -21,7 +21,7 @@ export type {
   ChatStartInfo,
   ChatEndInfo,
 } from "./telemetry.js";
-export type { FsTreeEntry, HarnessEvent, IdentitySource, UserMessage } from "@computeragent/protocol";
+export type { FsTreeEntry, HarnessEvent, IdentitySource, UserMessage } from "@open-gitagent/protocol";
 export {
   HarnessProtocolError,
   UnknownEngineError,

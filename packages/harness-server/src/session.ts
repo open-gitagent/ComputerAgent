@@ -5,7 +5,7 @@ import type {
   PermissionResult,
   SessionStore,
   UserMessage,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 import { ReplayBuffer, type BufferedEvent } from "./replay-buffer.js";
 import type { AuditSink } from "./audit.js";
 

@@ -14,7 +14,7 @@
 import { Hono } from "hono";
 import { MongoClient, type Collection } from "mongodb";
 import { randomUUID } from "node:crypto";
-import { IdentitySource, type IdentitySource as IdentitySourceT } from "@computeragent/protocol";
+import { IdentitySource, type IdentitySource as IdentitySourceT } from "@open-gitagent/protocol";
 import { sandboxBodyForBot } from "./slack-bot.ts";
 import { AgentLogStore } from "./agent-log-store.ts";
 import { ScheduleStore, computeNextRun, describeSchedule, type ScheduleKind } from "./schedule-store.ts";
@@ -115,7 +115,7 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     (await db()).collection<SessionDoc>("sessions");
   /**
    * agent_registry — agents registered dynamically by SDK consumers via the
-   * `@computeragent/agent-registry-mongo` telemetry hook (or directly via the
+   * `@open-gitagent/agent-registry-mongo` telemetry hook (or directly via the
    * POST /agentos/api/agents/register endpoint below). The dashboard unions
    * these with the server's hardcoded `opts.agents` (in-memory) — the
    * in-memory list takes precedence on name collision so the

@@ -6,8 +6,8 @@ import type {
   EngineEvent,
   SessionStoreEntry,
   UserMessage,
-} from "@computeragent/protocol";
-import { nopLogger } from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
+import { nopLogger } from "@open-gitagent/protocol";
 import { buildPreToolUse } from "./permission-bridge.js";
 import {
   appendAssistantTurn,

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ClaudeAgentOptions } from "@computeragent/protocol";
+import type { ClaudeAgentOptions } from "@open-gitagent/protocol";
 import type { GapManifest } from "../manifest.js";
 import { loadGapTools } from "../tools.js";
 import { loadGapSubagents } from "../subagents.js";

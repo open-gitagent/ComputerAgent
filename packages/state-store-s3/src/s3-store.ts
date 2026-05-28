@@ -12,7 +12,7 @@ import type {
   SnapshotFilter,
   SnapshotSummary,
   StateStore,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 
 /**
  * S3-backed StateStore. Each snapshot lives under

@@ -1,4 +1,4 @@
-import type { HarnessEvent } from "@computeragent/protocol";
+import type { HarnessEvent } from "@open-gitagent/protocol";
 
 /**
  * Parse a chunk of an SSE response body into typed events. Tolerates partial

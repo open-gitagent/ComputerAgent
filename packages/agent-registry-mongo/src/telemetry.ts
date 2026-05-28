@@ -13,7 +13,7 @@
  * Usage (single-line additive):
  *
  *   import { ComputerAgent, LocalSubstrate } from "computeragent";
- *   import { MongoTelemetry } from "@computeragent/agent-registry-mongo";
+ *   import { MongoTelemetry } from "@open-gitagent/agent-registry-mongo";
  *
  *   const telemetry = new MongoTelemetry({
  *     url: process.env.MONGO_URL!,
@@ -40,7 +40,7 @@ import type {
   AgentConstructedInfo,
   ChatEndInfo,
   ChatStartInfo,
-} from "@computeragent/sdk";
+} from "@open-gitagent/sdk";
 import { MongoClient } from "mongodb";
 import { AgentLogStore } from "./audit-log.js";
 import { AgentRegistry, type AgentRegistrySpec } from "./registry.js";

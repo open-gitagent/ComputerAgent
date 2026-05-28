@@ -1,6 +1,6 @@
 {
-  "name": "@computeragent/sdk",
-  "version": "0.1.0",
+  "name": "@open-gitagent/sdk",
+  "version": "0.2.1",
   "description": "ComputerAgent client SDK — typed, SSE-consuming TypeScript client for the Harness Protocol.",
   "license": "MIT",
   "type": "module",
@@ -23,7 +23,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@computeragent/protocol": "workspace:*"
+    "@open-gitagent/protocol": "workspace:*"
   },
   "devDependencies": {
     "@computeragent/harness-server": "workspace:*",

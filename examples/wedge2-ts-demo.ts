@@ -1,6 +1,6 @@
 /**
  * Wedge 2 demo — same flow as wedge1-fs-tour.sh, but driven through the
- * typed @computeragent/sdk client instead of curl.
+ * typed @open-gitagent/sdk client instead of curl.
  *
  * Demonstrates:
  *   - Constructor configures the agent (source, harness, options)
@@ -13,7 +13,7 @@
  *   ANTHROPIC_API_KEY=sk-... bun run examples/wedge2-ts-demo.ts
  */
 
-import { ComputerAgent } from "@computeragent/sdk";
+import { ComputerAgent } from "@open-gitagent/sdk";
 
 const HARNESS_URL = process.env.HARNESS_URL ?? "http://127.0.0.1:7700";
 const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -60,7 +60,7 @@ console.log("1. agent.chat(...)  — streaming events");
 const handle = agent.chat(
   "Create a file named greetings.md containing exactly:\n\n" +
     "# Hello from the SDK\n\n" +
-    "This file was written via @computeragent/sdk.\n\n" +
+    "This file was written via @open-gitagent/sdk.\n\n" +
     'Then respond with just "done".',
 );
 

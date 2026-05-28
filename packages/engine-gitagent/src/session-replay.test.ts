@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionStoreEntry } from "@computeragent/protocol";
+import type { SessionStoreEntry } from "@open-gitagent/protocol";
 import { MemorySessionStore } from "@computeragent/harness-server";
 import {
   appendAssistantTurn,

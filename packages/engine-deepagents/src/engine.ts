@@ -5,8 +5,8 @@ import type {
   EngineEvent,
   Logger,
   UserMessage,
-} from "@computeragent/protocol";
-import { nopLogger } from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
+import { nopLogger } from "@open-gitagent/protocol";
 
 const CAPABILITIES: EngineCapabilities = {
   streamingInput: true,

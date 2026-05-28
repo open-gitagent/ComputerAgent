@@ -23,7 +23,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@computeragent/protocol": "workspace:*",
+    "@open-gitagent/protocol": "workspace:*",
     "@langchain/anthropic": "^1.3.0",
     "@langchain/core": "^1.1.0",
     "@langchain/langgraph": "^1.3.0",

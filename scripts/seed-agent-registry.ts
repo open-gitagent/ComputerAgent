@@ -14,7 +14,7 @@
  * Safe to re-run: `register()` is an idempotent upsert by name.
  */
 import { MongoClient } from "mongodb";
-import { AgentRegistry } from "@computeragent/agent-registry-mongo";
+import { AgentRegistry } from "@open-gitagent/agent-registry-mongo";
 
 interface SeedAgent {
   readonly name: string;

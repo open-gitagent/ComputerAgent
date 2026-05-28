@@ -1,6 +1,6 @@
 {
-  "name": "@computeragent/session-store-mongo",
-  "version": "0.1.0",
+  "name": "@open-gitagent/session-store-mongo",
+  "version": "0.2.1",
   "description": "MongoDB-backed SessionStore for the ComputerAgent harness — plug-in implementation of the Claude Agent SDK's SessionStore contract.",
   "license": "MIT",
   "type": "module",
@@ -23,7 +23,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@computeragent/protocol": "workspace:*",
+    "@open-gitagent/protocol": "workspace:*",
     "mongodb": "^6.10.0"
   },
   "devDependencies": {

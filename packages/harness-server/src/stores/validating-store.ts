@@ -1,4 +1,4 @@
-import type { SessionKey, SessionStore, SessionStoreEntry } from "@computeragent/protocol";
+import type { SessionKey, SessionStore, SessionStoreEntry } from "@open-gitagent/protocol";
 
 /**
  * Wraps a SessionStore so entries returned from `load()` are validated

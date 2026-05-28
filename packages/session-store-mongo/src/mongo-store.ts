@@ -3,7 +3,7 @@ import type {
   SessionKey,
   SessionStore,
   SessionStoreEntry,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 
 /**
  * MongoDB-backed SessionStore. One document per session, keyed by sessionId.

@@ -6,8 +6,8 @@ import type {
   IdentitySource,
   Logger,
   UserMessage,
-} from "@computeragent/protocol";
-import { createLogger, nopLogger } from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
+import { createLogger, nopLogger } from "@open-gitagent/protocol";
 import { ChatHandle } from "./chat-handle.js";
 import { asHarnessError } from "./errors.js";
 import { consumeSseEvents } from "./sse-client.js";

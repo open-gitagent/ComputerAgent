@@ -5,7 +5,7 @@ import type {
   PermissionResult,
   SessionStoreConfig,
   UserMessage,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 import type { Substrate } from "./substrate.js";
 import type { AgentTelemetry } from "./telemetry.js";
 
@@ -42,7 +42,7 @@ export type IdentityLoaderName =
 /**
  * Session-store kinds the harness's default registry knows about. Custom kinds
  * registered via `createHarnessServer({ sessionStores })` are accepted too.
- * (E.g. `@computeragent/session-store-mongo` and `-sqlite` register their own.)
+ * (E.g. `@open-gitagent/session-store-mongo` and `-sqlite` register their own.)
  */
 export type SessionStoreKind =
   | "memory"
@@ -147,7 +147,7 @@ export interface ComputerAgentOptions {
    * Optional telemetry hook. When supplied, the SDK fires `onAgentConstructed`
    * once at construction, `onChatStart`/`onChatEnd` paired around each chat,
    * and `onClose` from `dispose()`. The first-class implementation is
-   * `@computeragent/agent-registry-mongo` which writes to the `agent_registry`
+   * `@open-gitagent/agent-registry-mongo` which writes to the `agent_registry`
    * and `agent_logs` collections AgentOS reads. Telemetry exceptions are
    * caught and never propagate — telemetry must never break an agent run.
    *

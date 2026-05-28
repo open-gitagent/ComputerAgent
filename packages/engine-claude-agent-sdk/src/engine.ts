@@ -6,8 +6,8 @@ import type {
   EngineDriver,
   EngineEvent,
   UserMessage,
-} from "@computeragent/protocol";
-import { nopLogger } from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
+import { nopLogger } from "@open-gitagent/protocol";
 import { buildCanUseTool } from "./permission-bridge.js";
 import { deriveEngineUuid } from "./derive-uuid.js";
 

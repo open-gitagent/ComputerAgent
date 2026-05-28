@@ -1,7 +1,7 @@
 import { cp, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import simpleGit from "simple-git";
-import type { IdentitySource } from "@computeragent/protocol";
+import type { IdentitySource } from "@open-gitagent/protocol";
 
 /**
  * Resolve an `IdentitySource` into a fully-materialized directory on disk.

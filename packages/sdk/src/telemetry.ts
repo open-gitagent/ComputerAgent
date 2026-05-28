@@ -8,7 +8,7 @@
  * server collecting traces — the SDK itself has to emit them. Pass an
  * `AgentTelemetry` and we'll fire these hooks from the lifecycle.
  *
- * The first-class implementation is `@computeragent/agent-registry-mongo`
+ * The first-class implementation is `@open-gitagent/agent-registry-mongo`
  * which writes to the `agent_registry` and `agent_logs` Mongo collections
  * that AgentOS reads. Anything else (Honeycomb, OTel, Lyzr Trace, custom
  * HTTP push) is a small adapter on top of this interface.
@@ -24,7 +24,7 @@
  *  - `onChatStart` may return an opaque context that is passed back to
  *    `onChatEnd`. Useful for stashing per-chat timer state.
  */
-import type { IdentitySource } from "@computeragent/protocol";
+import type { IdentitySource } from "@open-gitagent/protocol";
 
 export interface AgentConstructedInfo {
   readonly source: IdentitySource;

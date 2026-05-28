@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { Sandbox } from "e2b";
-import type { BootHarnessOptions, BootedHarness, Substrate } from "@computeragent/sdk";
-import { createLogger } from "@computeragent/protocol";
+import type { BootHarnessOptions, BootedHarness, Substrate } from "@open-gitagent/sdk";
+import { createLogger } from "@open-gitagent/protocol";
 
 /** Default port the harness server listens on inside the sandbox. */
 const HARNESS_PORT = 7700;

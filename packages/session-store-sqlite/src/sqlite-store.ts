@@ -3,7 +3,7 @@ import type {
   SessionKey,
   SessionStore,
   SessionStoreEntry,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 
 /**
  * SQLite-backed SessionStore. One row per (session, entry) under a single

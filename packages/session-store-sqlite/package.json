@@ -23,7 +23,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@computeragent/protocol": "workspace:*",
+    "@open-gitagent/protocol": "workspace:*",
     "better-sqlite3": "^11.3.0"
   },
   "devDependencies": {

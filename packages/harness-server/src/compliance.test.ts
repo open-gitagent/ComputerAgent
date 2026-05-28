@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { EngineContext } from "@computeragent/protocol";
+import type { EngineContext } from "@open-gitagent/protocol";
 import { MockEngine, MockLoader, collectSseEvents } from "@computeragent/testing";
 import { createHarnessServer } from "./app.js";
 

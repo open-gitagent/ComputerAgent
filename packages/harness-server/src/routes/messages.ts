@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { SendMessageBody } from "@computeragent/protocol";
+import { SendMessageBody } from "@open-gitagent/protocol";
 import type { ServerContext } from "../app.js";
 import { NotFound } from "../error-mapper.js";
 

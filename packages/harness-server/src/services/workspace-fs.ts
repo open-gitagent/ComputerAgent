@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
-import type { FsTreeEntry } from "@computeragent/protocol";
+import type { FsTreeEntry } from "@open-gitagent/protocol";
 import { resolveJailedPath } from "../path-jail.js";
 
 /**

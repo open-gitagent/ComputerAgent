@@ -1,6 +1,6 @@
 {
-  "name": "@computeragent/agent-registry-mongo",
-  "version": "0.1.0",
+  "name": "@open-gitagent/agent-registry-mongo",
+  "version": "0.2.1",
   "description": "MongoDB-backed agent registry + per-run audit log + AgentTelemetry impl for ComputerAgent. Makes library-mode deployments (e.g. inside a Temporal worker pod) visible in the AgentOS dashboard with no extra orchestration.",
   "license": "MIT",
   "type": "module",
@@ -23,8 +23,8 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@computeragent/protocol": "workspace:*",
-    "@computeragent/sdk": "workspace:*",
+    "@open-gitagent/protocol": "workspace:*",
+    "@open-gitagent/sdk": "workspace:*",
     "mongodb": "^6.10.0"
   },
   "devDependencies": {

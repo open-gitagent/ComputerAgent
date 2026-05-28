@@ -62,7 +62,7 @@ export interface EngineContext<TOptions = unknown> {
   readonly sessionStore?: SessionStore;
   /**
    * Optional structured logger. When absent, engines should use the exported
-   * `nopLogger` from `@computeragent/protocol`. Wire one log call per
+   * `nopLogger` from `@open-gitagent/protocol`. Wire one log call per
    * lifecycle step — boot, turn start, every tool_use / tool_result, every
    * assistant text, usage snapshot, turn end, error.
    */

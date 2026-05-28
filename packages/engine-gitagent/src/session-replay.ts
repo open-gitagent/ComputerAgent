@@ -21,7 +21,7 @@
  * engines.
  */
 import { createHash } from "node:crypto";
-import type { SessionStore, SessionStoreEntry } from "@computeragent/protocol";
+import type { SessionStore, SessionStoreEntry } from "@open-gitagent/protocol";
 
 /** Project key used when reading/writing through the SessionStore. */
 export const PROJECT_KEY = "computeragent";

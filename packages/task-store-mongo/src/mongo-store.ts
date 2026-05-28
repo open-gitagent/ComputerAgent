@@ -7,7 +7,7 @@ import type {
   TaskStatus,
   TaskStore,
   TaskSummary,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 
 /**
  * MongoDB-backed TaskStore. One document per task, keyed by `taskId`.

@@ -23,7 +23,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@computeragent/protocol": "workspace:*",
+    "@open-gitagent/protocol": "workspace:*",
     "gitclaw": "^1.4.1"
   },
   "devDependencies": {

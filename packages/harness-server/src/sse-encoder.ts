@@ -1,4 +1,4 @@
-import type { HarnessEvent } from "@computeragent/protocol";
+import type { HarnessEvent } from "@open-gitagent/protocol";
 
 /**
  * Pure SSE serialization. No I/O. Returns the wire-format string for one event.

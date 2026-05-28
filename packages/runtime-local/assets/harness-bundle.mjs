@@ -175191,7 +175191,16 @@ function inheritEssentialHostEnv() {
     "LC_ALL",
     "CLAUDE_CONFIG_DIR",
     "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME"
+    "XDG_DATA_HOME",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_BEDROCK_MODEL_ID",
+    "AWS_ROLE_ARN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE"
   ]) {
     const v = process.env[k];
     if (v)

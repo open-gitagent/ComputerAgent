@@ -23,7 +23,7 @@
  *
  * To run the full matrix locally:
  *   ANTHROPIC_API_KEY=sk-ant-... E2B_API_KEY=e2b_... \
- *     pnpm --filter @computeragent/sdk exec vitest run src/substrate-matrix.test.ts
+ *     pnpm --filter @open-gitagent/sdk exec vitest run src/substrate-matrix.test.ts
  */
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
@@ -32,7 +32,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ComputerAgent } from "./computer-agent.js";
 import type { ComputerAgentOptions } from "./types.js";
 import type { Substrate } from "./substrate.js";
-import type { IdentitySource } from "@computeragent/protocol";
+import type { IdentitySource } from "@open-gitagent/protocol";
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const E2B_KEY = process.env.E2B_API_KEY ?? "";
@@ -90,7 +90,7 @@ const PER_RUN_TIMEOUT_MS = 90_000; // model latency + substrate boot
  */
 async function makeSubstrate(kind: "local" | "bwrap" | "e2b"): Promise<Substrate> {
   if (kind === "local") {
-    const { LocalSubstrate } = await import("@computeragent/runtime-local");
+    const { LocalSubstrate } = await import("@open-gitagent/runtime-local");
     return new LocalSubstrate();
   }
   if (kind === "bwrap") {

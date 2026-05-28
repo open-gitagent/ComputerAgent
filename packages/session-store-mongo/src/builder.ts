@@ -1,4 +1,4 @@
-import type { SessionStore } from "@computeragent/protocol";
+import type { SessionStore } from "@open-gitagent/protocol";
 import { MongoSessionStore, type MongoSessionStoreOptions } from "./mongo-store.js";
 
 /**

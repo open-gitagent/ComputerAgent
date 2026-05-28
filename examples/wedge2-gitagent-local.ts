@@ -4,7 +4,7 @@
  * bugs are E2B-specific or also reproduce locally.
  */
 
-import { ComputerAgent } from "@computeragent/sdk";
+import { ComputerAgent } from "@open-gitagent/sdk";
 
 const anthropicKey = process.env.ANTHROPIC_API_KEY;
 if (!anthropicKey) {

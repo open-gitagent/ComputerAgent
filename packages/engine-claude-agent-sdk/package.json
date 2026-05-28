@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.132",
-    "@computeragent/protocol": "workspace:*",
+    "@open-gitagent/protocol": "workspace:*",
     "uuid": "^11.0.0"
   },
   "devDependencies": {

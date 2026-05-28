@@ -1,6 +1,6 @@
 {
-  "name": "@computeragent/protocol",
-  "version": "0.1.0",
+  "name": "@open-gitagent/protocol",
+  "version": "0.2.1",
   "description": "ComputerAgent Harness Protocol — type defs, zod schemas, EngineDriver and IdentityLoader contracts.",
   "license": "MIT",
   "type": "module",

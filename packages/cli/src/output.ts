@@ -1,4 +1,4 @@
-import type { HarnessEvent } from "@computeragent/sdk";
+import type { HarnessEvent } from "@open-gitagent/sdk";
 
 /**
  * Render a HarnessEvent as a single line of human-readable output.

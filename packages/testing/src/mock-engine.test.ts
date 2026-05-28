@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MockEngine } from "./mock-engine.js";
-import type { EngineContext, PermissionRequest } from "@computeragent/protocol";
+import type { EngineContext, PermissionRequest } from "@open-gitagent/protocol";
 
 function makeCtx(overrides: Partial<EngineContext<unknown>> = {}): EngineContext<unknown> {
   const ctrl = new AbortController();
