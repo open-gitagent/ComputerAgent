@@ -86,6 +86,32 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     (await db()).collection<ThreadDoc>("slack_threads");
   const sessionsColl = async (): Promise<Collection<SessionDoc>> =>
     (await db()).collection<SessionDoc>("sessions");
+  /**
+   * agent_registry — agents registered dynamically by SDK consumers via the
+   * `@computeragent/agent-registry-mongo` telemetry hook (or directly via the
+   * POST /agentos/api/agents/register endpoint below). The dashboard unions
+   * these with the server's hardcoded `opts.agents` (in-memory) — the
+   * in-memory list takes precedence on name collision so the
+   * harness/source/token wiring stays authoritative for agents this server
+   * itself runs (Slack bots, framework-translator, etc).
+   *
+   * This is what makes library-mode deployments visible: a customer's
+   * Temporal worker pod runs `new ComputerAgent({telemetry: new MongoTelemetry(...)})`
+   * and the dashboard shows the agent immediately.
+   */
+  interface RegistryDoc {
+    _id: string;
+    label?: string;
+    harness?: string;
+    source?: unknown;
+    model?: string;
+    registeredBy?: string;
+    registeredAt?: Date;
+    updatedAt?: Date;
+    lastSeen?: Date;
+  }
+  const registryColl = async (): Promise<Collection<RegistryDoc>> =>
+    (await db()).collection<RegistryDoc>("agent_registry");
 
   const byName = new Map<string, AgentDef>(opts.agents.map((a) => [a.name, a]));
   const app = new Hono();
@@ -103,8 +129,60 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     } catch { /* best-effort */ }
 
     const threads = await threadsColl();
-    const out = [];
+
+    // Pull dynamically-registered agents from agent_registry. Best-effort:
+    // if the collection doesn't exist yet (fresh deployment), or Mongo is
+    // briefly unavailable, fall back to just the in-memory list.
+    let registryRows: RegistryDoc[] = [];
+    try {
+      registryRows = await (await registryColl())
+        .find({})
+        .sort({ lastSeen: -1, updatedAt: -1 })
+        .toArray();
+    } catch {
+      /* fall through with empty list */
+    }
+
+    // Union by name. In-memory wins on collision so server-hosted agents
+    // (Slack bots, framework-translator, etc) retain their authoritative
+    // harness/source/token wiring even if a worker registered the same name.
+    const seen = new Set<string>(opts.agents.map((a) => a.name));
+    const combined: Array<{
+      name: string;
+      label: string;
+      harness: string;
+      source: unknown;
+      model: string | null;
+      origin: "in-memory" | "registry";
+      registeredBy?: string;
+      lastSeen?: Date;
+    }> = [];
     for (const a of opts.agents) {
+      combined.push({
+        name: a.name,
+        label: a.label,
+        harness: a.harness,
+        source: a.source,
+        model: a.model ?? null,
+        origin: "in-memory",
+      });
+    }
+    for (const r of registryRows) {
+      if (seen.has(r._id)) continue;
+      combined.push({
+        name: r._id,
+        label: r.label ?? r._id,
+        harness: r.harness ?? "unknown",
+        source: r.source ?? "",
+        model: r.model ?? null,
+        origin: "registry",
+        registeredBy: r.registeredBy,
+        lastSeen: r.lastSeen,
+      });
+    }
+
+    const out = [];
+    for (const a of combined) {
       const docs = await threads.find({ bot: a.name }).toArray();
       const sessionIds = new Set(docs.map((d) => d.sessionId));
       let active = 0;
@@ -121,8 +199,11 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
         label: a.label,
         harness: a.harness,
         source: a.source,
-        model: a.model ?? null,
-        sandboxCapable: sandboxCapable(a.harness),
+        model: a.model,
+        origin: a.origin,
+        registeredBy: a.registeredBy ?? null,
+        lastSeen: a.lastSeen ? a.lastSeen.toISOString() : null,
+        sandboxCapable: a.origin === "in-memory" && sandboxCapable(a.harness),
         sessionCount: sessionIds.size,
         activeSandboxes: active,
         lastActivity: lastActivity ? lastActivity.toISOString() : null,
@@ -130,6 +211,86 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
       });
     }
     return c.json({ agents: out });
+  });
+
+  // ── Agent registry CRUD ─────────────────────────────────────────────────
+  // Registry-side mutations only — the in-memory list configured at server
+  // startup is never modified by these endpoints. Library-mode SDK consumers
+  // can also write directly via `MongoTelemetry`; this endpoint is for ops
+  // tools / manual registration from the dashboard.
+
+  app.post("/agentos/api/agents/register", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) return c.json({ error: { code: "BAD_REQUEST", message: "`name` required" } }, 400);
+    const now = new Date();
+    const set: Partial<RegistryDoc> = {
+      label: typeof body.label === "string" ? body.label : undefined,
+      harness: typeof body.harness === "string" ? body.harness : undefined,
+      source: body.source ?? undefined,
+      model: typeof body.model === "string" ? body.model : undefined,
+      registeredBy: typeof body.registeredBy === "string" ? body.registeredBy : undefined,
+      updatedAt: now,
+      lastSeen: now,
+    };
+    for (const k of Object.keys(set) as (keyof typeof set)[]) {
+      if (set[k] === undefined) delete set[k];
+    }
+    await (
+      await registryColl()
+    ).updateOne(
+      { _id: name },
+      { $set: set, $setOnInsert: { _id: name, registeredAt: now } },
+      { upsert: true },
+    );
+    return c.json({ ok: true, name });
+  });
+
+  app.patch("/agentos/api/agents/:name", async (c) => {
+    const name = c.req.param("name");
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (byName.has(name)) {
+      return c.json(
+        {
+          error: {
+            code: "IN_MEMORY_AGENT",
+            message: "This agent is configured at server startup; edit examples/computeragent-server.ts instead.",
+          },
+        },
+        409,
+      );
+    }
+    const set: Partial<RegistryDoc> = {
+      label: typeof body.label === "string" ? body.label : undefined,
+      harness: typeof body.harness === "string" ? body.harness : undefined,
+      source: body.source,
+      model: typeof body.model === "string" ? body.model : undefined,
+      updatedAt: new Date(),
+    };
+    for (const k of Object.keys(set) as (keyof typeof set)[]) {
+      if (set[k] === undefined) delete set[k];
+    }
+    const r = await (await registryColl()).updateOne({ _id: name }, { $set: set });
+    if (r.matchedCount === 0) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+    return c.json({ ok: true });
+  });
+
+  app.delete("/agentos/api/agents/:name", async (c) => {
+    const name = c.req.param("name");
+    if (byName.has(name)) {
+      return c.json(
+        {
+          error: {
+            code: "IN_MEMORY_AGENT",
+            message: "This agent is configured at server startup; remove it from examples/computeragent-server.ts and restart.",
+          },
+        },
+        409,
+      );
+    }
+    const r = await (await registryColl()).deleteOne({ _id: name });
+    if (r.deletedCount === 0) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+    return c.json({ ok: true });
   });
 
   // ── Request logs ────────────────────────────────────────────────────────

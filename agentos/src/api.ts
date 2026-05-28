@@ -13,6 +13,23 @@ export interface Agent {
   activeSandboxes: number;
   lastActivity: string | null;
   logCount: number;
+  /** "in-memory" = configured at server startup (Slack bots, built-ins).
+   *  "registry"  = registered dynamically via the SDK's MongoTelemetry
+   *                hook or via POST /agents/register. */
+  origin?: "in-memory" | "registry";
+  /** Free-form attribution (hostname / pod / "seed-script") for registry agents. */
+  registeredBy?: string | null;
+  /** Most recent ComputerAgent construct seen by the SDK telemetry hook. */
+  lastSeen?: string | null;
+}
+
+export interface RegisterAgentInput {
+  name: string;
+  label?: string;
+  harness?: string;
+  source?: string;
+  model?: string;
+  registeredBy?: string;
 }
 
 export interface LogEntry {
@@ -98,6 +115,12 @@ async function reqJSON<T>(method: string, path: string, body?: unknown): Promise
 
 export const api = {
   agents: () => getJSON<{ agents: Agent[] }>("/agents").then((d) => d.agents),
+  registerAgent: (input: RegisterAgentInput) =>
+    postJSON<{ ok: boolean; name: string }>("/agents/register", input),
+  unregisterAgent: (name: string) =>
+    reqJSON<{ ok: boolean }>("DELETE", `/agents/${encodeURIComponent(name)}`),
+  patchAgent: (name: string, fields: Partial<Omit<RegisterAgentInput, "name">>) =>
+    reqJSON<{ ok: boolean }>("PATCH", `/agents/${encodeURIComponent(name)}`, fields),
   logs: (bot?: string, limit = 100) =>
     getJSON<{ logs: LogEntry[] }>(`/logs?limit=${limit}${bot ? `&bot=${encodeURIComponent(bot)}` : ""}`).then((d) => d.logs),
   sessions: (bot?: string, limit = 100) =>

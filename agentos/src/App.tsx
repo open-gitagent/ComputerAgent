@@ -4,6 +4,7 @@ import { LogsTab } from "./components/LogsTab.tsx";
 import { WorkspaceTab } from "./components/WorkspaceTab.tsx";
 import { SchedulesTab } from "./components/SchedulesTab.tsx";
 import { HomePage } from "./components/HomePage.tsx";
+import { RegisterAgentForm } from "./components/RegisterAgentForm.tsx";
 
 type Tab = "chat" | "schedules" | "logs";
 type View = "home" | "dashboard";
@@ -128,16 +129,27 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <span className={`h-2 w-2 rounded-full shrink-0 ${a.activeSandboxes > 0 ? "bg-emerald-400" : "bg-gray-600"}`} />
                   <span className="font-medium text-sm truncate">{agentNameFromSource(a.source)}</span>
+                  {a.origin === "registry" && (
+                    <span
+                      className="text-[9px] uppercase tracking-wider text-accent-soft bg-accent/10 rounded px-1.5 py-0.5"
+                      title={`Registered via the SDK telemetry hook${a.registeredBy ? ` by ${a.registeredBy}` : ""}`}
+                    >
+                      lib
+                    </span>
+                  )}
                   <TypeBadge agent={a} className="ml-auto" />
                 </div>
                 <div className="mt-1 text-[11px] text-gray-500 truncate">{a.source}</div>
                 <div className="mt-1.5 flex gap-3 text-[10px] text-gray-500">
                   <span>{a.sessionCount} sessions</span>
                   <span>{a.logCount} logs</span>
-                  <span>{timeAgo(a.lastActivity)}</span>
+                  <span>{timeAgo(a.lastActivity ?? a.lastSeen ?? null)}</span>
                 </div>
               </button>
             ))}
+            <div className="px-2 pt-3 pb-2">
+              <RegisterAgentForm onRegistered={() => api.agents().then(setAgents).catch(() => {})} />
+            </div>
           </div>
         )}
         <div className="px-4 py-3 border-t border-ink-600 text-[10px] text-gray-600">agentos.clawagent.sh</div>
