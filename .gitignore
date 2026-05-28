@@ -30,3 +30,10 @@ test.html
 # Python bytecode caches from scripts/ test runners.
 __pycache__/
 *.pyc
+
+# Private operational handoff docs — full keys, access creds, infra map for
+# sharing with teammates. NEVER commit these to a public repo.
+private.md
+PRIVATE.md
+*.private.md
+docs.md

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Home as HomeIcon,
   Activity,
@@ -7,6 +7,8 @@ import {
   ChevronDown,
   Folder,
   FolderOpen,
+  Search,
+  X,
 } from "lucide-react";
 import { api, type Agent } from "./api.ts";
 import { LogsTab } from "./components/LogsTab.tsx";
@@ -16,11 +18,14 @@ import { HomePage } from "./components/HomePage.tsx";
 import { PolicyTab } from "./components/PolicyTab.tsx";
 import { PoliciesPage } from "./components/PoliciesPage.tsx";
 import { ObservabilityTab } from "./components/observability/ObservabilityTab.tsx";
+import { AgentCard } from "./components/AgentCard.tsx";
+import { RegisterAgentForm } from "./components/RegisterAgentForm.tsx";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs.tsx";
 import { Badge } from "./components/ui/badge.tsx";
 import { ScrollArea } from "./components/ui/scroll-area.tsx";
 import { Skeleton } from "./components/ui/skeleton.tsx";
 import { Separator } from "./components/ui/separator.tsx";
+import { Input } from "./components/ui/input.tsx";
 import { StatusDot } from "./components/composite/StatusDot.tsx";
 import { PageHeader } from "./components/composite/PageHeader.tsx";
 import { cn } from "./lib/cn.ts";
@@ -55,6 +60,18 @@ function typeLogo(harness: string): string | null {
   return null;
 }
 
+function SectionLabel({ name, count }: { name: string; count: number }) {
+  return (
+    <div className="flex items-center gap-2 px-1">
+      <span className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
+        {name}
+      </span>
+      <span className="flex-1 h-px bg-border/60" />
+      <span className="text-[9.5px] font-mono text-muted-foreground/50">{count}</span>
+    </div>
+  );
+}
+
 function TypeBadge({ agent, className = "" }: { agent: Agent; className?: string }) {
   const logo = typeLogo(agent.harness);
   return (
@@ -77,6 +94,26 @@ export default function App() {
   const [err, setErr] = useState<string | null>(null);
   const [launchMessage, setLaunchMessage] = useState<string | null>(null);
   const [agentsOpen, setAgentsOpen] = useState(true);
+  const [search, setSearch] = useState("");
+
+  const filteredAgents = useMemo(() => {
+    if (!search.trim()) return agents;
+    const q = search.trim().toLowerCase();
+    return agents.filter((a) =>
+      a.name.toLowerCase().includes(q) ||
+      (a.label ?? "").toLowerCase().includes(q) ||
+      (a.sourceUrl ?? "").toLowerCase().includes(q) ||
+      a.harness.toLowerCase().includes(q),
+    );
+  }, [agents, search]);
+
+  // Group by origin so Hosted (server-config'd) and Library (registry,
+  // dashboard- or SDK-registered) are visually separated.
+  const grouped = useMemo(() => {
+    const hosted = filteredAgents.filter((a) => (a.origin ?? "in-memory") === "in-memory");
+    const library = filteredAgents.filter((a) => a.origin === "registry");
+    return { hosted, library };
+  }, [filteredAgents]);
 
   useEffect(() => {
     api.agents().then(setAgents).catch((e) => setErr(String(e)));
@@ -100,7 +137,7 @@ export default function App() {
   return (
     <div className="flex h-full bg-background text-foreground">
       {/* Left rail */}
-      <aside className="w-72 shrink-0 border-r border-border bg-card flex flex-col">
+      <aside className="w-64 md:w-72 lg:w-80 shrink-0 border-r border-border bg-card flex flex-col overflow-hidden">
         <div className="px-5 py-4 border-b border-border">
           <div className="flex items-center gap-2.5">
             <img src="/logos/agentos.png" alt="ComputerAgent" className="h-8 w-8 rounded-md object-contain" />
@@ -146,42 +183,80 @@ export default function App() {
         </div>
 
         {agentsOpen && (
-          <ScrollArea className="flex-1 mt-1 mr-2">
-            <div className="pl-3 ml-4 border-l border-border space-y-0.5">
-              {err && <div className="m-2 text-xs text-destructive">{err}</div>}
-              {agents.length === 0 && !err && (
-                <div className="m-2 space-y-1.5">
-                  <Skeleton className="h-12 w-full" />
-                  <Skeleton className="h-12 w-full" />
-                  <Skeleton className="h-12 w-full" />
-                </div>
-              )}
-              {agents.map((a) => (
-                <button
-                  key={a.name}
-                  onClick={() => openAgent(a.name)}
-                  className={cn(
-                    "w-full text-left rounded-md px-3 py-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    view === "dashboard" && selected === a.name
-                      ? "bg-muted ring-1 ring-primary/40"
-                      : "hover:bg-muted/60",
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <StatusDot status={a.activeSandboxes > 0 ? "live" : "idle"} />
-                    <span className="font-medium text-sm truncate flex-1">{agentNameFromSource(a.sourceUrl ?? "")}</span>
-                    <TypeBadge agent={a} />
-                  </div>
-                  <div className="mt-1 text-[11px] text-muted-foreground truncate">{a.sourceUrl ?? ""}</div>
-                  <div className="mt-1 flex gap-3 text-[10px] text-muted-foreground/70">
-                    <span>{a.sessionCount} sessions</span>
-                    <span>{a.logCount} logs</span>
-                    <span>{timeAgo(a.lastActivity)}</span>
-                  </div>
-                </button>
-              ))}
+          <>
+            {/* Search — sticky at top of the rail, opaque so cards never
+                appear "behind" it as they scroll. */}
+            <div className="px-3 pt-2 pb-2 bg-card border-b border-border/60 relative z-10">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/60 pointer-events-none" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search agents…"
+                  className="pl-8 pr-7 h-8 text-xs bg-background"
+                />
+                {search && (
+                  <button
+                    onClick={() => setSearch("")}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 h-5 w-5 grid place-items-center rounded text-muted-foreground/70 hover:text-foreground hover:bg-muted"
+                    title="Clear"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
             </div>
-          </ScrollArea>
+
+            <div className="flex-1 overflow-y-auto overflow-x-hidden mt-2 min-w-0">
+              <div className="px-3 pb-3 space-y-3 min-w-0">
+                {err && <div className="text-xs text-destructive">{err}</div>}
+                {agents.length === 0 && !err && (
+                  <div className="space-y-2">
+                    <Skeleton className="h-20 w-full" />
+                    <Skeleton className="h-20 w-full" />
+                    <Skeleton className="h-20 w-full" />
+                  </div>
+                )}
+                {agents.length > 0 && filteredAgents.length === 0 && (
+                  <div className="text-center text-xs text-muted-foreground py-6">
+                    No agents match <span className="font-mono">"{search}"</span>
+                  </div>
+                )}
+
+                {grouped.hosted.length > 0 && (
+                  <div className="space-y-2 min-w-0">
+                    <SectionLabel name="Hosted" count={grouped.hosted.length} />
+                    {grouped.hosted.map((a) => (
+                      <AgentCard
+                        key={a.name}
+                        agent={a}
+                        selected={view === "dashboard" && selected === a.name}
+                        onClick={() => openAgent(a.name)}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {grouped.library.length > 0 && (
+                  <div className="space-y-2 min-w-0">
+                    <SectionLabel name="Library" count={grouped.library.length} />
+                    {grouped.library.map((a) => (
+                      <AgentCard
+                        key={a.name}
+                        agent={a}
+                        selected={view === "dashboard" && selected === a.name}
+                        onClick={() => openAgent(a.name)}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                <div className="pt-2">
+                  <RegisterAgentForm onRegistered={() => api.agents().then(setAgents).catch(() => {})} />
+                </div>
+              </div>
+            </div>
+          </>
         )}
 
         <Separator />
