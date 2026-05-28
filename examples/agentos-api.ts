@@ -14,10 +14,37 @@
 import { Hono } from "hono";
 import { MongoClient, type Collection } from "mongodb";
 import { randomUUID } from "node:crypto";
+import { IdentitySource, type IdentitySource as IdentitySourceT } from "@computeragent/protocol";
 import { sandboxBodyForBot } from "./slack-bot.ts";
 import { AgentLogStore } from "./agent-log-store.ts";
 import { ScheduleStore, computeNextRun, describeSchedule, type ScheduleKind } from "./schedule-store.ts";
 import { runAgentOnce } from "./scheduler.ts";
+
+/**
+ * Normalize a stored `source` field (string | IdentitySource | undefined) into a
+ * `{source, sourceUrl}` pair for the dashboard:
+ *
+ *   - structured IdentitySource → return as-is + extract the canonical URL/path.
+ *   - bare string → keep as the legacy string form (in-memory agents still
+ *     pass plain `source: "github.com/..."`); URL is derived heuristically.
+ *
+ * The dashboard treats `sourceUrl` as the agent's canonical identity (the
+ * thing that's clickable + the de-duplication key across multiple workers
+ * that registered the same git source).
+ */
+function normalizeSource(raw: unknown): { source: IdentitySourceT | string; sourceUrl: string | null } {
+  if (raw && typeof raw === "object") {
+    const parsed = IdentitySource.safeParse(raw);
+    if (parsed.success) {
+      const s = parsed.data;
+      if (s.type === "git") return { source: s, sourceUrl: s.url };
+      if (s.type === "local") return { source: s, sourceUrl: s.path };
+      return { source: s, sourceUrl: "inline" };
+    }
+  }
+  const str = typeof raw === "string" ? raw : "";
+  return { source: str, sourceUrl: str || null };
+}
 
 /** An agent the control panel can list, chat with, and inspect. Covers both
  * Slack bots and web-only agents. */
@@ -194,11 +221,16 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
         const t = d.lastMessageAt ? new Date(d.lastMessageAt) : null;
         return t && (!acc || t > acc) ? t : acc;
       }, null);
+      // Normalize source — structured IdentitySource (from agent_registry
+      // upserts via MongoTelemetry) becomes a {source, sourceUrl} pair the
+      // dashboard renders as a clickable owner/repo identity for git sources.
+      const { source, sourceUrl } = normalizeSource(a.source);
       out.push({
         name: a.name,
         label: a.label,
         harness: a.harness,
-        source: a.source,
+        source,
+        sourceUrl,
         model: a.model,
         origin: a.origin,
         registeredBy: a.registeredBy ?? null,
@@ -211,6 +243,31 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
       });
     }
     return c.json({ agents: out });
+  });
+
+  // Lookup by source URL — used to detect "same agent, different name"
+  // (e.g. dev + prod workers both registering the same git repo as separate
+  // names). The dashboard groups these visually.
+  app.get("/agentos/api/agents/by-source", async (c) => {
+    const url = c.req.query("url");
+    if (!url) return c.json({ error: { code: "BAD_REQUEST", message: "`url` required" } }, 400);
+    const matches: Array<{ name: string; source: IdentitySourceT | string; sourceUrl: string | null }> = [];
+    for (const a of opts.agents) {
+      const norm = normalizeSource(a.source);
+      if (norm.sourceUrl === url) matches.push({ name: a.name, source: norm.source, sourceUrl: norm.sourceUrl });
+    }
+    try {
+      const rows = await (await registryColl()).find({}).toArray();
+      for (const r of rows) {
+        const norm = normalizeSource(r.source);
+        if (norm.sourceUrl === url) {
+          matches.push({ name: r._id, source: norm.source, sourceUrl: norm.sourceUrl });
+        }
+      }
+    } catch {
+      /* registry collection optional */
+    }
+    return c.json({ url, matches });
   });
 
   // ── Agent registry CRUD ─────────────────────────────────────────────────

@@ -2,11 +2,25 @@
 // and handles auth (the subdomain is gated by Caddy basic_auth). In dev, Vite
 // proxies /api with an injected Basic Auth header. So the bundle never holds creds.
 
+/** Mirrors the protocol's IdentitySource zod schema. The server narrows on
+ *  read; the dashboard renders the structured form when present. */
+export type IdentitySource =
+  | { type: "git"; url: string; ref?: string; subdir?: string }
+  | { type: "local"; path: string }
+  | { type: "inline"; manifest: Record<string, unknown>; files?: Record<string, string> };
+
 export interface Agent {
   name: string;
   label: string;
   harness: string;
-  source: string;
+  /** Structured IdentitySource for registry agents (preferred); legacy string
+   *  for in-memory agents from the hardcoded config. Use `sourceUrl` for the
+   *  canonical identity / display URL. */
+  source: IdentitySource | string;
+  /** Canonical URL/path for this agent. Git: the repo URL. Local: the path.
+   *  Inline: the literal string "inline". The dashboard treats this as the
+   *  de-duplication key alongside `name`. */
+  sourceUrl: string | null;
   model: string | null;
   sandboxCapable: boolean;
   sessionCount: number;
@@ -21,6 +35,63 @@ export interface Agent {
   registeredBy?: string | null;
   /** Most recent ComputerAgent construct seen by the SDK telemetry hook. */
   lastSeen?: string | null;
+}
+
+/** Result of `displaySource(agent.source)`. Drives `<SourceBadge>` rendering. */
+export interface SourceDisplay {
+  kind: "git" | "local" | "inline" | "unknown";
+  /** Headline (e.g. "open-gitagent/ComputerAgent" for git). */
+  primary: string;
+  /** Subtitle (e.g. "github.com" host or full path). */
+  secondary: string;
+  /** `https://` URL to open when clicked (git only). */
+  href?: string;
+}
+
+/**
+ * Derive a render-ready breakdown of an agent's source. Recognizes common
+ * git hosts (github.com / gitlab.com / bitbucket.org / open-gitagent.dev,
+ * with or without a leading scheme) and splits owner/repo. Falls back
+ * gracefully for unrecognized forms.
+ */
+export function displaySource(source: IdentitySource | string | null | undefined): SourceDisplay {
+  if (!source) return { kind: "unknown", primary: "(no source)", secondary: "" };
+
+  if (typeof source === "object") {
+    if (source.type === "local") {
+      const path = source.path;
+      const tail = path.split("/").filter(Boolean).slice(-2).join("/");
+      return { kind: "local", primary: tail || path, secondary: path };
+    }
+    if (source.type === "inline") {
+      const name =
+        (typeof source.manifest?.name === "string" && (source.manifest.name as string)) ||
+        "inline";
+      return { kind: "inline", primary: name, secondary: "inline manifest" };
+    }
+    // git
+    return parseGitUrl(source.url, source.ref);
+  }
+  // Legacy: bare string. Treat as a git-style "host/owner/repo".
+  return parseGitUrl(source);
+}
+
+function parseGitUrl(raw: string, ref?: string): SourceDisplay {
+  // Strip protocol + trailing .git
+  const stripped = raw.replace(/^https?:\/\//, "").replace(/^git@/, "").replace(/\.git$/, "");
+  const parts = stripped.split(/[:/]/).filter(Boolean);
+  // host/owner/repo
+  if (parts.length >= 3) {
+    const [host, owner, repo] = parts;
+    const href = `https://${host}/${owner}/${repo}${ref ? `/tree/${encodeURIComponent(ref)}` : ""}`;
+    return { kind: "git", primary: `${owner}/${repo}`, secondary: host, href };
+  }
+  // Just "owner/repo" — assume github.
+  if (parts.length === 2) {
+    const [owner, repo] = parts;
+    return { kind: "git", primary: `${owner}/${repo}`, secondary: "github.com", href: `https://github.com/${owner}/${repo}` };
+  }
+  return { kind: "unknown", primary: raw, secondary: "" };
 }
 
 export interface RegisterAgentInput {

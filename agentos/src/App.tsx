@@ -5,6 +5,7 @@ import { WorkspaceTab } from "./components/WorkspaceTab.tsx";
 import { SchedulesTab } from "./components/SchedulesTab.tsx";
 import { HomePage } from "./components/HomePage.tsx";
 import { RegisterAgentForm } from "./components/RegisterAgentForm.tsx";
+import { SourceBadge } from "./components/SourceBadge.tsx";
 
 type Tab = "chat" | "schedules" | "logs";
 type View = "home" | "dashboard";
@@ -128,7 +129,7 @@ export default function App() {
               >
                 <div className="flex items-center gap-2">
                   <span className={`h-2 w-2 rounded-full shrink-0 ${a.activeSandboxes > 0 ? "bg-emerald-400" : "bg-gray-600"}`} />
-                  <span className="font-medium text-sm truncate">{agentNameFromSource(a.source)}</span>
+                  <span className="font-medium text-sm truncate">{agentNameFromSource(a.sourceUrl ?? "")}</span>
                   {a.origin === "registry" && (
                     <span
                       className="text-[9px] uppercase tracking-wider text-accent-soft bg-accent/10 rounded px-1.5 py-0.5"
@@ -139,7 +140,9 @@ export default function App() {
                   )}
                   <TypeBadge agent={a} className="ml-auto" />
                 </div>
-                <div className="mt-1 text-[11px] text-gray-500 truncate">{a.source}</div>
+                <div className="mt-1.5">
+                  <SourceBadge agent={a} />
+                </div>
                 <div className="mt-1.5 flex gap-3 text-[10px] text-gray-500">
                   <span>{a.sessionCount} sessions</span>
                   <span>{a.logCount} logs</span>
@@ -164,7 +167,7 @@ export default function App() {
             <header className="px-6 py-4 border-b border-ink-600 flex items-center gap-4">
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="text-base font-semibold">{agentNameFromSource(agent.source)}</span>
+                  <span className="text-base font-semibold">{agentNameFromSource(agent.sourceUrl ?? "")}</span>
                   <TypeBadge agent={agent} />
                 </div>
                 <div className="text-xs text-gray-500">
