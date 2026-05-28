@@ -27,6 +27,11 @@
   },
   "devDependencies": {
     "@computeragent/harness-server": "workspace:*",
+    "@computeragent/runtime-local": "workspace:*",
+    "@computeragent/runtime-bwrap": "workspace:*",
+    "@computeragent/runtime-e2b": "workspace:*",
+    "@computeragent/engine-claude-agent-sdk": "workspace:*",
+    "@computeragent/identity-gitagentprotocol": "workspace:*",
     "@computeragent/testing": "workspace:*",
     "@hono/node-server": "^1.13.0",
     "typescript": "^5.5.0",

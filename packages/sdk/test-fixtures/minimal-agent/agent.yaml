@@ -1,0 +1,6 @@
+spec_version: "0.1.0"
+name: minimal-agent
+version: 0.1.0
+description: "Tiny GAP agent used by the substrate × source matrix tests."
+model:
+  preferred: claude-haiku-4-5-20251001
