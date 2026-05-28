@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/hero.png" alt="ComputerAgent — Research Labs" width="720">
+</p>
+
 # ComputerAgent
 
 [![CI](https://github.com/open-gitagent/ComputerAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/open-gitagent/ComputerAgent/actions/workflows/ci.yml)
