@@ -143,6 +143,20 @@ export interface ComputerAgentOptions {
    */
   readonly attachments?: readonly Attachment[];
   /**
+   * Optional per-session policy decider config. When set, the harness
+   * builds the matching decider (today: SrsPolicyDecider) and gates every
+   * tool call through it. Engine-agnostic; works for any harness that
+   * routes tool calls through onPermissionRequest (claude-agent-sdk via
+   * PreToolUse hook, gitagent via preToolUse).
+   */
+  readonly policy?: {
+    readonly kind: "srs";
+    readonly endpoint: string;
+    readonly apiKey: string;
+    readonly policyId: string;
+    readonly principalId: string;
+  };
+  /**
    * When true, sets `COMPUTERAGENT_LOG=debug` in the harness env (forcing
    * every engine + framework log line to surface) and emits one client-side
    * log line per harness event consumed.

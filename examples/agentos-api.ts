@@ -18,6 +18,7 @@ import { sandboxBodyForBot } from "./slack-bot.ts";
 import { AgentLogStore } from "./agent-log-store.ts";
 import { ScheduleStore, computeNextRun, describeSchedule, type ScheduleKind } from "./schedule-store.ts";
 import { runAgentOnce } from "./scheduler.ts";
+import { AgentPolicyStore } from "./agent-policy-store.ts";
 
 /** An agent the control panel can list, chat with, and inspect. Covers both
  * Slack bots and web-only agents. */
@@ -43,6 +44,7 @@ export interface AgentOSOptions {
   readonly agents: readonly AgentDef[];
   readonly logStore: AgentLogStore;
   readonly scheduleStore?: ScheduleStore;
+  readonly policyStore?: AgentPolicyStore;
 }
 
 interface SessionDoc {
@@ -89,6 +91,29 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
 
   const byName = new Map<string, AgentDef>(opts.agents.map((a) => [a.name, a]));
   const app = new Hono();
+
+  // SRS (policy backend) — hoisted so the chat-sandbox handler and the
+  // policy-proxy routes share the same config.
+  const srsBase = (process.env.SRS_BASE_URL ?? "https://srs-dev.test.studio.lyzr.ai").replace(/\/+$/, "");
+  const srsKey = process.env.LYZR_API_KEY ?? process.env.SRS_API_KEY ?? "";
+  const srsHeaders = (extra: Record<string, string> = {}): Record<string, string> => {
+    const h: Record<string, string> = { ...extra };
+    if (srsKey) h["x-api-key"] = srsKey;
+    return h;
+  };
+  const srsProxy = async (method: string, path: string, body?: unknown): Promise<Response> => {
+    if (!srsKey) {
+      return new Response(JSON.stringify({ error: { code: "SRS_NOT_CONFIGURED", message: "LYZR_API_KEY not set" } }), { status: 503, headers: { "content-type": "application/json" } });
+    }
+    const init: RequestInit = {
+      method,
+      headers: srsHeaders(body !== undefined ? { "content-type": "application/json" } : {}),
+    };
+    if (body !== undefined) init.body = JSON.stringify(body);
+    const r = await fetch(`${srsBase}${path}`, init);
+    const text = await r.text();
+    return new Response(text, { status: r.status, headers: { "content-type": r.headers.get("content-type") ?? "application/json" } });
+  };
 
   // ── Agents list + per-agent stats ──────────────────────────────────────
   app.get("/agentos/api/agents", async (c) => {
@@ -211,9 +236,24 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     }
     const body = await c.req.json().catch(() => ({})) as { sessionId?: string };
     const sessionId = body.sessionId || `agentos-${agent.name}-${randomUUID().slice(0, 12)}`;
+    // Lookup policy binding (if any) and translate to a sandbox policy spec.
+    let policySpec: { kind: "srs"; endpoint: string; apiKey: string; policyId: string; principalId: string } | undefined;
+    if (opts.policyStore && srsKey) {
+      const binding = await opts.policyStore.get(agent.name);
+      if (binding) {
+        policySpec = {
+          kind: "srs",
+          endpoint: srsBase,
+          apiKey: srsKey,
+          policyId: binding.policyId,
+          principalId: `agentos:${agent.name}`,
+        };
+      }
+    }
     const sandboxBody = sandboxBodyForBot(
       { name: agent.name, harness: agent.harness, source: agent.source, model: agent.model, extraEnvs: agent.envs, gitToken: agent.gitToken },
       sessionId,
+      policySpec,
     );
     const r = await fetch(`${caBase}/sandboxes`, {
       method: "POST",
@@ -368,6 +408,52 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
       }).catch(() => {});
     })();
     return c.json({ ok: true, running: true });
+  });
+
+  // ── Policies — proxy SRS so the browser never sees LYZR_API_KEY ─────────
+  //
+  // SRS (Lyzr Studio Responsible AI APIs) owns policy CRUD. We forward
+  // GET/POST/PUT/DELETE on /v1/rai/policies, inject `x-api-key` server-side,
+  // and pass the body through unchanged. The dropdown on the agent screen
+  // uses GET /policies to populate; the policy editor uses POST/PUT.
+  app.get("/agentos/api/policies", async () => srsProxy("GET", "/v1/rai/policies"));
+  app.get("/agentos/api/policies/:id", async (c) => srsProxy("GET", `/v1/rai/policies/${encodeURIComponent(c.req.param("id"))}`));
+  app.post("/agentos/api/policies", async (c) => srsProxy("POST", "/v1/rai/policies", await c.req.json().catch(() => ({}))));
+  app.put("/agentos/api/policies/:id", async (c) => srsProxy("PUT", `/v1/rai/policies/${encodeURIComponent(c.req.param("id"))}`, await c.req.json().catch(() => ({}))));
+  app.delete("/agentos/api/policies/:id", async (c) => srsProxy("DELETE", `/v1/rai/policies/${encodeURIComponent(c.req.param("id"))}`));
+
+  // OPA rego policies — referenced by RAI policies' opa_guardrail.managed_policies[].policy_id.
+  app.get("/agentos/api/opa-policies", async () => srsProxy("GET", "/v1/opa-policies"));
+  app.get("/agentos/api/opa-policies/:id", async (c) => srsProxy("GET", `/v1/opa-policies/${encodeURIComponent(c.req.param("id"))}`));
+  app.post("/agentos/api/opa-policies", async (c) => srsProxy("POST", "/v1/opa-policies", await c.req.json().catch(() => ({}))));
+  app.put("/agentos/api/opa-policies/:id", async (c) => srsProxy("PUT", `/v1/opa-policies/${encodeURIComponent(c.req.param("id"))}`, await c.req.json().catch(() => ({}))));
+  app.delete("/agentos/api/opa-policies/:id", async (c) => srsProxy("DELETE", `/v1/opa-policies/${encodeURIComponent(c.req.param("id"))}`));
+
+  // ── Agent → policy binding (our own; lives in Mongo, not SRS) ───────────
+  //
+  // One policy_id per agent. The runtime reads this at sandbox-create time
+  // and feeds it into the SrsPolicyDecider that gates every tool call.
+  app.get("/agentos/api/agents/:name/policy", async (c) => {
+    if (!opts.policyStore) return c.json({ error: { code: "NO_POLICY_STORE" } }, 503);
+    if (!byName.has(c.req.param("name"))) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 404);
+    const b = await opts.policyStore.get(c.req.param("name"));
+    return c.json({ binding: b });
+  });
+  app.put("/agentos/api/agents/:name/policy", async (c) => {
+    if (!opts.policyStore) return c.json({ error: { code: "NO_POLICY_STORE" } }, 503);
+    if (!byName.has(c.req.param("name"))) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 404);
+    const body = await c.req.json().catch(() => ({})) as { policy_id?: string | null };
+    if (body.policy_id == null) {
+      await opts.policyStore.delete(c.req.param("name"));
+      return c.json({ binding: null });
+    }
+    const b = await opts.policyStore.set(c.req.param("name"), body.policy_id);
+    return c.json({ binding: b });
+  });
+  app.delete("/agentos/api/agents/:name/policy", async (c) => {
+    if (!opts.policyStore) return c.json({ error: { code: "NO_POLICY_STORE" } }, 503);
+    await opts.policyStore.delete(c.req.param("name"));
+    return c.json({ ok: true });
   });
 
   app.get("/agentos/api/health", (c) => c.json({ ok: true, agents: opts.agents.map((a) => a.name) }));

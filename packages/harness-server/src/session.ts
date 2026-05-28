@@ -3,6 +3,7 @@ import type {
   HarnessEvent,
   PermissionRequest,
   PermissionResult,
+  PolicyDecider,
   SessionStore,
   UserMessage,
 } from "@computeragent/protocol";
@@ -57,6 +58,7 @@ export class Session {
     replayBufferSize: number = 1000,
     private readonly auditSink?: AuditSink,
     readonly sessionStore?: SessionStore,
+    readonly policyDecider?: PolicyDecider,
   ) {
     this.events = new ReplayBuffer<HarnessEvent>(replayBufferSize);
   }
