@@ -56,9 +56,39 @@ import type {
 } from "@open-gitagent/protocol";
 import { mongoTaskStoreBuilder } from "@computeragent/task-store-mongo";
 import { s3StateStoreBuilder } from "@computeragent/state-store-s3";
+import type { AuditSink } from "@computeragent/harness-server";
+import {
+  configure as configureOtel,
+  shutdown as shutdownOtel,
+  OtelAuditSink,
+} from "@computeragent/observability";
 
 type TaskStoreBuilder = (options?: unknown) => TaskStore;
 type StateStoreBuilder = (options?: unknown) => StateStore;
+
+/**
+ * Fan one HarnessEvent out to the configured AuditSink, swallowing any errors
+ * so observability failures never break a session. Tracks the sessionId across
+ * the stream (learned from `ca_session_started` when not provided upfront).
+ */
+function emitToAuditSink(
+  sink: AuditSink | undefined,
+  state: { sessionId: string; counter: number },
+  ev: HarnessEvent,
+): void {
+  if (!sink) return;
+  if (ev.kind === "ca_session_started" && !state.sessionId) state.sessionId = ev.sessionId;
+  try {
+    void sink.onEvent({
+      sessionId: state.sessionId || (ev as { sessionId?: string }).sessionId || "pending",
+      eventId: ++state.counter,
+      event: ev,
+      timestamp: Date.now(),
+    });
+  } catch {
+    // OtelAuditSink already swallows its own errors; this is belt-and-braces.
+  }
+}
 
 export interface ComputerAgentServerOptions {
   /** Bind host. Default "127.0.0.1" (loopback only). Pass "0.0.0.0" for LAN-accessible. */
@@ -169,6 +199,14 @@ export interface ComputerAgentServerOptions {
      */
     readonly bootDeadlineMs?: number;
   };
+  /**
+   * Optional audit sink — every HarnessEvent produced by /run, /tasks, and
+   * /sandboxes/:id/chat is forwarded synchronously. Used by
+   * `@computeragent/observability`'s `OtelAuditSink` to emit OTel `gen_ai.*`
+   * spans + metrics. Sink errors are caught and dropped; observability never
+   * impacts the agent run.
+   */
+  readonly auditSink?: AuditSink;
 }
 
 interface RunBody {
@@ -592,6 +630,7 @@ interface SandboxBody {
   sessionId?: string;
   debug?: boolean;
   sessionStore?: { kind: string; options?: unknown };
+  policy?: { kind: "srs"; endpoint: string; apiKey: string; policyId: string; principalId: string };
   attachments?: Array<{ path: string; content: string; encoding?: "utf8" | "base64" }>;
   idleTtlMs?: number;
   ttlMs?: number;
@@ -820,11 +859,13 @@ export class ComputerAgentServer {
           const handle = agent.chat(
             typeof body.message === "string" ? body.message : body.message,
           );
+          const otelTap = { sessionId: "", counter: 0 };
           for await (const ev of handle) {
             if (ev.kind === "ca_session_started" && !realSessionId) {
               realSessionId = ev.sessionId;
               this.runs.set(realSessionId, { agent, startedAt: Date.now() });
             }
+            emitToAuditSink(this.opts.auditSink, otelTap, ev);
             await stream.writeSSE({
               event: ev.kind,
               data: JSON.stringify(ev),
@@ -1152,6 +1193,7 @@ export class ComputerAgentServer {
         ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
         ...(body.debug ? { debug: true } : {}),
         ...(body.sessionStore ? { sessionStore: body.sessionStore as never } : {}),
+        ...(body.policy ? { policy: body.policy as never } : {}),
         ...(body.attachments && body.attachments.length > 0 ? { attachments: body.attachments } : {}),
       });
 
@@ -1317,8 +1359,10 @@ export class ComputerAgentServer {
         try {
           // The SDK accepts the same `message` shape /run uses.
           const handle = sb.agent.chat(body.message as never);
+          const otelTap = { sessionId: sb.sessionId, counter: 0 };
           for await (const ev of handle) {
             if (clientGone) break;
+            emitToAuditSink(this.opts.auditSink, otelTap, ev);
             await stream.writeSSE({ event: ev.kind, data: JSON.stringify(ev) }).catch(() => { clientGone = true; });
             if (ev.kind === "ca_usage_snapshot") {
               // The snapshot is incremental for the current turn; merge into
@@ -1841,7 +1885,9 @@ export class ComputerAgentServer {
     try {
       const message = typeof body.message === "string" ? body.message : body.message;
       const handle = agent.chat(message as never);
+      const otelTap = { sessionId: sessionId ?? "", counter: 0 };
       for await (const ev of handle as AsyncIterable<HarnessEvent>) {
+        emitToAuditSink(this.opts.auditSink, otelTap, ev);
         const persisted: PersistedEvent = {
           id: eventIndex++,
           ts: new Date(),
@@ -2248,6 +2294,23 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
   }
 
+  // Optional: OpenTelemetry. Boot the global tracer/meter/logger when
+  // OTEL_EXPORTER_OTLP_ENDPOINT is set; the sink then forwards every
+  // HarnessEvent emitted by /run, /tasks, and /sandboxes/:id/chat as
+  // spec-compliant `gen_ai.*` spans + metrics. Disable by leaving
+  // OTEL_EXPORTER_OTLP_ENDPOINT unset (sink stays null).
+  let auditSink: AuditSink | undefined;
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    configureOtel({
+      serviceName: process.env.OTEL_SERVICE_NAME ?? "computeragent-server",
+      exporter: "otlp-http",
+      endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+      sampleRate: Number(process.env.OTEL_SAMPLE_RATE ?? 1.0),
+    });
+    auditSink = new OtelAuditSink();
+    console.log(`[otel] OTLP/HTTP exporter → ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}`);
+  }
+
   const server = new ComputerAgentServer({
     host: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 8787),
@@ -2260,6 +2323,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     ...(Object.keys(stateStores).length > 0 ? { stateStores } : {}),
     defaultStateStore,
     sandbox: sandboxCfg,
+    ...(auditSink ? { auditSink } : {}),
   });
 
   // ── Optional: Slack bots — mount under /slack/{bot}/events.
@@ -2276,12 +2340,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!process.env.MONGO_URL) {
       console.error("[slack-bot] SLACK_BOTS_ENABLED=1 but MONGO_URL not set — Slack thread map needs mongo; skipping");
     } else {
-      const [{ createSlackBotsApp, botsFromEnv }, { AgentLogStore }, { createAgentOSApp }, { ScheduleStore }, { startScheduler }] = await Promise.all([
+      const [{ createSlackBotsApp, botsFromEnv }, { AgentLogStore }, { createAgentOSApp }, { ScheduleStore }, { startScheduler }, { AgentPolicyStore }] = await Promise.all([
         import("./slack-bot.ts"),
         import("./agent-log-store.ts"),
         import("./agentos-api.ts"),
         import("./schedule-store.ts"),
         import("./scheduler.ts"),
+        import("./agent-policy-store.ts"),
       ]);
       const bots = botsFromEnv();
       if (bots.length === 0) {
@@ -2329,10 +2394,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         if (anthropicEnvs) {
           // Claude Code — claude-agent-sdk on the same repo. Multi-turn via /sandboxes.
           if (!agentDefs.some((a) => a.name === "claude-code")) {
+            const claudeCodeModel = process.env.CLAUDE_CODE_MODEL;
+            const cEnvs: Record<string, string> = { ...anthropicEnvs };
+            if (claudeCodeModel) cEnvs.ANTHROPIC_MODEL = claudeCodeModel;
             agentDefs.push({
               name: "claude-code", label: "Claude Code", harness: "claude-agent-sdk",
-              source: generalAgentSource, model: undefined,
-              envs: { ...anthropicEnvs }, gitToken: githubToken,
+              source: generalAgentSource, model: claudeCodeModel,
+              envs: cEnvs, gitToken: githubToken,
             });
           }
           // Deep Agent — deepagents on the same repo. One-shot via /run.
@@ -2414,22 +2482,29 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         } else {
           console.warn("[agentos] no LYZR proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
         }
+        const onlyEnv = process.env.AGENTOS_AGENTS_ONLY;
+        const filteredAgentDefs = onlyEnv
+          ? agentDefs.filter((a) => onlyEnv.split(",").map((s) => s.trim()).includes(a.name))
+          : agentDefs;
         const scheduleStore = new ScheduleStore(mongoUrl, mongoDb);
-        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, agents: agentDefs, logStore, scheduleStore });
+        const policyStore = new AgentPolicyStore(mongoUrl, mongoDb);
+        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, agents: filteredAgentDefs, logStore, scheduleStore, policyStore });
         server.mount(agentosApp);
-        console.log("AgentOS control panel API: /agentos/api/* — agents:", agentDefs.map((a) => a.name).join(", "));
+        console.log("AgentOS control panel API: /agentos/api/* — agents:", filteredAgentDefs.map((a) => a.name).join(", "));
 
         // Scheduler — fires due agent schedules on a tick.
         const u = process.env.API_AUTH_USER, p = process.env.API_AUTH_PASS;
         const authHeader = (u && p) ? { authorization: "Basic " + Buffer.from(`${u}:${p}`).toString("base64") } : {};
-        startScheduler({ caBase, authHeader, store: scheduleStore, logStore, agents: agentDefs });
+        startScheduler({ caBase, authHeader, store: scheduleStore, logStore, agents: filteredAgentDefs });
       }
     }
   }
   // Graceful shutdown — kill the proxy too when the main server stops.
+  // Flush OTel exporters FIRST so in-flight spans land before sockets close.
   for (const sig of ["SIGINT", "SIGTERM"] as const) {
     process.on(sig, () => {
       void (async () => {
+        if (auditSink) await shutdownOtel(2_000).catch(() => {});
         await lyzrProxyHandle?.close().catch(() => {});
         await server.close().catch(() => {});
         process.exit(0);

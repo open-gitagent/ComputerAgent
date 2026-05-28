@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Attachment, CreateSessionBody } from "@open-gitagent/protocol";
 import { Session } from "../session.js";
+import { SrsPolicyDecider } from "./srs-policy-decider.js";
 import { SessionRegistry } from "../registry.js";
 import { BadRequest } from "../error-mapper.js";
 import { PathEscapeError } from "../path-jail.js";
@@ -63,6 +64,18 @@ export async function createSession(
     ? wrapValidatingStore(rawStore)
     : rawStore;
 
+  // Build a policy decider from wire-side config. Only "srs" is supported
+  // today — extend by branching on body.policy.kind here.
+  const policyDecider = body.policy
+    ? new SrsPolicyDecider({
+        kind: "srs",
+        endpoint: body.policy.endpoint,
+        apiKey: body.policy.apiKey,
+        policyId: body.policy.policyId,
+        principalId: body.policy.principalId,
+      })
+    : undefined;
+
   const session = new Session(
     sessionId,
     body.engine,
@@ -76,6 +89,7 @@ export async function createSession(
     1000,
     deps.auditSink,
     sessionStore,
+    policyDecider,
   );
 
   // Initial messages from the body get enqueued immediately. The engine sees them

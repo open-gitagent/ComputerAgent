@@ -1,0 +1,27 @@
+{
+  "name": "@computeragent/observability-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Express-based read API over ClickHouse for OTel gen_ai.* traces, metrics, and aggregations.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clickhouse/client": "^1.8.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

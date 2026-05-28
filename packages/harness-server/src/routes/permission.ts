@@ -36,6 +36,16 @@ export function permissionRoute(ctx: ServerContext): Hono {
         `no pending permission request for callId '${callId}' on session '${id}'`,
       );
     }
+    // Surface the decision on the event stream so audit sinks / replay
+    // consumers can correlate it with the originating ca_permission_request.
+    // Additive: legacy clients that don't recognize the kind ignore it.
+    session.emit({
+      kind: "ca_permission_decision",
+      sessionId: id,
+      callId,
+      decision: body.decision,
+      ...(body.reason !== undefined ? { reason: body.reason } : {}),
+    });
     ctx.deps.logger.info("session.permission_decision", { sessionId: id, callId, decision: body.decision });
     return c.json({ ok: true });
   });

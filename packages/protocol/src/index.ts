@@ -4,6 +4,7 @@ export * from "./identity-source.js";
 export * from "./harness-rest.js";
 export * from "./sse-events.js";
 export * from "./contracts.js";
+export * from "./policy.js";
 export { SessionStoreConfig } from "./session-store-config.js";
 export { TaskStoreConfig } from "./task-store.js";
 export type {

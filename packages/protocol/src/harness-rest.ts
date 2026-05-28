@@ -75,6 +75,21 @@ export const CreateSessionBody = z.object({
    * config overlays per request.
    */
   attachments: z.array(Attachment).optional(),
+  /**
+   * Optional per-session policy decider config. When set, the harness
+   * builds the matching decider (e.g. SrsPolicyDecider) and gates every
+   * tool call through it. Deny short-circuits the engine's permission
+   * request with `behavior: "deny"` — no SSE round-trip to a client.
+   *
+   * Currently supported: `{ kind: "srs", endpoint, apiKey, policyId, principalId }`.
+   */
+  policy: z.object({
+    kind: z.literal("srs"),
+    endpoint: z.string().min(1),
+    apiKey: z.string().min(1),
+    policyId: z.string().min(1),
+    principalId: z.string().min(1),
+  }).optional(),
 });
 export type CreateSessionBody = z.infer<typeof CreateSessionBody>;
 

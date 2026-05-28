@@ -3,6 +3,7 @@ import type {
   HarnessEvent,
   PermissionRequest,
   PermissionResult,
+  PolicyDecider,
   SessionStore,
   UserMessage,
 } from "@open-gitagent/protocol";
@@ -41,6 +42,11 @@ export class Session {
   >();
   private subscriberCount = 0;
   private engineStarted = false;
+  /**
+   * Monotonic per-session counter of `ca_turn_started` events emitted.
+   * Starts at 0 (the first turn carries `turnIndex: 0`).
+   */
+  private turnIndex = 0;
   readonly abortController = new AbortController();
   readonly events: ReplayBuffer<HarnessEvent>;
 
@@ -57,6 +63,7 @@ export class Session {
     replayBufferSize: number = 1000,
     private readonly auditSink?: AuditSink,
     readonly sessionStore?: SessionStore,
+    readonly policyDecider?: PolicyDecider,
   ) {
     this.events = new ReplayBuffer<HarnessEvent>(replayBufferSize);
   }
@@ -92,8 +99,24 @@ export class Session {
     return wrapped;
   }
 
-  /** Push a user message. The engine's iterator will yield it next. */
+  /**
+   * Push a user message. The engine's iterator will yield it next.
+   *
+   * Emits a `ca_turn_started` event before enqueueing — this marks the
+   * boundary between user turns for span-based consumers (one `invoke_agent`
+   * span per turn, per the OpenTelemetry GenAI semantic conventions). The
+   * message itself rides on the event so consumers can populate
+   * `gen_ai.input.messages` from the canonical source (engines like
+   * claude-agent-sdk do not echo the initial prompt as an sdk_message).
+   */
   pushUserMessage(msg: UserMessage): void {
+    const index = this.turnIndex++;
+    this.emit({
+      kind: "ca_turn_started",
+      sessionId: this.sessionId,
+      turnIndex: index,
+      message: msg,
+    });
     this.enqueue({ value: msg });
   }
 
