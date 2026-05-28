@@ -832,5 +832,26 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
 
   app.get("/agentos/api/health", (c) => c.json({ ok: true, agents: opts.agents.map((a) => a.name) }));
 
+  // ── Policies stubs ─────────────────────────────────────────────────────────
+  // The Policies tab is wired against an external SRS (Security/Runtime/Safety)
+  // service in the upstream design. In this deployment SRS isn't running, so
+  // every endpoint returns an empty list / not-found so the UI shows clean
+  // EmptyState components instead of a "404" error toast.
+  //
+  // When the SRS proxy lands, drop this block — agentos-api should reverse
+  // proxy the policy paths instead of stubbing.
+  app.get("/agentos/api/policies", (c) => c.json({ policies: [] }));
+  app.get("/agentos/api/policies/:id", (c) => c.json({ error: { code: "NOT_FOUND" } }, 404));
+  app.post("/agentos/api/policies", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED", message: "Policy service (SRS) is not deployed in this environment." } }, 503));
+  app.put("/agentos/api/policies/:id", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
+  app.delete("/agentos/api/policies/:id", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
+  app.get("/agentos/api/agents/:name/policy", (c) => c.json({ binding: null }));
+  app.put("/agentos/api/agents/:name/policy", (c) => c.json({ binding: null }));
+  app.get("/agentos/api/opa-policies", (c) => c.json({ policies: [] }));
+  app.get("/agentos/api/opa-policies/:id", (c) => c.json({ error: { code: "NOT_FOUND" } }, 404));
+  app.post("/agentos/api/opa-policies", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
+  app.put("/agentos/api/opa-policies/:id", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
+  app.delete("/agentos/api/opa-policies/:id", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
+
   return app;
 }
