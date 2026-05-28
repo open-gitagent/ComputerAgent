@@ -4,7 +4,10 @@ import { streamChat, stripAttachMarkers } from "../sse.ts";
 
 interface Msg { role: "user" | "assistant" | "status"; text: string; files?: string[]; canContinue?: boolean; }
 
-const CONTINUE_PROMPT = "Continue from where you left off — keep building until the project is complete, then summarize what you built and give me the deploy URL.";
+// Sent when the user clicks "Continue" after the agent finished a turn with
+// only tool calls and no text. Kept neutral — the previous wording assumed a
+// build-flow and was wrong for casual / Q&A agents.
+const CONTINUE_PROMPT = "Please continue.";
 
 export function ChatTab({
   agent, sandboxCapable, resumeSessionId, onConsumedResume, initialMessage, onConsumedInitial,
@@ -29,7 +32,9 @@ export function ChatTab({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [msgs]);
 
-  // Reset the console when the agent changes.
+  // Reset the console when the agent changes. The server-side `chat_pins`
+  // collection holds the agent→sessionId mapping, so subsequent boot()s
+  // auto-resume the prior conversation without browser state.
   useEffect(() => { setSandboxId(null); setSessionId(null); setMsgs([]); setErr(null); }, [agent]);
 
   // If asked to resume a session, load its transcript into the view and boot a
@@ -64,6 +69,8 @@ export function ChatTab({
   async function boot(resume?: string): Promise<string | null> {
     setBooting(true); setErr(null);
     try {
+      // Server-side pin: chat-sandbox auto-resumes the pinned session for
+      // this agent if no explicit `resume` is passed.
       const r = await api.chatSandbox(agent, resume);
       setSandboxId(r.sandboxId);
       setSessionId(r.sessionId);
@@ -117,7 +124,7 @@ export function ChatTab({
           const toolOnly = !clean && lastTools > 0;
           const body = clean
             || (toolOnly
-              ? `_(Ran ${lastTools} tool calls but stopped without a summary — likely its per-turn limit. Click Continue to keep building in this session.)_`
+              ? `_(Used ${lastTools} tool${lastTools !== 1 ? "s" : ""} but didn't write a reply. Click Continue to ask the agent to finish.)_`
               : "_(no reply)_");
           setMsgs((m) => replaceStatus(m, {
             role: "assistant", text: body,

@@ -43,13 +43,16 @@ function typeLogo(harness: string): string | null {
 function TypeBadge({ agent, className = "" }: { agent: Agent; className?: string }) {
   const logo = typeLogo(agent.harness);
   return (
-    <span className={`inline-flex items-center gap-1.5 text-[10px] rounded bg-accent/20 text-accent-soft pl-1 pr-2 py-0.5 ${className}`}>
+    <span
+      title={agent.label}
+      className={`inline-flex items-center gap-1 text-[10px] rounded bg-accent/20 text-accent-soft pl-1 pr-1.5 py-0.5 shrink-0 whitespace-nowrap max-w-[7.5rem] ${className}`}
+    >
       {logo && (
-        <span className="h-4 w-4 grid place-items-center rounded bg-white shrink-0">
+        <span className="h-3.5 w-3.5 grid place-items-center rounded bg-white shrink-0">
           <img src={logo} alt="" className="h-2.5 w-2.5 object-contain" />
         </span>
       )}
-      {agent.label}
+      <span className="truncate">{agent.label}</span>
     </span>
   );
 }
@@ -83,7 +86,7 @@ export default function App() {
   return (
     <div className="flex h-full">
       {/* Left rail */}
-      <aside className="w-72 shrink-0 border-r border-ink-600 bg-ink-800 flex flex-col">
+      <aside className="w-80 shrink-0 border-r border-ink-600 bg-ink-800 flex flex-col">
         <div className="px-5 py-4 border-b border-ink-600">
           <div className="flex items-center gap-2.5">
             <img src="/logos/agentos.png" alt="ComputerAgent" className="h-8 w-8 rounded-md object-contain" />
@@ -127,18 +130,20 @@ export default function App() {
                   view === "dashboard" && selected === a.name ? "bg-ink-600 ring-1 ring-accent/40" : "hover:bg-ink-700"
                 }`}
               >
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                   <span className={`h-2 w-2 rounded-full shrink-0 ${a.activeSandboxes > 0 ? "bg-emerald-400" : "bg-gray-600"}`} />
-                  <span className="font-medium text-sm truncate">{agentNameFromSource(a.sourceUrl ?? "")}</span>
+                  <span className="font-medium text-sm truncate min-w-0 flex-1" title={agentNameFromSource(a.sourceUrl ?? "")}>
+                    {agentNameFromSource(a.sourceUrl ?? "")}
+                  </span>
                   {a.origin === "registry" && (
                     <span
-                      className="text-[9px] uppercase tracking-wider text-accent-soft bg-accent/10 rounded px-1.5 py-0.5"
+                      className="text-[9px] uppercase tracking-wider text-accent-soft bg-accent/10 rounded px-1.5 py-0.5 shrink-0"
                       title={`Registered via the SDK telemetry hook${a.registeredBy ? ` by ${a.registeredBy}` : ""}`}
                     >
                       lib
                     </span>
                   )}
-                  <TypeBadge agent={a} className="ml-auto" />
+                  <TypeBadge agent={a} />
                 </div>
                 <div className="mt-1.5">
                   <SourceBadge agent={a} />

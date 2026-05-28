@@ -36,7 +36,12 @@ export function WorkspaceTab({
   useEffect(() => { setResumeId(null); setChatKey(`new-${agent}-${Date.now()}`); }, [agent]);
 
   const openSession = (sid: string) => { setResumeId(sid); setChatKey(`s-${sid}-${Date.now()}`); };
-  const newChat = () => { setResumeId(null); setChatKey(`new-${Date.now()}`); };
+  const newChat = async () => {
+    // Drop the server-side pin so the next boot mints a fresh session.
+    try { await fetch(`/api/agents/${encodeURIComponent(agent)}/chat-pin`, { method: "DELETE" }); } catch { /* ignore */ }
+    setResumeId(null);
+    setChatKey(`new-${Date.now()}`);
+  };
 
   return (
     <div className="h-full flex">

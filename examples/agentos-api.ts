@@ -140,6 +140,26 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
   const registryColl = async (): Promise<Collection<RegistryDoc>> =>
     (await db()).collection<RegistryDoc>("agent_registry");
 
+  /**
+   * chat_pins — server-side mapping of agent → current dashboard chat session.
+   *
+   * Lets the SPA reuse the same sessionId across browser refreshes / sandbox
+   * restarts without holding any state in the browser. Same pattern Slack
+   * uses for thread → sessionId, but keyed on agent name for the dashboard's
+   * single "current chat" semantics.
+   *
+   * The actual conversation memory lives in the harness server's
+   * sessionStore (Mongo) keyed by sessionId; this collection is just the
+   * pointer to "which sessionId is the agent's current dashboard chat."
+   */
+  interface ChatPinDoc {
+    _id: string;       // agent name
+    sessionId: string;
+    updatedAt: Date;
+  }
+  const chatPinsColl = async (): Promise<Collection<ChatPinDoc>> =>
+    (await db()).collection<ChatPinDoc>("chat_pins");
+
   const byName = new Map<string, AgentDef>(opts.agents.map((a) => [a.name, a]));
   const app = new Hono();
 
@@ -235,7 +255,7 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
         origin: a.origin,
         registeredBy: a.registeredBy ?? null,
         lastSeen: a.lastSeen ? a.lastSeen.toISOString() : null,
-        sandboxCapable: a.origin === "in-memory" && sandboxCapable(a.harness),
+        sandboxCapable: sandboxCapable(a.harness),
         sessionCount: sessionIds.size,
         activeSandboxes: active,
         lastActivity: lastActivity ? lastActivity.toISOString() : null,
@@ -401,7 +421,16 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
   app.get("/agentos/api/sessions/:id", async (c) => {
     const id = c.req.param("id");
     const [sessions, threads] = [await sessionsColl(), await threadsColl()];
-    const session = await sessions.findOne({ _id: id });
+    // Two storage shapes:
+    //   - gitagent / engine-agnostic: sessions._id == sessionId
+    //   - claude-agent-sdk: sessions._id is a UUID, sessionId is embedded in
+    //     projectKey (a flattened version of the workdir path), e.g.
+    //     "-tmp-computeragent-sessions-agentos-architect-<uuid>"
+    // Try both so transcripts work uniformly across harnesses.
+    const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const session =
+      (await sessions.findOne({ _id: id })) ??
+      (await sessions.findOne({ projectKey: { $regex: `${escapedId}$` } }));
     const thread = await threads.findOne({ sessionId: id });
     return c.json({
       sessionId: id,
@@ -413,7 +442,32 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
           }
         : null,
       updatedAt: session?.updatedAt ? new Date(session.updatedAt).toISOString() : null,
-      entries: (session?.entries ?? []).map((e) => ({ type: e.type ?? "assistant", text: e.text ?? "" })),
+      // Multiple session-storage shapes, depending on the harness:
+      //   gitagent           → {type:"user"|"assistant", text}
+      //   claude-agent-sdk   → {type:"user", message:{role,content}} where
+      //                        content is either a string or [{type:"text",text}]
+      //                        plus meta events (queue-operation) with no text
+      // We normalize to {type:"user"|"assistant", text} for the SPA.
+      entries: (session?.entries ?? [])
+        .map((raw) => {
+          const e = raw as Record<string, unknown>;
+          if (e.type === "queue-operation") return { type: "meta", text: "" };
+          const message = (e.message ?? null) as { role?: string; content?: unknown } | null;
+          const role = (message?.role as string | undefined) ?? (e.type as string | undefined) ?? "assistant";
+          const content: unknown = message?.content ?? e.content ?? e.text;
+          let text = "";
+          if (typeof content === "string") text = content;
+          else if (Array.isArray(content)) {
+            text = content
+              .filter((b): b is { type: string; text: string } =>
+                !!b && typeof b === "object" && (b as { type?: string }).type === "text")
+              .map((b) => b.text)
+              .join("\n");
+          }
+          const role2 = role === "user" || role === "assistant" ? role : "assistant";
+          return { type: role2, text: text.trim() };
+        })
+        .filter((e) => e.text.length > 0),
     });
   });
 
@@ -452,7 +506,17 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
       return c.json({ error: { code: "NO_SANDBOX", message: `${agent.label} runs one-shot — use /run` } }, 400);
     }
     const body = await c.req.json().catch(() => ({})) as { sessionId?: string };
-    const sessionId = body.sessionId || `agentos-${agent.name}-${randomUUID().slice(0, 12)}`;
+
+    // Resume order: explicit body.sessionId > server-pinned > new
+    let sessionId = body.sessionId;
+    if (!sessionId) {
+      try {
+        const pin = await (await chatPinsColl()).findOne({ _id: agent.name });
+        if (pin?.sessionId) sessionId = pin.sessionId;
+      } catch { /* fall through to fresh */ }
+    }
+    if (!sessionId) sessionId = `agentos-${agent.name}-${randomUUID().slice(0, 12)}`;
+
     const sandboxBody = sandboxBodyForBot(
       { name: agent.name, harness: agent.harness, source: agent.source, model: agent.model, extraEnvs: agent.envs, gitToken: agent.gitToken },
       sessionId,
@@ -467,7 +531,50 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
       return c.json({ error: { code: "SANDBOX_CREATE_FAILED", detail: text.slice(0, 300) } }, 502);
     }
     const j = await r.json() as { sandboxId: string };
+
+    // Pin this sessionId as the agent's current dashboard chat so the next
+    // boot from any browser resumes the same conversation.
+    try {
+      await (await chatPinsColl()).updateOne(
+        { _id: agent.name },
+        { $set: { sessionId, updatedAt: new Date() } },
+        { upsert: true },
+      );
+    } catch { /* best effort */ }
+
+    // Also write a slack_threads-style row so the /sessions + /agents
+    // endpoints (which join by `bot`) can see web chats. We reuse this
+    // collection rather than introduce a separate "web_threads" so the
+    // dashboard's session list is uniformly populated. Slack threads use a
+    // real channel+threadTs; web threads use channel="web" + the sessionId
+    // as the synthetic threadTs.
+    try {
+      const now = new Date();
+      await threadsColl().then((threads) => threads.updateOne(
+        { _id: `web:${sessionId}` },
+        {
+          $set: {
+            bot: agent.name,
+            channel: "web",
+            threadTs: sessionId,
+            sessionId,
+            sandboxId: j.sandboxId,
+            snapshotId: null,
+            lastMessageAt: now,
+          },
+          $setOnInsert: { createdAt: now },
+        },
+        { upsert: true },
+      ));
+    } catch { /* best effort — dashboard will fall back to empty session list */ }
+
     return c.json({ sandboxId: j.sandboxId, sessionId, bot: agent.name });
+  });
+
+  // DELETE the agent's chat pin — "New chat" button.
+  app.delete("/agentos/api/agents/:name/chat-pin", async (c) => {
+    try { await (await chatPinsColl()).deleteOne({ _id: c.req.param("name") }); } catch { /* ignore */ }
+    return c.json({ ok: true });
   });
 
   // ── One-shot run (for deepagents, which has no warm-sandbox support) ─────
