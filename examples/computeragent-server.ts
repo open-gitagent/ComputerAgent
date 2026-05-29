@@ -2340,13 +2340,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!process.env.MONGO_URL) {
       console.error("[slack-bot] SLACK_BOTS_ENABLED=1 but MONGO_URL not set — Slack thread map needs mongo; skipping");
     } else {
-      const [{ createSlackBotsApp, botsFromEnv }, { AgentLogStore }, { createAgentOSApp }, { ScheduleStore }, { startScheduler }, { AgentPolicyStore }] = await Promise.all([
+      const [{ createSlackBotsApp, botsFromEnv }, { AgentLogStore }] = await Promise.all([
         import("./slack-bot.ts"),
         import("./agent-log-store.ts"),
-        import("./agentos-api.ts"),
-        import("./schedule-store.ts"),
-        import("./scheduler.ts"),
-        import("./agent-policy-store.ts"),
       ]);
       const bots = botsFromEnv();
       if (bots.length === 0) {
@@ -2360,142 +2356,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         server.mount(slackApp);
         slackBotNames = bots.map((b) => b.name);
 
-        // AgentOS control-panel API — backs the private dashboard at
-        // agentos.clawagent.sh. Mounted at /agentos/api/*, stays behind Basic Auth.
-        //
-        // Agents = the Slack bots (mapped) + web-only agents (Claude Code, Deep
-        // Agent) that drive the same general-agent repo on different harnesses.
-        // GitAgent + Claude Code run multi-turn on /sandboxes; Deep Agent is
-        // one-shot via /run (deepagents has no warm-sandbox support here).
-        const labelFor: Record<string, string> = { gitagent: "GitAgent", claudebot: "Claude Code", agentosbuilder: "Claude Code" };
-        const agentDefs = bots.map((b) => ({
-          name: b.name,
-          label: labelFor[b.name] ?? b.name,
-          harness: b.harness,
-          source: b.source,
-          model: b.model,
-          envs: b.extraEnvs,
-          gitToken: b.gitToken,
-        }));
-        const generalAgentSource = process.env.AGENTOS_GENERAL_SOURCE
-          ?? bots.find((b) => b.name === "gitagent")?.source
-          ?? "github.com/shreyas-lyzr/general-agent";
-        const githubToken = process.env.GITHUB_TOKEN;
-        // claude-agent-sdk + deepagents speak the Anthropic Messages API. Route
-        // them through the in-process Lyzr proxy when enabled (same backend as
-        // GitAgent — the proxy overrides the model), else use a real Anthropic key.
-        let anthropicEnvs: Record<string, string> | null = null;
-        if (process.env.LYZR_PROXY_ENABLED === "1") {
-          const port = process.env.LYZR_PROXY_PORT ?? "8788";
-          anthropicEnvs = { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: "lyzr-via-proxy" };
-        } else if (process.env.ANTHROPIC_API_KEY) {
-          anthropicEnvs = { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY };
-        }
-        if (anthropicEnvs) {
-          // Claude Code — claude-agent-sdk on the same repo. Multi-turn via /sandboxes.
-          if (!agentDefs.some((a) => a.name === "claude-code")) {
-            const claudeCodeModel = process.env.CLAUDE_CODE_MODEL;
-            const cEnvs: Record<string, string> = { ...anthropicEnvs };
-            if (claudeCodeModel) cEnvs.ANTHROPIC_MODEL = claudeCodeModel;
-            agentDefs.push({
-              name: "claude-code", label: "Claude Code", harness: "claude-agent-sdk",
-              source: generalAgentSource, model: claudeCodeModel,
-              envs: cEnvs, gitToken: githubToken,
-            });
-          }
-          // Deep Agent — deepagents on the same repo. One-shot via /run.
-          agentDefs.push({
-            name: "deep-agent", label: "Deep Agent", harness: "deepagents",
-            source: generalAgentSource, model: undefined,
-            envs: { ...anthropicEnvs }, gitToken: githubToken,
-          });
-          // AgentOS Builder — claude-code meta-agent that builds + deploys AgenticOS
-          // products. Always available in the panel, even before its Slack bot is
-          // configured. Carries the Vercel + deploy-Anthropic keys for publish-ui.
-          if (!agentDefs.some((a) => a.name === "agentosbuilder")) {
-            const deployAnthropic = process.env.DEPLOY_ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY;
-            agentDefs.push({
-              name: "agentosbuilder", label: "Claude Code", harness: "claude-agent-sdk",
-              source: process.env.AGENTOS_BUILDER_SOURCE ?? "github.com/open-gitagent/agentos-builder",
-              model: undefined,
-              envs: {
-                ...anthropicEnvs,
-                ...(process.env.VERCEL_TOKEN ? { VERCEL_TOKEN: process.env.VERCEL_TOKEN } : {}),
-                ...(process.env.VERCEL_TEAM_ID ? { VERCEL_TEAM_ID: process.env.VERCEL_TEAM_ID } : {}),
-                ...(deployAnthropic ? { DEPLOY_ANTHROPIC_API_KEY: deployAnthropic } : {}),
-              },
-              gitToken: githubToken,
-            });
-          }
-          // GAP Promoter — gitagent (gitclaw) agent that converts repos to the
-          // GitAgent Protocol, opens PRs, and submits to the Open GAP registry.
-          // Runs on gitagent via the Lyzr-direct path (openai:<model> + gitclaw
-          // base url), with a GitHub token in its sandbox (GH_TOKEN/GITHUB_TOKEN).
-          if (!agentDefs.some((a) => a.name === "gap-promoter")) {
-            const promoterToken = process.env.GAP_PROMOTER_GITHUB_TOKEN ?? githubToken;
-            const lyzrBase = process.env.LYZR_UPSTREAM_BASE;
-            const lyzrToken = process.env.LYZR_UPSTREAM_TOKEN;
-            const lyzrModel = process.env.LYZR_UPSTREAM_MODEL;
-            const gitEnvs: Record<string, string> = {};
-            if (lyzrBase && lyzrToken) {
-              gitEnvs.GITCLAW_MODEL_BASE_URL = lyzrBase.replace(/\/+$/, "") + "/v4";
-              gitEnvs.OPENAI_API_KEY = lyzrToken;
-            }
-            if (promoterToken) { gitEnvs.GITHUB_TOKEN = promoterToken; gitEnvs.GH_TOKEN = promoterToken; }
-            agentDefs.push({
-              name: "gap-promoter", label: "GitAgent", harness: "gitagent",
-              source: process.env.GAP_PROMOTER_SOURCE ?? "github.com/open-gitagent/gap-promoter",
-              model: lyzrModel ? `openai:${lyzrModel}` : undefined,
-              envs: gitEnvs,
-              gitToken: promoterToken,
-            });
-          }
-          // Framework Translator — translates AI-agent code across frameworks
-          // (LangGraph, CrewAI, OpenAI Agents SDK, AutoGen, …, Lyzr ADK).
-          // Runs on the gitagent (gitclaw) harness via the Lyzr-direct path
-          // (GITCLAW_MODEL_BASE_URL + OPENAI_API_KEY + model openai:<lyzrModel>),
-          // same wiring as gap-promoter — NOT the Anthropic proxy. gitagent reads
-          // agent.yaml runtime.max_turns (4000) and is built for the Lyzr model's
-          // tool-use loop. Keeps EXA_API_KEY (exa-research). Uses the GAP_PROMOTER
-          // PAT (shared with gap-promoter, per explicit request) so it can push the
-          // translated code / open PRs; falls back to the shared GITHUB_TOKEN.
-          if (!agentDefs.some((a) => a.name === "framework-translator")) {
-            const lyzrBase = process.env.LYZR_UPSTREAM_BASE;
-            const lyzrToken = process.env.LYZR_UPSTREAM_TOKEN;
-            const lyzrModel = process.env.LYZR_UPSTREAM_MODEL;
-            const ftGitToken = process.env.GAP_PROMOTER_GITHUB_TOKEN ?? githubToken;
-            const ftEnvs: Record<string, string> = {};
-            if (lyzrBase && lyzrToken) {
-              ftEnvs.GITCLAW_MODEL_BASE_URL = lyzrBase.replace(/\/+$/, "") + "/v4";
-              ftEnvs.OPENAI_API_KEY = lyzrToken;
-            }
-            if (process.env.EXA_API_KEY) ftEnvs.EXA_API_KEY = process.env.EXA_API_KEY;
-            if (ftGitToken) { ftEnvs.GITHUB_TOKEN = ftGitToken; ftEnvs.GH_TOKEN = ftGitToken; }
-            agentDefs.push({
-              name: "framework-translator", label: "GitAgent", harness: "gitagent",
-              source: process.env.FRAMEWORK_TRANSLATOR_SOURCE ?? "github.com/shreyas-lyzr/framework-translator-agent",
-              model: lyzrModel ? `openai:${lyzrModel}` : undefined,
-              envs: ftEnvs,
-              gitToken: ftGitToken,
-            });
-          }
-        } else {
-          console.warn("[agentos] no LYZR proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
-        }
-        const onlyEnv = process.env.AGENTOS_AGENTS_ONLY;
-        const filteredAgentDefs = onlyEnv
-          ? agentDefs.filter((a) => onlyEnv.split(",").map((s) => s.trim()).includes(a.name))
-          : agentDefs;
-        const scheduleStore = new ScheduleStore(mongoUrl, mongoDb);
-        const policyStore = new AgentPolicyStore(mongoUrl, mongoDb);
-        const agentosApp = createAgentOSApp({ caBase, mongoUrl, mongoDb, agents: filteredAgentDefs, logStore, scheduleStore, policyStore });
-        server.mount(agentosApp);
-        console.log("AgentOS control panel API: /agentos/api/* — agents:", filteredAgentDefs.map((a) => a.name).join(", "));
-
-        // Scheduler — fires due agent schedules on a tick.
-        const u = process.env.API_AUTH_USER, p = process.env.API_AUTH_PASS;
-        const authHeader = (u && p) ? { authorization: "Basic " + Buffer.from(`${u}:${p}`).toString("base64") } : {};
-        startScheduler({ caBase, authHeader, store: scheduleStore, logStore, agents: filteredAgentDefs });
+        // NOTE: the AgentOS dashboard API + scheduler used to be mounted here.
+        // They've moved to `packages/agentos-server` — a separate Express
+        // process that talks back to this harness over CA_BASE (loopback HTTP).
+        // To bring the dashboard up locally:
+        //   pnpm --filter @computeragent/agentos-server dev
       }
     }
   }

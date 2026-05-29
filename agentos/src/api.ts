@@ -197,7 +197,10 @@ export interface NewSchedule {
 }
 
 async function getJSON<T>(path: string): Promise<T> {
-  const r = await fetch(`/api${path}`, { headers: { accept: "application/json" } });
+  const r = await fetch(`/api${path}`, {
+    headers: { accept: "application/json" },
+    credentials: "include",
+  });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
   return r.json() as Promise<T>;
 }
@@ -205,6 +208,7 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(`/api${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
+    credentials: "include",
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
@@ -214,6 +218,7 @@ async function reqJSON<T>(method: string, path: string, body?: unknown): Promise
   const r = await fetch(`/api${path}`, {
     method,
     headers: { "content-type": "application/json", accept: "application/json" },
+    credentials: "include",
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);

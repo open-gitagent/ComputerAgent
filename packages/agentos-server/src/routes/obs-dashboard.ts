@@ -1,10 +1,13 @@
+// Observability dashboard aggregate. Ported verbatim from
+// packages/observability-api/src/routes/dashboard.ts.
+
 import { Router, type Router as IRouter } from "express";
 import { queryOne, queryRows } from "../clickhouse.js";
 import { parseTime, toClickHouseDateTime } from "../time.js";
 
-export const dashboardRouter: IRouter = Router();
+export const obsDashboardRouter: IRouter = Router();
 
-dashboardRouter.get("/dashboard", async (req, res, next) => {
+obsDashboardRouter.get("/dashboard", async (req, res, next) => {
   try {
     const from = typeof req.query["from"] === "string" ? req.query["from"] : "now-24h";
     const to = typeof req.query["to"] === "string" ? req.query["to"] : "now";
@@ -25,8 +28,6 @@ dashboardRouter.get("/dashboard", async (req, res, next) => {
       AND Timestamp < parseDateTime64BestEffort({t_to:String}, 9)
       ${agentClause}`;
 
-    // Auto-size the trend bucket so we land on ~60 points regardless of range.
-    // Clamp to >= 60s so we never sub-minute bucket (ClickHouse cost).
     const deltaSec = Math.max(60, (toDate.getTime() - fromDate.getTime()) / 1000);
     const intervalSec = Math.max(60, Math.round(deltaSec / 60));
 
@@ -101,7 +102,6 @@ dashboardRouter.get("/dashboard", async (req, res, next) => {
          GROUP BY t ORDER BY t ASC`,
         params,
       ),
-      // Latency distribution — fixed buckets in ms. Duration is nanoseconds.
       queryRows<{ bucket: string; sort_key: number; count: number }>(
         `SELECT
            multiIf(
@@ -132,7 +132,6 @@ dashboardRouter.get("/dashboard", async (req, res, next) => {
          ORDER BY sort_key ASC`,
         params,
       ),
-      // Time-bucketed trends: cost, tokens, p95 latency, errors, spans/bucket.
       queryRows<{
         t: string;
         spans: number;

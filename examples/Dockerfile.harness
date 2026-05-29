@@ -1,0 +1,53 @@
+# ComputerAgent harness — runs examples/computeragent-server.ts via bun.
+#
+# Build from the REPO ROOT so pnpm workspace resolution works:
+#   docker build -f examples/Dockerfile.harness -t computeragent-harness .
+#
+# Uses the `local` runtime (no bwrap inside Docker — Docker IS the sandbox
+# boundary). `git` is installed so the harness can clone agent sources at
+# runtime. Session workdirs land in /tmp/computeragent-sessions which we
+# mount as a named volume in docker-compose so they survive restarts.
+
+FROM oven/bun:1-alpine AS builder
+WORKDIR /app
+
+# git for any postinstall + the workspace install. pnpm comes via bun's
+# global install since the alpine bun image has no npm.
+RUN apk add --no-cache git \
+ && bun install -g pnpm@9.4.0
+ENV PATH="/root/.bun/install/global/node_modules/.bin:$PATH"
+
+# Bring in the lockfile + workspace manifests + sources.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json ./
+COPY packages packages
+COPY examples examples
+
+# Workspace install + full build. We build the whole graph because the harness
+# pulls in many workspace packages (sdk, runtime-local, engine-*, etc.) and we
+# don't want to enumerate them by hand.
+RUN pnpm install --frozen-lockfile \
+ && pnpm -r build || true   # tolerate the known-failing cli package
+
+
+# ── Runtime ────────────────────────────────────────────────────────────
+FROM oven/bun:1-alpine
+WORKDIR /app
+
+RUN apk add --no-cache git ca-certificates
+
+# Copy the whole built workspace. bun resolves workspace symlinks at runtime
+# and we keep examples/ + packages/ + node_modules/ together so resolution
+# doesn't break.
+COPY --from=builder /app /app
+
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=8787
+
+EXPOSE 8787
+
+# Session workdirs live here. Mount a named volume for persistence (compose
+# handles this).
+VOLUME ["/tmp/computeragent-sessions"]
+
+CMD ["bun", "run", "examples/computeragent-server.ts"]

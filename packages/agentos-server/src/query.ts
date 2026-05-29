@@ -117,11 +117,6 @@ export function buildListSql(query: Query): { sql: string; params: Record<string
   return { sql, params };
 }
 
-// Per-trace aggregation. User filters apply at the SPAN level (since gen_ai.*
-// attributes live on individual spans — root span has agent/model, tool spans
-// have tool name, etc.). The list returns one row per trace: any span matching
-// the filter pulls in its parent trace, then we aggregate over ALL spans of
-// those matched traces so totals (tokens, cost, span count) are complete.
 const TRACE_ORDER_BY_MAP: Record<NonNullable<Query["orderBy"]>, string> = {
   timestamp: "started_at_ms",
   duration_ms: "duration_ms",
@@ -136,8 +131,6 @@ export function buildTraceListSql(query: Query): { sql: string; params: Record<s
   const orderCol = TRACE_ORDER_BY_MAP[query.orderBy ?? "timestamp"];
   const orderDir = (query.orderDir ?? "desc").toUpperCase() === "ASC" ? "ASC" : "DESC";
 
-  // Time bounds get applied both in the subquery (to find matching traces fast)
-  // and in the outer query (to constrain the aggregation scan).
   const outerTime: string[] = [];
   if (params["t_from"] !== undefined) {
     outerTime.push(`Timestamp >= parseDateTime64BestEffort({t_from:String}, 9)`);

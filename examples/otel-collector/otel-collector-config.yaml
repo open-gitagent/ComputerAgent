@@ -1,0 +1,64 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1024
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  # Keep the console exporter wired in so you can still watch spans land live
+  # via `docker compose logs -f otel-collector`. Drop it from the pipelines
+  # below once you trust the ClickHouse path.
+  debug:
+    verbosity: detailed
+
+  clickhouse:
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}
+    database: ${env:CLICKHOUSE_DATABASE}
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    # First boot: let the exporter create its default tables
+    # (otel_traces, otel_logs, otel_metrics_*). Switch to `false` once
+    # you manage DDL yourself (recommended for production).
+    create_schema: true
+    ttl: 72h
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      queue_size: 1000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug, clickhouse]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug, clickhouse]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug, clickhouse]

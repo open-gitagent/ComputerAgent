@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Paperclip, Play, Send, RefreshCw, AlertCircle } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api } from "../api.ts";
 import { streamChat, stripAttachMarkers } from "../sse.ts";
 import { Button } from "./ui/button.tsx";
@@ -258,15 +260,19 @@ function MessageBubble({
   onContinue: () => void;
 }) {
   const isUser = msg.role === "user";
+  const isAssistant = msg.role === "assistant";
   return (
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
       <div
         className={cn(
-          "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap break-words",
+          "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm break-words",
+          // User input is verbatim (no markdown render); assistant uses
+          // ReactMarkdown which handles its own whitespace.
+          !isAssistant && "whitespace-pre-wrap",
           isUser ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
         )}
       >
-        {msg.text}
+        {isAssistant ? <Markdown text={msg.text} /> : msg.text}
         {msg.files && msg.files.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {msg.files.map((f) => (
@@ -301,4 +307,71 @@ function replaceStatus(m: Msg[], replacement: Msg): Msg[] {
   if (c[c.length - 1]?.role === "status") c[c.length - 1] = replacement;
   else c.push(replacement);
   return c;
+}
+
+/**
+ * Chat-bubble Markdown renderer. Uses react-markdown + remark-gfm so the
+ * assistant's output renders headings, lists, links, tables, and code blocks
+ * properly instead of leaking raw `**bold**` / `# heading` syntax. Element
+ * overrides keep the styling tight inside a constrained chat bubble.
+ */
+function Markdown({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        // Headings — compact in a bubble; reduce default sizes.
+        h1: ({ children }) => <h1 className="text-base font-semibold mt-2 mb-1.5 first:mt-0">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-[15px] font-semibold mt-2 mb-1.5 first:mt-0">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-sm font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
+        // Paragraphs + lists: tighter line-height than default prose for chat density.
+        p: ({ children }) => <p className="leading-relaxed mb-2 last:mb-0">{children}</p>,
+        ul: ({ children }) => <ul className="list-disc pl-5 space-y-0.5 mb-2 last:mb-0">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal pl-5 space-y-0.5 mb-2 last:mb-0">{children}</ol>,
+        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+        // Inline + block code. react-markdown emits <code> always; for fenced
+        // blocks the parent is <pre>, so we check via inline prop (omitted in
+        // v9+) — fall back on whether children contains a newline.
+        code: ({ className, children, ...rest }) => {
+          const text = String(children ?? "");
+          const isBlock = /\n/.test(text) || /language-/.test(className ?? "");
+          if (isBlock) {
+            return (
+              <pre className="bg-background/80 border border-border rounded-md p-2.5 my-2 overflow-x-auto text-xs">
+                <code className={className} {...rest}>{children}</code>
+              </pre>
+            );
+          }
+          return (
+            <code className="bg-background/60 px-1 py-0.5 rounded text-[0.85em] font-mono">{children}</code>
+          );
+        },
+        // Hoist <pre> styles to the code-block path above; keep <pre> as-is
+        // so nested <code> handles formatting.
+        pre: ({ children }) => <>{children}</>,
+        a: ({ href, children }) => (
+          <a href={href} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:opacity-80">
+            {children}
+          </a>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-2 border-border pl-3 my-2 text-muted-foreground italic">
+            {children}
+          </blockquote>
+        ),
+        table: ({ children }) => (
+          <div className="my-2 overflow-x-auto">
+            <table className="text-xs border-collapse">{children}</table>
+          </div>
+        ),
+        th: ({ children }) => <th className="border border-border px-2 py-1 text-left font-semibold">{children}</th>,
+        td: ({ children }) => <td className="border border-border px-2 py-1">{children}</td>,
+        hr: () => <hr className="my-3 border-border" />,
+        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+        em: ({ children }) => <em className="italic">{children}</em>,
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
 }

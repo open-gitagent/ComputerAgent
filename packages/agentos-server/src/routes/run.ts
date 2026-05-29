@@ -1,0 +1,33 @@
+// One-shot SSE run — used by deepagents (no warm sandbox) and as a generic
+// "run this agent against a prompt and stream me the result" endpoint.
+
+import { Router, type Router as IRouter } from "express";
+import { caAuthHeader } from "../auth.js";
+import { caBase, pipeUpstream } from "../upstream.js";
+import { resolveAgent, runBodyFor } from "../agent-defs.js";
+
+export const runRouter: IRouter = Router();
+
+runRouter.post("/agents/:name/run", async (req, res, next) => {
+  try {
+    const name = req.params["name"]!;
+    const agent = await resolveAgent(name);
+    if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
+    const message = String((req.body as Record<string, unknown> | undefined)?.["message"] ?? "");
+
+    let body: Record<string, unknown>;
+    try {
+      body = runBodyFor(agent, message);
+    } catch (err) {
+      const status = (err as any)?.status ?? 503;
+      return res.status(status).json({ error: { code: "AGENT_CONFIG", message: (err as Error).message } });
+    }
+
+    const upstream = await fetch(`${caBase()}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream", ...caAuthHeader() },
+      body: JSON.stringify(body),
+    });
+    await pipeUpstream(upstream, res);
+  } catch (err) { next(err); }
+});

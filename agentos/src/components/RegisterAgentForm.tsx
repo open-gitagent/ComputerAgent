@@ -1,12 +1,11 @@
 /**
  * Minimal "Register an agent" form. Surfaces the dashboard CRUD against the
- * Mongo `agent_registry` collection. Used for ops-driven registration (the
- * primary write path is the SDK's MongoTelemetry hook firing automatically
- * when a customer's worker imports `computeragent`).
+ * Mongo `agent_registry` collection.
  *
- * Three fields are required: name, harness, source. Everything else is
- * optional. The form upserts via POST /agentos/api/agents/register and
- * reports back the agent name on success.
+ * Only `name` is required — every other field is pre-filled with sensible
+ * frontend defaults (claude-agent-sdk + general-agent repo + claude-sonnet-4-6).
+ * Override via the Advanced toggle, or set VITE_AGENTOS_DEFAULT_* in
+ * agentos/.env to ship different defaults.
  */
 import { useState } from "react";
 import { Plus } from "lucide-react";
@@ -15,18 +14,28 @@ import { Button } from "./ui/button.tsx";
 
 const HARNESS_OPTIONS = ["claude-agent-sdk", "gitagent", "deepagents"] as const;
 
+// Sensible frontend defaults — overridable per-deployment via Vite env vars
+// (only `VITE_*` prefixed vars are exposed to the bundle).
+const DEFAULTS = {
+  harness: (import.meta.env.VITE_AGENTOS_DEFAULT_HARNESS as string | undefined) ?? "claude-agent-sdk",
+  source: (import.meta.env.VITE_AGENTOS_DEFAULT_SOURCE as string | undefined) ?? "github.com/shreyas-lyzr/general-agent",
+  model: (import.meta.env.VITE_AGENTOS_DEFAULT_MODEL as string | undefined) ?? "claude-sonnet-4-6",
+};
+
 export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: string) => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [label, setLabel] = useState("");
-  const [harness, setHarness] = useState<string>(HARNESS_OPTIONS[0]);
-  const [source, setSource] = useState("");
-  const [model, setModel] = useState("");
+  const [harness, setHarness] = useState<string>(DEFAULTS.harness);
+  const [source, setSource] = useState(DEFAULTS.source);
+  const [model, setModel] = useState(DEFAULTS.model);
+  const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  const valid = name.trim().length > 0 && source.trim().length > 0;
+  // Only `name` is strictly required client-side; defaults fill in the rest.
+  const valid = name.trim().length > 0;
 
   const submit = async () => {
     setBusy(true);
@@ -36,16 +45,16 @@ export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: stri
       const body: RegisterAgentInput = {
         name: name.trim(),
         harness,
-        source: source.trim(),
+        source: source.trim() || DEFAULTS.source,
       };
       if (label.trim()) body.label = label.trim();
       if (model.trim()) body.model = model.trim();
       const res = await api.registerAgent(body);
-      setOk(`Registered "${res.name}"`);
+      setOk(`Registered "${res.name}" — open it in the sidebar.`);
       setName("");
       setLabel("");
-      setSource("");
-      setModel("");
+      // Keep source/model pre-filled so registering multiple agents in a row
+      // doesn't make you re-type the same values.
       onRegistered?.(res.name);
     } catch (e) {
       setErr(String(e));
@@ -83,9 +92,8 @@ export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: stri
         </button>
       </div>
       <p className="text-[11px] text-gray-500 leading-relaxed">
-        Adds an agent to the Mongo <code>agent_registry</code> collection so the dashboard
-        lists it. For library-mode deployments the SDK's <code>MongoTelemetry</code> hook
-        registers automatically — use this only for ops-driven registration.
+        Only a name is required. Defaults: <code>{DEFAULTS.harness}</code> on{" "}
+        <code className="break-all">{DEFAULTS.source}</code>. Open Advanced to override.
       </p>
 
       <Field
@@ -93,41 +101,52 @@ export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: stri
         required
         value={name}
         onChange={setName}
-        placeholder="devsupport-agent"
+        placeholder="my-claude"
         autoFocus
       />
-      <Field label="Label" value={label} onChange={setLabel} placeholder="DevSupport (optional)" />
+      <Field label="Label" value={label} onChange={setLabel} placeholder={name || "Display name (optional)"} />
 
-      <div>
-        <label className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">
-          Harness
-        </label>
-        <select
-          value={harness}
-          onChange={(e) => setHarness(e.target.value)}
-          className="w-full bg-ink-800 border border-ink-700 rounded px-2 py-1.5 text-gray-200"
-        >
-          {HARNESS_OPTIONS.map((h) => (
-            <option key={h} value={h}>
-              {h}
-            </option>
-          ))}
-        </select>
-      </div>
+      <button
+        type="button"
+        onClick={() => setAdvanced((v) => !v)}
+        className="text-[11px] text-gray-500 hover:text-gray-300"
+      >
+        {advanced ? "▾ Advanced" : "▸ Advanced (harness, source, model)"}
+      </button>
 
-      <Field
-        label="Source"
-        required
-        value={source}
-        onChange={setSource}
-        placeholder="github.com/org/agent-repo"
-      />
-      <Field
-        label="Model"
-        value={model}
-        onChange={setModel}
-        placeholder="bedrock/anthropic.claude-sonnet-4-... (optional)"
-      />
+      {advanced && (
+        <div className="space-y-3 pt-1 border-t border-ink-800">
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">
+              Harness
+            </label>
+            <select
+              value={harness}
+              onChange={(e) => setHarness(e.target.value)}
+              className="w-full bg-ink-800 border border-ink-700 rounded px-2 py-1.5 text-gray-200"
+            >
+              {HARNESS_OPTIONS.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <Field
+            label="Source"
+            value={source}
+            onChange={setSource}
+            placeholder={DEFAULTS.source}
+          />
+          <Field
+            label="Model"
+            value={model}
+            onChange={setModel}
+            placeholder={DEFAULTS.model}
+          />
+        </div>
+      )}
 
       {err && <div className="text-red-400 text-xs">{err}</div>}
       {ok && <div className="text-emerald-400 text-xs">{ok}</div>}

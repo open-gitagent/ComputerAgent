@@ -1,0 +1,110 @@
+# Local stack for AgentOS + Observability + ComputerAgent harness.
+#
+# Three custom images:
+#   - harness  → examples/computeragent-server.ts (bun, port 8787 internal)
+#   - agentos  → packages/agentos-server   (Express, port 8788 internal)
+#   - spa      → agentos/                  (nginx serving the SPA + proxy, :8080 public)
+#
+# Three supporting services:
+#   - mongo, clickhouse, otel-collector
+#
+# Single public port: 8080 → SPA. Everything else is internal-only.
+#
+# Usage:
+#   cp .env.example .env             # set API_AUTH_USER/PASS + ANTHROPIC_API_KEY + MONGO_URL etc.
+#   docker compose up --build
+#   open http://localhost:8080
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    # ports omitted on purpose — only services on the compose network
+    # (harness, agentos) need to reach Mongo. Add `ports: ["27017:27017"]`
+    # if you want to attach Compass / mongosh from the host.
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - ch-data:/var/lib/clickhouse
+    # ports omitted; otel-collector + agentos talk to it internally.
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./examples/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      - clickhouse
+
+  harness:
+    build:
+      context: .
+      dockerfile: examples/Dockerfile.harness
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: "8787"
+      HOST: "0.0.0.0"
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DATABASE: ${MONGO_DATABASE:-computeragent-test}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      NODE_ENV: production
+    volumes:
+      # Session workdirs persist across container restarts so the agentos-
+      # server's "stale workdir" auto-recovery rarely needs to kick in.
+      - harness-sessions:/tmp/computeragent-sessions
+    depends_on:
+      - mongo
+      - otel-collector
+
+  agentos:
+    build:
+      context: .
+      dockerfile: packages/agentos-server/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AGENTOS_PORT: "8788"
+      CA_BASE: http://harness:8787
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DATABASE: ${MONGO_DATABASE:-computeragent-test}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      NODE_ENV: production
+      # The SPA proxies through nginx (same origin), so sameSite=strict is
+      # fine. But the public port is plain HTTP, so secure cookies would
+      # block login. Disable the secure flag unless a TLS proxy is in front.
+      COOKIE_SECURE: "false"
+    depends_on:
+      - mongo
+      - clickhouse
+      - harness
+
+  spa:
+    build:
+      context: .
+      dockerfile: agentos/Dockerfile
+      args:
+        VITE_AGENTOS_DEFAULT_HARNESS: ${VITE_AGENTOS_DEFAULT_HARNESS:-claude-agent-sdk}
+        VITE_AGENTOS_DEFAULT_SOURCE: ${VITE_AGENTOS_DEFAULT_SOURCE:-github.com/shreyas-lyzr/general-agent}
+        VITE_AGENTOS_DEFAULT_MODEL: ${VITE_AGENTOS_DEFAULT_MODEL:-claude-sonnet-4-6}
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - agentos
+
+volumes:
+  mongo-data:
+  ch-data:
+  harness-sessions:

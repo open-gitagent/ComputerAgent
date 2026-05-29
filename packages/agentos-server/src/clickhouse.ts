@@ -15,8 +15,6 @@ export function getClient(): ClickHouseClient {
     database,
     max_open_connections: 10,
     compression: { response: true, request: false },
-    // ts_ms is Int64 (toUnixTimestamp64Milli). Default JSON output quotes
-    // 64-bit ints as strings; turn that off — ms timestamps fit in JS Number.
     clickhouse_settings: {
       output_format_json_quote_64bit_integers: 0,
     },

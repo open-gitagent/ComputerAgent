@@ -89,6 +89,7 @@ function TypeBadge({ agent, className = "" }: { agent: Agent; className?: string
 export default function App() {
   const [view, setView] = useState<View>("home");
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("chat");
   const [err, setErr] = useState<string | null>(null);
@@ -116,7 +117,10 @@ export default function App() {
   }, [filteredAgents]);
 
   useEffect(() => {
-    api.agents().then(setAgents).catch((e) => setErr(String(e)));
+    api.agents()
+      .then(setAgents)
+      .catch((e) => setErr(String(e)))
+      .finally(() => setAgentsLoaded(true));
   }, []);
 
   const agent = agents.find((a) => a.name === selected) ?? null;
@@ -210,11 +214,19 @@ export default function App() {
             <div className="flex-1 overflow-y-auto overflow-x-hidden mt-2 min-w-0">
               <div className="px-3 pb-3 space-y-3 min-w-0">
                 {err && <div className="text-xs text-destructive">{err}</div>}
-                {agents.length === 0 && !err && (
+                {!agentsLoaded && !err && (
                   <div className="space-y-2">
                     <Skeleton className="h-20 w-full" />
                     <Skeleton className="h-20 w-full" />
                     <Skeleton className="h-20 w-full" />
+                  </div>
+                )}
+                {agentsLoaded && agents.length === 0 && !err && (
+                  <div className="text-center text-xs text-muted-foreground py-6 px-2 space-y-1">
+                    <div>No agents registered yet.</div>
+                    <div className="text-muted-foreground/70">
+                      Use the <span className="font-mono">+ Register</span> button below, or POST to <span className="font-mono">/api/agents/register</span>.
+                    </div>
                   </div>
                 )}
                 {agents.length > 0 && filteredAgents.length === 0 && (

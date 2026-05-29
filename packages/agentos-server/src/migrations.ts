@@ -1,25 +1,17 @@
-// Bootstrap migrations run on obs-api startup. Currently:
+// Bootstrap migrations run on server startup:
 //   1. `otel_field_values` destination table (AggregatingMergeTree)
-//   2. One materialized view per filterable field (9 total)
+//   2. One materialized view per filterable field
 //   3. Backfill from `otel_traces` if the destination is empty
 //
-// All DDL is idempotent (`CREATE … IF NOT EXISTS`). Safe to run every boot.
-// If `otel_traces` doesn't exist yet (fresh stack, no spans ingested), the
-// whole thing is skipped with a warning — `/v1/fields/:name/values` falls
-// back to the DISTINCT-scan path until the next obs-api restart.
-//
-// The canonical SQL form of these migrations lives at:
-//   examples/otel-collector/genai-field-values.sql
-// Kept in sync manually.
+// All DDL is idempotent. Safe to run every boot. If `otel_traces` doesn't exist
+// yet (fresh stack), the whole thing is skipped — `/v1/fields/:name/values`
+// falls back to the DISTINCT-scan path until the next restart.
 
 import { getClient } from "./clickhouse.js";
 
 type MvDef = {
-  /** Logical field key written to `otel_field_values.field`. */
   field: string;
-  /** ClickHouse expression that extracts the value from an `otel_traces` row. */
   expr: string;
-  /** MV table name in the `otel` database. */
   mvName: string;
 };
 
@@ -67,11 +59,10 @@ export async function ensureFieldValueMVs(): Promise<{
   if (!(await tableExists("otel_traces"))) {
     return {
       status: "skipped",
-      reason: "otel_traces does not exist yet (no spans ingested) — restart obs-api after the collector has written data",
+      reason: "otel_traces does not exist yet (no spans ingested)",
     };
   }
 
-  // 1. Destination table — idempotent.
   await client.command({
     query: `
       CREATE TABLE IF NOT EXISTS otel_field_values (
@@ -85,9 +76,6 @@ export async function ensureFieldValueMVs(): Promise<{
     `,
   });
 
-  // 2. Materialized views — one per field. Idempotent via IF NOT EXISTS.
-  //    AggregatingMergeTree merges duplicates with the same (field, value)
-  //    at storage time, so re-runs don't bloat.
   for (const f of MV_FIELDS) {
     await client.command({
       query: `
@@ -104,9 +92,6 @@ export async function ensureFieldValueMVs(): Promise<{
     });
   }
 
-  // 3. Backfill — only if the destination is empty (fresh bootstrap).
-  //    Skipped on subsequent restarts where the MVs are already catching
-  //    inserts incrementally.
   const existing = await rowCount("otel_field_values");
   if (existing > 0) {
     return { status: "ready" };

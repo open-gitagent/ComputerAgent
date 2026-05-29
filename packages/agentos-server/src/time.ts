@@ -15,8 +15,6 @@ export function parseTime(input: string): Date {
   return d;
 }
 
-// ClickHouse parseDateTime64BestEffort accepts ISO with .sss or .ssssssssZ; we
-// strip 'T'/'Z' so it lands on the unambiguous "YYYY-MM-DD HH:MM:SS.sss" form.
 export function toClickHouseDateTime(d: Date): string {
   return d.toISOString().replace("T", " ").replace("Z", "");
 }

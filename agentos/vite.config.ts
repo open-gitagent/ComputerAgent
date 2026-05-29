@@ -1,33 +1,50 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
-// In production the SPA is served by Caddy at agentos.clawagent.sh and /api/* is
-// proxied to the Node server. For local `vite dev`, proxy /api to the live API
-// (api.clawagent.sh/agentos/api) and inject the Basic Auth header so the
-// dashboard works end-to-end against real data without deploying.
-// Override AGENTOS_API_TARGET to point at a local server (e.g. http://127.0.0.1:8787).
-const API_USER = process.env.AGENTOS_API_USER ?? "clawagent";
-const API_PASS = process.env.AGENTOS_API_PASS ?? "";
-const API_TARGET = process.env.AGENTOS_API_TARGET ?? "https://api.clawagent.sh";
-const authHeader = "Basic " + Buffer.from(`${API_USER}:${API_PASS}`).toString("base64");
+// Dev proxy defaults to the local combined agentos-server (packages/agentos-server).
+// Both /api and /obs-api are served from that one process — /api maps to the
+// dashboard surface (/agentos/api/*) and /obs-api maps to the observability
+// surface (/v1/*). Boot the server with:
+//   pnpm --filter @computeragent/agentos-server dev
+//
+// To target a deployed backend instead, copy .env.example → .env.local and
+// fill in AGENTOS_API_TARGET + AGENTOS_API_PASS (both .env and .env.local are
+// gitignored at the repo root).
+export default defineConfig(({ mode }) => {
+  const fileEnv = loadEnv(mode, process.cwd(), "");
+  const env = { ...fileEnv, ...process.env };
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    proxy: {
-      "/api": {
-        target: API_TARGET,
-        changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api/, "/agentos/api"),
-        headers: { Authorization: authHeader },
-      },
-      // Local observability-api (packages/observability-api) — reads from
-      // ClickHouse. `pnpm --filter @computeragent/observability-api dev`.
-      "/obs-api": {
-        target: process.env.OBS_API_URL ?? "http://localhost:7801",
-        changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/obs-api/, ""),
+  const API_USER = env.AGENTOS_API_USER ?? "clawagent";
+  const API_PASS = env.AGENTOS_API_PASS ?? "";
+  const API_TARGET = env.AGENTOS_API_TARGET ?? "http://127.0.0.1:8788";
+
+  // Same upstream by default — single combined server hosts both surfaces.
+  // Override OBS_API_URL only if you're still running the legacy obs-api
+  // standalone process (deprecated; will be removed in a future release).
+  const OBS_API_URL = env.OBS_API_URL ?? API_TARGET;
+
+  const apiHeaders = API_PASS
+    ? { Authorization: "Basic " + Buffer.from(`${API_USER}:${API_PASS}`).toString("base64") }
+    : undefined;
+
+  return {
+    plugins: [react()],
+    server: {
+      proxy: {
+        "/api": {
+          target: API_TARGET,
+          changeOrigin: true,
+          rewrite: (p) => p.replace(/^\/api/, "/agentos/api"),
+          ...(apiHeaders ? { headers: apiHeaders } : {}),
+        },
+        "/obs-api": {
+          target: OBS_API_URL,
+          changeOrigin: true,
+          // /obs-api/v1/dashboard → /v1/dashboard on the combined server.
+          rewrite: (p) => p.replace(/^\/obs-api/, ""),
+          ...(apiHeaders ? { headers: apiHeaders } : {}),
+        },
       },
     },
-  },
+  };
 });

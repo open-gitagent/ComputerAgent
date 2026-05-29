@@ -1,12 +1,26 @@
+// Observability — field-discovery + per-field value autocomplete.
+
 import { Router, type Router as IRouter } from "express";
 import { FIELDS } from "../fields.js";
 import { queryRows } from "../clickhouse.js";
 
-export const fieldValuesRouter: IRouter = Router();
+export const obsFieldsRouter: IRouter = Router();
+
+obsFieldsRouter.get("/fields", (_req, res) => {
+  res.json({
+    fields: Object.values(FIELDS).map((f) => ({
+      key: f.key,
+      label: f.label,
+      type: f.type,
+      ops: f.ops,
+      enumValues: f.enumValues,
+    })),
+  });
+});
 
 type ValueRow = { value: string; count: number; last_seen: string };
 
-fieldValuesRouter.get("/fields/:name/values", async (req, res, next) => {
+obsFieldsRouter.get("/fields/:name/values", async (req, res, next) => {
   try {
     const name = req.params["name"] ?? "";
     const def = FIELDS[name];
@@ -21,7 +35,7 @@ fieldValuesRouter.get("/fields/:name/values", async (req, res, next) => {
       Math.min(500, parseInt(String(req.query["limit"] ?? "50"), 10) || 50),
     );
 
-    // Fast path — materialized-view-backed lookup. Pre-aggregated by (field, value).
+    // Fast path — materialized view (created by migrations on boot).
     try {
       const rows = await queryRows<ValueRow>(
         `SELECT value,
@@ -43,15 +57,12 @@ fieldValuesRouter.get("/fields/:name/values", async (req, res, next) => {
         source: "materialized" as const,
       });
     } catch (err) {
-      // Fall through to DISTINCT scan if the MV table is missing or query fails.
       console.warn(
-        `[obs-api] otel_field_values MV unavailable, falling back to DISTINCT scan for "${name}":`,
+        `[agentos-server] otel_field_values MV unavailable, falling back to DISTINCT for "${name}":`,
         (err as Error).message,
       );
     }
 
-    // Slow path — direct scan of otel_traces. Used when MV migration hasn't
-    // been applied yet (examples/otel-collector/genai-field-values.sql).
     const rows = await queryRows<{ v: string; c: number }>(
       `SELECT ${def.sqlExpr} AS v, count() AS c
        FROM otel_traces
