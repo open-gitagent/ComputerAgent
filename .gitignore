@@ -1,17 +1,35 @@
+# Dependencies + build artifacts
 node_modules/
 dist/
 .turbo/
-*.log
-.DS_Store
-.env
-.env.local
-coverage/
-.vscode/
-.idea/
 *.tsbuildinfo
 .pnpm-store/
 .cache/
+coverage/
+*.log
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Env files — only .env.example is committed
+.env
+.env.*
+!.env.example
+
+# Local fixtures + scratch
 fixtures/.tmp/
+text
+test.html
+scratch/
+tmp/
+*.tmp
+
+# Example agent OUTPUTS (the agents under examples/ generate these — outputs
+# are run artifacts, not source)
 examples/binary-outputs/
 examples/decks/
 examples/marketing-outputs/
@@ -20,20 +38,20 @@ examples/pdfs/
 examples/security-reports/
 examples/wedge16-sessions/
 
-# Local Claude Code state (per-user settings.local.json holds live API keys
-# for that developer's environment — never commit).
+# Local Claude Code state (per-user settings.local.json may hold live API keys
+# for that developer's environment — never commit)
 .claude/
 
-# Untracked dev tester with baked-in keys for local testing.
-test.html
-
-# Python bytecode caches from scripts/ test runners.
+# Python bytecode caches from scripts/ test runners
 __pycache__/
 *.pyc
 
-# Private operational handoff docs — full keys, access creds, infra map for
-# sharing with teammates. NEVER commit these to a public repo.
+# Private operational handoff docs — keys, access creds, infra maps. NEVER
+# commit these to a public repo.
 private.md
 PRIVATE.md
 *.private.md
+
+# Internal planning / handoff docs that should not be on the public repo
+PLAN.md
 docs.md

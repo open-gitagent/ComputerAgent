@@ -7,8 +7,8 @@ import { resolveJailedPath } from "../path-jail.js";
  * Path-jailed filesystem operations against a session workdir.
  *
  * In Wedge 1 these go straight through Node fs/promises. In Wedge 3 the same
- * surface will plug into a Substrate FS port so remote runtimes (E2B, Lyzr Compute)
- * can host the harness server unchanged.
+ * surface will plug into a Substrate FS port so remote runtimes (E2B and
+ * other cloud sandboxes) can host the harness server unchanged.
  *
  * Every operation resolves through `resolveJailedPath` first — no I/O happens on
  * an unjailed path.

@@ -1,10 +1,9 @@
 /**
  * claude-agent-sdk × substrate × source-type matrix.
  *
- * The customer (Nordstrom) is "especially looking at Claude" — this suite
- * proves the `claude-agent-sdk` engine works end-to-end across every
- * substrate (Local / Bwrap / E2B) and every IdentitySource type (inline /
- * local / git) they'd realistically use.
+ * This suite proves the `claude-agent-sdk` engine works end-to-end across
+ * every substrate (Local / Bwrap / E2B) and every IdentitySource type
+ * (inline / local / git) — the realistic deploy combinations.
  *
  * Everything here makes REAL Anthropic API calls, so the whole suite is
  * gated on `ANTHROPIC_API_KEY`. Per-row gates handle platform-specific

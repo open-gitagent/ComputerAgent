@@ -31,19 +31,19 @@ const SEED_AGENTS: readonly SeedAgent[] = [
     name: "gitagent",
     label: "GitAgent",
     harness: "gitagent",
-    source: "github.com/shreyas-lyzr/general-agent",
+    source: "github.com/open-gitagent/general-agent",
   },
   {
     name: "claude-code",
     label: "Claude Code",
     harness: "claude-agent-sdk",
-    source: "github.com/shreyas-lyzr/general-agent",
+    source: "github.com/open-gitagent/general-agent",
   },
   {
     name: "deep-agent",
     label: "Deep Agent",
     harness: "deepagents",
-    source: "github.com/shreyas-lyzr/general-agent",
+    source: "github.com/open-gitagent/general-agent",
   },
   {
     name: "agentosbuilder",
@@ -61,7 +61,7 @@ const SEED_AGENTS: readonly SeedAgent[] = [
     name: "framework-translator",
     label: "Framework Translator",
     harness: "gitagent",
-    source: "github.com/shreyas-lyzr/framework-translator-agent",
+    source: "github.com/open-gitagent/framework-translator-agent",
   },
 ];
 

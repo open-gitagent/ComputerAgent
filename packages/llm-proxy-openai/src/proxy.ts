@@ -27,7 +27,7 @@ export interface ProxyOptions {
   /** Host to bind. Default `127.0.0.1`. */
   readonly host?: string;
   readonly upstream: UpstreamConfig;
-  /** Set true to forward `max_tokens` upstream. Default false — some backends (Lyzr) blank the response when set. */
+  /** Set true to forward `max_tokens` upstream. Default false — some backends blank the response when this field is set. */
   readonly forwardMaxTokens?: boolean;
   /** Custom logger; default is console.error with `[proxy]` prefix. */
   readonly log?: (...args: unknown[]) => void;

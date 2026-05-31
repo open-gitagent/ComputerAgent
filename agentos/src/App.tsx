@@ -260,7 +260,7 @@ export default function App() {
         )}
 
         <Separator />
-        <div className="px-4 py-3 text-[10px] text-muted-foreground/70">agentos.clawagent.sh</div>
+        <div className="px-4 py-3 text-[10px] text-muted-foreground/70">AgentOS</div>
       </aside>
 
       {/* Main */}

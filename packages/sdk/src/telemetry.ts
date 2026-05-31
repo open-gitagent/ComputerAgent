@@ -10,8 +10,8 @@
  *
  * The first-class implementation is `@open-gitagent/agent-registry-mongo`
  * which writes to the `agent_registry` and `agent_logs` Mongo collections
- * that AgentOS reads. Anything else (Honeycomb, OTel, Lyzr Trace, custom
- * HTTP push) is a small adapter on top of this interface.
+ * that AgentOS reads. Anything else (Honeycomb, OTel, custom HTTP push)
+ * is a small adapter on top of this interface.
  *
  * Contract:
  *  - All methods are optional. Implementations can subscribe to a subset.

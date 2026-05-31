@@ -86,7 +86,7 @@ export interface BotConfig {
   readonly source: string;
   /** Optional model id (used by gitagent's openai:<id>@<base> syntax). */
   readonly model?: string;
-  /** Optional envs added to every sandbox this bot creates (e.g. Lyzr proxy / direct config). */
+  /** Optional envs added to every sandbox this bot creates (e.g. translator proxy / direct config). */
   readonly extraEnvs?: Record<string, string>;
   /** Optional GitHub PAT used to clone private GAP repos. Server bakes it into the clone URL. */
   readonly gitToken?: string;
@@ -967,25 +967,25 @@ export function botsFromEnv(): BotConfig[] {
       }
       return null;
     }
-    // gitagent-specific: model + extra envs for Lyzr-direct path
+    // gitagent-specific: model + extra envs for the OpenAI-direct path
     const extraEnvs: Record<string, string> = {};
     let model: string | undefined;
     if (harness === "gitagent") {
-      // Default to Lyzr-direct config when LYZR_UPSTREAM_* is set.
-      const lyzrBase = process.env.LYZR_UPSTREAM_BASE;
-      const lyzrToken = process.env.LYZR_UPSTREAM_TOKEN;
-      const lyzrModel = process.env.LYZR_UPSTREAM_MODEL;
-      if (lyzrBase && lyzrToken && lyzrModel) {
-        extraEnvs.GITCLAW_MODEL_BASE_URL = lyzrBase.replace(/\/+$/, "") + "/v4";
-        extraEnvs.OPENAI_API_KEY = lyzrToken;
-        model = `openai:${lyzrModel}`;
+      // Default to OpenAI-direct config when UPSTREAM_* is set.
+      const upstreamBase = process.env.UPSTREAM_BASE;
+      const upstreamToken = process.env.UPSTREAM_TOKEN;
+      const upstreamModel = process.env.UPSTREAM_MODEL;
+      if (upstreamBase && upstreamToken && upstreamModel) {
+        extraEnvs.GITCLAW_MODEL_BASE_URL = upstreamBase.replace(/\/+$/, "") + "/v4";
+        extraEnvs.OPENAI_API_KEY = upstreamToken;
+        model = `openai:${upstreamModel}`;
       }
     } else if (harness === "claude-agent-sdk") {
-      // Default to local proxy when LYZR_PROXY_ENABLED=1.
-      if (process.env.LYZR_PROXY_ENABLED === "1") {
-        const port = process.env.LYZR_PROXY_PORT ?? "8788";
+      // Default to local proxy when PROXY_ENABLED=1.
+      if (process.env.PROXY_ENABLED === "1") {
+        const port = process.env.PROXY_PORT ?? "8788";
         extraEnvs.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
-        extraEnvs.ANTHROPIC_API_KEY = "lyzr-via-proxy";
+        extraEnvs.ANTHROPIC_API_KEY = "via-proxy";
       }
     }
     // Optional GitHub PAT for private repos. Per-bot override wins over the global GITHUB_TOKEN.
@@ -1020,7 +1020,7 @@ export function botsFromEnv(): BotConfig[] {
     }
     // Real Anthropic key for the DEPLOYED app (the built AgenticOS api-server reads
     // AI_INTEGRATIONS_ANTHROPIC_API_KEY). Exposed under a distinct name so it doesn't
-    // collide with the agent's own ANTHROPIC_API_KEY (which is the Lyzr-proxy stub
+    // collide with the agent's own ANTHROPIC_API_KEY (which is the translator-proxy stub
     // for claude-agent-sdk). The publish-ui skill pushes this to Vercel as a secret.
     const deployAnthropic = process.env.DEPLOY_ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY;
     if (deployAnthropic) extraEnvs.DEPLOY_ANTHROPIC_API_KEY = deployAnthropic;

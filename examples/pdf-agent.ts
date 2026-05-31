@@ -18,7 +18,7 @@ if (!ANTHROPIC_API_KEY) throw new Error("Set ANTHROPIC_API_KEY first.");
 
 const TOPIC =
   process.argv[2] ??
-  "Q3 2026 business review report for Lyzr AI. Sections: executive summary, revenue performance (with a 3-row table showing SMB/Mid-market/Enterprise), product milestones, risks (with a callout), and Q4 outlook. Author: Finance Team.";
+  "Q3 2026 business review report for an example company. Sections: executive summary, revenue performance (with a 3-row table showing SMB/Mid-market/Enterprise), product milestones, risks (with a callout), and Q4 outlook. Author: Finance Team.";
 
 const OUT = join(import.meta.dir ?? __dirname, "pdfs");
 await mkdir(OUT, { recursive: true });
@@ -26,7 +26,7 @@ await mkdir(OUT, { recursive: true });
 console.log(`\nTopic: ${TOPIC}\nOutput dir: ${OUT}\n`);
 
 await using agent = new ComputerAgent({
-  source: { type: "git", url: "github.com/shreyas-lyzr/pdf-agent" },
+  source: { type: "git", url: "github.com/open-gitagent/example-pdf-agent" },
   harness: "claude-agent-sdk",
   runtime: new LocalSubstrate(),
   envs: { ANTHROPIC_API_KEY },

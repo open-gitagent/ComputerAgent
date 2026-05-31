@@ -4,7 +4,7 @@ Anthropic Messages ↔ OpenAI Chat Completions **translator proxy**.
 
 Accepts `POST /v1/messages` in Anthropic's Messages format and forwards to any OpenAI-Chat-Completions–compatible endpoint, translating both the request and the response (including streaming and tool calls).
 
-Used by ComputerAgent so that engines whose underlying SDKs speak Anthropic Messages — `claude-agent-sdk` and `deepagents` (via `ChatAnthropic`) — can target OpenAI-compat backends like Lyzr Studio, vLLM, LiteLLM, Together, Ollama, etc.
+Used by ComputerAgent so that engines whose underlying SDKs speak Anthropic Messages — `claude-agent-sdk` and `deepagents` (via `ChatAnthropic`) — can target OpenAI-compat backends like vLLM, LiteLLM, Together, Ollama, or any compatible inference gateway.
 
 `gitagent` does **not** need this proxy — gitclaw natively speaks both protocols via `GITCLAW_MODEL_BASE_URL` + `provider:model@baseUrl` syntax.
 
@@ -42,10 +42,10 @@ import { startProxy } from "@computeragent/llm-proxy-openai";
 const proxy = await startProxy({
   port: 8788,
   upstream: {
-    base: "https://agent-dev.test.studio.lyzr.ai",
-    path: "/v4/chat/completions",
-    token: process.env.LYZR_TOKEN!,
-    modelOverride: "697a4a76496e0831bdde546c", // optional; override client model
+    base: "https://your-inference-gateway.example.com",
+    path: "/v1/chat/completions",
+    token: process.env.UPSTREAM_TOKEN!,
+    modelOverride: "your-model-id", // optional; override client model
   },
 });
 
@@ -63,7 +63,7 @@ await proxy.close();
 | `UPSTREAM_MODEL` | | — | Force this model on every upstream request (overrides client's Anthropic `model`) |
 | `UPSTREAM_AUTH_SCHEME` | | `Bearer` | Replace with e.g. `Token` if your backend wants something else |
 | `PORT` | | `8788` | Bind port |
-| `FORWARD_MAX_TOKENS` | | `0` | Set to `1` to forward `max_tokens` — some backends (Lyzr) blank the response when this is set, so it's off by default |
+| `FORWARD_MAX_TOKENS` | | `0` | Set to `1` to forward `max_tokens` — some backends blank the response when this field is set, so it's off by default |
 
 ## What the proxy translates
 
@@ -92,11 +92,8 @@ Anything else → `404`.
 - **Text + tool calls only.** No image inputs, no audio. Anthropic's content blocks for those types are passed through as JSON strings if encountered, which most OpenAI-compat backends will reject.
 - **No retry / circuit-breaker.** A single upstream timeout fails the request.
 - **Stateless.** No request-id correlation, no metrics export. Bring your own observability.
-- **`session_id` is informational.** The proxy adds it to outgoing OpenAI requests for backends that track it (e.g. Lyzr Studio), but it's a string derived from the timestamp — proper session continuity comes from the client replaying `messages[]`, not from server-side state in the upstream.
+- **`session_id` is informational.** The proxy adds it to outgoing OpenAI requests for backends that track it, but it's a string derived from the timestamp — proper session continuity comes from the client replaying `messages[]`, not from server-side state in the upstream.
 
 ## Verified compatibility
 
-| Upstream | Backend | Tool calls round-trip? |
-|---|---|---|
-| Lyzr Studio (`/v4/chat/completions`) | claude-agent-sdk | ✓ |
-| Lyzr Studio (`/v4/chat/completions`) | deepagents | ✓ |
+Tool calls round-trip end-to-end with `claude-agent-sdk` and `deepagents` against OpenAI-compat backends serving `/v1/chat/completions`. Streaming + tool-use partial-JSON deltas reassemble correctly.

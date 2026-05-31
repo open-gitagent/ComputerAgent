@@ -6,10 +6,11 @@ import type {
 } from "@open-gitagent/protocol";
 
 /**
- * SrsPolicyDecider — calls Lyzr SRS to gate tool calls.
+ * SrsPolicyDecider — calls a Service-RBAC-Service (SRS) HTTP endpoint to
+ * gate tool calls.
  *
- * Fetches the RAI policy once (GET /v1/rai/policies/{policy_id}), caches
- * the cedar_guardrail + opa_guardrail subsections, and on every evaluate()
+ * Fetches the policy once (GET /v1/rai/policies/{policy_id}), caches the
+ * cedar_guardrail + opa_guardrail subsections, and on every evaluate()
  * POSTs to /v1/guardrails/evaluate-tool-call with the cached configs +
  * tool_name + tool_args + principal_id.
  *

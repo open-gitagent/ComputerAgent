@@ -2,8 +2,8 @@
  * `@computeragent/llm-proxy-openai` — Anthropic Messages ↔ OpenAI Chat
  * Completions translator. Accepts the Anthropic Messages wire shape that
  * `claude-agent-sdk` and `deepagents` speak natively, and forwards to any
- * OpenAI-Chat-Completions endpoint (Lyzr Studio, vLLM, LiteLLM, Together,
- * Ollama, etc.).
+ * OpenAI-Chat-Completions endpoint (vLLM, LiteLLM, Together, Ollama, or
+ * any compatible inference gateway).
  *
  * Two ways to use:
  *
@@ -34,9 +34,9 @@
  *     ANTHROPIC_API_KEY:  "via-proxy",  // anything; the upstream token is in the proxy
  *   }
  *
- * Tool calls round-trip in both directions — verified end-to-end against
- * Lyzr Studio with claude-agent-sdk + deepagents both writing real files
- * through their tool surfaces.
+ * Tool calls round-trip in both directions — verified end-to-end with
+ * claude-agent-sdk + deepagents both writing real files through their
+ * tool surfaces against an OpenAI-compatible gateway.
  */
 export { startProxy } from "./proxy.js";
 export type { ProxyOptions, ProxyHandle, UpstreamConfig } from "./proxy.js";

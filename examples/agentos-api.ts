@@ -1,15 +1,16 @@
 /**
  * AgentOS control-panel API — a Hono sub-app mounted at /agentos/api/*.
  *
- * Backs the private React dashboard at agentos.clawagent.sh. Read-only views of
+ * Backs the AgentOS React dashboard. Read-only views of
  * agents, their persisted request logs, and past sessions (transcripts), plus a
  * thin "create a chat sandbox for this agent" endpoint so the web console drives
  * the SAME agent config as Slack (via sandboxBodyForBot) without exposing secrets
  * to the browser.
  *
  * All routes live under /agentos/api/* and stay behind the server's Basic Auth
- * (NOT whitelisted). In production Caddy gates agentos.clawagent.sh with its own
- * basic_auth and injects the Node API credential when proxying /api/* here.
+ * (NOT whitelisted). In production your reverse proxy gates the dashboard host
+ * with its own basic_auth and injects the Node API credential when proxying
+ * /api/* here.
  */
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
@@ -583,7 +584,7 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
   });
 
   // ── Create a chat sandbox for an agent (web console) ─────────────────────
-  // Builds the SAME sandbox config the Slack flow uses (Lyzr model, envs,
+  // Builds the SAME sandbox config the Slack flow uses (proxy model, envs,
   // gitToken) server-side. Pass an existing sessionId to resume that thread's
   // conversation memory; otherwise a fresh console session is minted.
   // Look up an agent by name — in-memory first, then the Mongo registry.

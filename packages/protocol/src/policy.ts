@@ -1,10 +1,9 @@
 /**
  * Policy abstraction — engine-agnostic per-tool-call authorization.
  *
- * Inspired by Lyzr SRS's `/v1/guardrails/evaluate-tool-call`: one universal
- * tool-call shape, one allow/deny decision, no engine-specific knowledge.
- * Implementations bridge to the actual enforcement engine (Cedar/OPA via
- * SRS, or local impls).
+ * One universal tool-call shape, one allow/deny decision, no engine-specific
+ * knowledge. Implementations bridge to the actual enforcement engine
+ * (Cedar/OPA via an external Service-RBAC-Service, or local impls).
  *
  * The harness runs the decider INSIDE the per-session permission wrapper
  * (see harness-server/services/run-session.ts). If the decider says deny,
@@ -51,11 +50,11 @@ export type PolicyConfig = SrsPolicyConfig;
 
 export interface SrsPolicyConfig {
   readonly kind: "srs";
-  /** SRS base URL — e.g. "https://srs-dev.test.studio.lyzr.ai". */
+  /** SRS base URL — e.g. "https://your-policy-service.example.com". */
   readonly endpoint: string;
   /** x-api-key for SRS. Never leaves the harness. */
   readonly apiKey: string;
-  /** RAI policy_id whose cedar_guardrail + opa_guardrail to apply. */
+  /** Policy id whose cedar_guardrail + opa_guardrail to apply. */
   readonly policyId: string;
   /** Forwarded to SRS as the `principal_id` for audit. */
   readonly principalId: string;
