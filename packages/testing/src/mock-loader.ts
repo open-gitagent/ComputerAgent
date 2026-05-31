@@ -1,4 +1,4 @@
-import type { IdentityLoader, IdentityLoadResult } from "@computeragent/protocol";
+import type { IdentityLoader, IdentityLoadResult } from "@open-gitagent/protocol";
 
 /** Canned response from MockLoader.load(); override per test. */
 export interface MockLoaderConfig {

@@ -1,7 +1,7 @@
 /**
  * Full-fledged marketing agent example.
  *
- * Runs the marketing-agent GAP repo (github.com/shreyas-lyzr/marketing-agent)
+ * Runs the example marketing-agent GAP repo (github.com/open-gitagent/example-marketing-agent)
  * as a multi-turn session: first turn sets product context, subsequent turns
  * request specific marketing deliverables. Each response streams in real-time
  * and the final outputs are saved to markdown files under ./marketing-outputs/.
@@ -189,7 +189,7 @@ if (RESUME && existsSync(SESSION_FILE)) {
 await using agent = new ComputerAgent({
   source: {
     type: "git",
-    url: "github.com/shreyas-lyzr/marketing-agent",
+    url: "github.com/open-gitagent/example-marketing-agent",
   },
   harness: "claude-agent-sdk",
   runtime: new LocalSubstrate(),
@@ -222,7 +222,7 @@ if (!RESUME) {
     `Here is our product context. Please confirm you've loaded it and identify the top 3
 marketing challenges you'd recommend we tackle first.
 
-Product: Lyzr AI — an enterprise platform for building, deploying, and governing AI agents at scale.
+Product: an enterprise platform for building, deploying, and governing AI agents at scale.
 Audience: Mid-market and enterprise engineering and IT leaders (CTOs, VP Engineering, Head of AI).
 Stage: Series A, $8M ARR, 120 customers, growing 15% MoM.
 Key differentiators: On-prem / VPC deployment, SOC2 compliant, LLM-agnostic (OpenAI, Anthropic, Gemini, Mistral).
@@ -263,7 +263,7 @@ hr("Turn 3 — Pricing Strategy");
 
 const { result: pricingResult } = await streamTurn(
   agent,
-  `Design a 3-tier pricing structure for Lyzr AI. We currently charge flat enterprise contracts
+  `Design a 3-tier pricing structure for an enterprise AI-agent platform. We currently charge flat enterprise contracts
 ($3k–$15k/month). We want to add a self-serve tier to capture PLG motion and reduce the
 60-90 day sales cycle for smaller deals. Include:
 - Tier names and positioning
@@ -273,7 +273,7 @@ const { result: pricingResult } = await streamTurn(
 - A/B test ideas for the pricing page`,
 );
 
-await saveTurnOutput("pricing-strategy.md", "Pricing Strategy — Lyzr AI", pricingResult);
+await saveTurnOutput("pricing-strategy.md", "Pricing Strategy — Example AI Platform", pricingResult);
 
 // ── Turn 4: Launch strategy for self-serve tier ───────────────────────────────
 

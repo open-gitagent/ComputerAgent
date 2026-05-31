@@ -1,7 +1,7 @@
 /**
  * Security code reviewer demo.
  *
- * Runs the github.com/shreyas-lyzr/security-agent GAP repo against any
+ * Runs the github.com/open-gitagent/example-security-agent GAP repo against any
  * target repository. Output is a single SECURITY_REVIEW.md fetched from
  * the harness workdir.
  *
@@ -39,7 +39,7 @@ console.log(`GITHUB_TOKEN: ${GITHUB_TOKEN ? "(set — private repos accessible)"
 console.log(`Output dir:   ${OUT}\n`);
 
 await using agent = new ComputerAgent({
-  source: { type: "git", url: "github.com/shreyas-lyzr/security-agent" },
+  source: { type: "git", url: "github.com/open-gitagent/example-security-agent" },
   harness: "claude-agent-sdk",
   runtime: new LocalSubstrate(),
   envs: {

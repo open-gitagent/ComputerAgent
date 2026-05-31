@@ -1,4 +1,4 @@
-// Public surface of @computeragent/protocol. Internals stay internal.
+// Public surface of @open-gitagent/protocol. Internals stay internal.
 
 export * from "./identity-source.js";
 export * from "./harness-rest.js";

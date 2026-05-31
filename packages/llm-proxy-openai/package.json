@@ -1,7 +1,7 @@
 {
   "name": "@computeragent/llm-proxy-openai",
   "version": "0.1.0",
-  "description": "Translator proxy: accepts POST /v1/messages (Anthropic Messages format) and forwards to /v1/chat/completions (OpenAI-compat). Lets engines that speak Anthropic Messages (claude-agent-sdk, deepagents) target any OpenAI-Chat-Completions backend — Lyzr Studio, vLLM, LiteLLM, Together, etc.",
+  "description": "Translator proxy: accepts POST /v1/messages (Anthropic Messages format) and forwards to /v1/chat/completions (OpenAI-compat). Lets engines that speak Anthropic Messages (claude-agent-sdk, deepagents) target any OpenAI-Chat-Completions backend — vLLM, LiteLLM, Together, Ollama, etc.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -38,8 +38,7 @@
     "openai",
     "proxy",
     "llm",
-    "computeragent",
-    "lyzr"
+    "computeragent"
   ],
   "homepage": "https://github.com/open-gitagent/ComputerAgent",
   "repository": {

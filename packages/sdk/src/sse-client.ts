@@ -1,4 +1,4 @@
-import type { HarnessEvent } from "@computeragent/protocol";
+import type { HarnessEvent } from "@open-gitagent/protocol";
 
 /** A wire envelope: the SSE `id:` field (if present) and the parsed event. */
 export interface SseEnvelope {

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { CreateSessionBody, type CreateSessionResponse } from "@computeragent/protocol";
+import { CreateSessionBody, type CreateSessionResponse } from "@open-gitagent/protocol";
 import { createSession } from "../services/create-session.js";
 import type { ServerContext } from "../app.js";
 import { NotFound } from "../error-mapper.js";

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import type { EngineDriver, IdentityLoader, Logger } from "@computeragent/protocol";
-import { nopLogger } from "@computeragent/protocol";
+import type { EngineDriver, IdentityLoader, Logger } from "@open-gitagent/protocol";
+import { nopLogger } from "@open-gitagent/protocol";
 import type { AuditSink } from "./audit.js";
 import type { AuthHandler } from "./auth.js";
 import { onError, ProtocolError } from "./error-mapper.js";
@@ -49,7 +49,7 @@ export interface CreateHarnessServerOptions {
   /**
    * Optional structured logger. When absent, the server defaults to `nopLogger`
    * (silent). Pass the result of `createLogger({ component: "harness" })` from
-   * `@computeragent/protocol` to surface lifecycle + per-route events on stderr.
+   * `@open-gitagent/protocol` to surface lifecycle + per-route events on stderr.
    */
   readonly logger?: Logger;
 }

@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.132",
-    "@computeragent/protocol": "workspace:*",
+    "@open-gitagent/protocol": "workspace:*",
     "simple-git": "^3.25.0",
     "yaml": "^2.5.0",
     "zod": "^4.4.3"

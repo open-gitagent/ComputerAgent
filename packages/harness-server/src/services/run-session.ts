@@ -1,5 +1,5 @@
-import type { EngineDriver, HarnessEvent, Logger, PermissionResult } from "@computeragent/protocol";
-import { nopLogger } from "@computeragent/protocol";
+import type { EngineDriver, HarnessEvent, Logger, PermissionResult } from "@open-gitagent/protocol";
+import { nopLogger } from "@open-gitagent/protocol";
 import type { Session } from "../session.js";
 import { EventChannel } from "../event-channel.js";
 

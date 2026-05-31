@@ -78,11 +78,56 @@ export const CaSessionEndedEvent = baseEvent("ca_session_ended").extend({
 });
 export type CaSessionEndedEvent = z.infer<typeof CaSessionEndedEvent>;
 
+/**
+ * Resolution of a prior `ca_permission_request`. Emitted from
+ * `POST /v1/sessions/:id/permission/:callId` after the resolver fires, so
+ * audit sinks and replay consumers can correlate decisions with their
+ * originating requests without polling the route.
+ */
+export const CaPermissionDecisionEvent = baseEvent("ca_permission_decision").extend({
+  callId: z.string(),
+  decision: z.enum(["allow", "deny", "modify"]),
+  reason: z.string().optional(),
+});
+export type CaPermissionDecisionEvent = z.infer<typeof CaPermissionDecisionEvent>;
+
+/**
+ * Marks the boundary between user turns in a multi-turn session. Emitted for
+ * the first turn (alongside `ca_session_started`) and for every subsequent
+ * `POST /v1/sessions/:id/messages` that enqueues a new user message. Lets
+ * span-based consumers open a fresh per-turn root (`invoke_agent` in OTel
+ * GenAI terms) without inferring turn boundaries from sdk-message streams.
+ *
+ * `message` carries the user message that triggered this turn (the same one
+ * that's about to be pushed to the engine's userMessageQueue). Surfaced on
+ * the event stream so audit sinks can populate `gen_ai.input.messages`
+ * without relying on engines to echo their prompts back — `claude-agent-sdk`
+ * for one does not echo the initial prompt as an `sdk_message`, so this is
+ * the only reliable source of the user's content.
+ *
+ * Optional for backward compatibility — older audit producers may omit it.
+ */
+export const CaTurnStartedEvent = baseEvent("ca_turn_started").extend({
+  turnIndex: z.number().int().nonnegative(),
+  message: z
+    .object({
+      role: z.literal("user"),
+      content: z.union([
+        z.string(),
+        z.array(z.object({ type: z.string() }).passthrough()),
+      ]),
+    })
+    .optional(),
+});
+export type CaTurnStartedEvent = z.infer<typeof CaTurnStartedEvent>;
+
 /** Discriminated union of every event the protocol emits. */
 export const HarnessEvent = z.discriminatedUnion("kind", [
   SdkMessageEvent,
   CaSessionStartedEvent,
   CaPermissionRequestEvent,
+  CaPermissionDecisionEvent,
+  CaTurnStartedEvent,
   CaUsageSnapshotEvent,
   CaSessionEndedEvent,
 ]);

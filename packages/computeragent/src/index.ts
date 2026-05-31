@@ -22,7 +22,7 @@ export {
   UnknownEngineError,
   UnknownLoaderError,
   UnknownStoreError,
-} from "@computeragent/sdk";
+} from "@open-gitagent/sdk";
 export type {
   ChatInput,
   ChatResult,
@@ -41,6 +41,6 @@ export type {
   HarnessEvent,
   IdentitySource,
   UserMessage,
-} from "@computeragent/sdk";
+} from "@open-gitagent/sdk";
 
-export { LocalSubstrate } from "@computeragent/runtime-local";
+export { LocalSubstrate } from "@open-gitagent/runtime-local";

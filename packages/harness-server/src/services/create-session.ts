@@ -2,7 +2,7 @@ import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Attachment, CreateSessionBody } from "@computeragent/protocol";
+import type { Attachment, CreateSessionBody } from "@open-gitagent/protocol";
 import { Session } from "../session.js";
 import { SrsPolicyDecider } from "./srs-policy-decider.js";
 import { SessionRegistry } from "../registry.js";

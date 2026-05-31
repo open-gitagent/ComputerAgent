@@ -2,8 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import type { BootHarnessOptions, BootedHarness, Substrate } from "@computeragent/sdk";
-import { createLogger } from "@computeragent/protocol";
+import type { BootHarnessOptions, BootedHarness, Substrate } from "@open-gitagent/sdk";
+import { createLogger } from "@open-gitagent/protocol";
 
 const BUNDLE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../assets/harness-bundle.mjs");
 

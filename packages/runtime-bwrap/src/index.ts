@@ -5,7 +5,7 @@
  * gets its own mount + PID + IPC + UTS + user namespace, filesystem jailing
  * to a per-session workdir, and the empty Linux capability set.
  *
- * Same Substrate interface as @computeragent/runtime-local — drop-in swap:
+ * Same Substrate interface as @open-gitagent/runtime-local — drop-in swap:
  *
  *   new ComputerAgent({
  *     ...,

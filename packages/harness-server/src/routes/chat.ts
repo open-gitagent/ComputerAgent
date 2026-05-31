@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { CreateSessionBody } from "@computeragent/protocol";
+import { CreateSessionBody } from "@open-gitagent/protocol";
 import { createSession } from "../services/create-session.js";
 import { runSession } from "../services/run-session.js";
 import type { ServerContext } from "../app.js";

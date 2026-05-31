@@ -4,12 +4,12 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import type { BootHarnessOptions, BootedHarness, Substrate } from "@computeragent/sdk";
-import { createLogger } from "@computeragent/protocol";
+import type { BootHarnessOptions, BootedHarness, Substrate } from "@open-gitagent/sdk";
+import { createLogger } from "@open-gitagent/protocol";
 import { buildBwrapArgs } from "./bwrap-args.js";
 
 // We reuse runtime-local's bundle — same engines, same loader, same logger.
-// This package depends on @computeragent/runtime-local as a workspace dep
+// This package depends on @open-gitagent/runtime-local as a workspace dep
 // so the path resolves at build time.
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BUNDLE_PATH = resolve(HERE, "../../runtime-local/assets/harness-bundle.mjs");

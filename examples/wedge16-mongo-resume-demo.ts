@@ -20,11 +20,11 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { ComputerAgent } from "@computeragent/sdk";
+import { ComputerAgent } from "@open-gitagent/sdk";
 import { createHarnessServer } from "@computeragent/harness-server";
 import { ClaudeAgentEngine } from "@computeragent/engine-claude-agent-sdk";
 import { GitAgentProtocolLoader } from "@computeragent/identity-gitagentprotocol";
-import { MongoSessionStore } from "@computeragent/session-store-mongo";
+import { MongoSessionStore } from "@open-gitagent/session-store-mongo";
 
 const anthropicKey = process.env.ANTHROPIC_API_KEY;
 const mongoUrl = process.env.MONGO_URL;

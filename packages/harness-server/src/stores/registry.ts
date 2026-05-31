@@ -1,4 +1,4 @@
-import type { SessionStore, SessionStoreConfig } from "@computeragent/protocol";
+import type { SessionStore, SessionStoreConfig } from "@open-gitagent/protocol";
 import { BadRequest } from "../error-mapper.js";
 import { MemorySessionStore } from "./memory-store.js";
 import { FileSessionStore } from "./file-store.js";

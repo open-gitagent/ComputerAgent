@@ -53,12 +53,42 @@ import type {
   TaskStore,
   TaskStatus,
   TaskSummary,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 import { mongoTaskStoreBuilder } from "@computeragent/task-store-mongo";
 import { s3StateStoreBuilder } from "@computeragent/state-store-s3";
+import type { AuditSink } from "@computeragent/harness-server";
+import {
+  configure as configureOtel,
+  shutdown as shutdownOtel,
+  OtelAuditSink,
+} from "@computeragent/observability";
 
 type TaskStoreBuilder = (options?: unknown) => TaskStore;
 type StateStoreBuilder = (options?: unknown) => StateStore;
+
+/**
+ * Fan one HarnessEvent out to the configured AuditSink, swallowing any errors
+ * so observability failures never break a session. Tracks the sessionId across
+ * the stream (learned from `ca_session_started` when not provided upfront).
+ */
+function emitToAuditSink(
+  sink: AuditSink | undefined,
+  state: { sessionId: string; counter: number },
+  ev: HarnessEvent,
+): void {
+  if (!sink) return;
+  if (ev.kind === "ca_session_started" && !state.sessionId) state.sessionId = ev.sessionId;
+  try {
+    void sink.onEvent({
+      sessionId: state.sessionId || (ev as { sessionId?: string }).sessionId || "pending",
+      eventId: ++state.counter,
+      event: ev,
+      timestamp: Date.now(),
+    });
+  } catch {
+    // OtelAuditSink already swallows its own errors; this is belt-and-braces.
+  }
+}
 
 export interface ComputerAgentServerOptions {
   /** Bind host. Default "127.0.0.1" (loopback only). Pass "0.0.0.0" for LAN-accessible. */
@@ -169,6 +199,14 @@ export interface ComputerAgentServerOptions {
      */
     readonly bootDeadlineMs?: number;
   };
+  /**
+   * Optional audit sink — every HarnessEvent produced by /run, /tasks, and
+   * /sandboxes/:id/chat is forwarded synchronously. Used by
+   * `@computeragent/observability`'s `OtelAuditSink` to emit OTel `gen_ai.*`
+   * spans + metrics. Sink errors are caught and dropped; observability never
+   * impacts the agent run.
+   */
+  readonly auditSink?: AuditSink;
 }
 
 interface RunBody {
@@ -821,11 +859,13 @@ export class ComputerAgentServer {
           const handle = agent.chat(
             typeof body.message === "string" ? body.message : body.message,
           );
+          const otelTap = { sessionId: "", counter: 0 };
           for await (const ev of handle) {
             if (ev.kind === "ca_session_started" && !realSessionId) {
               realSessionId = ev.sessionId;
               this.runs.set(realSessionId, { agent, startedAt: Date.now() });
             }
+            emitToAuditSink(this.opts.auditSink, otelTap, ev);
             await stream.writeSSE({
               event: ev.kind,
               data: JSON.stringify(ev),
@@ -1319,8 +1359,10 @@ export class ComputerAgentServer {
         try {
           // The SDK accepts the same `message` shape /run uses.
           const handle = sb.agent.chat(body.message as never);
+          const otelTap = { sessionId: sb.sessionId, counter: 0 };
           for await (const ev of handle) {
             if (clientGone) break;
+            emitToAuditSink(this.opts.auditSink, otelTap, ev);
             await stream.writeSSE({ event: ev.kind, data: JSON.stringify(ev) }).catch(() => { clientGone = true; });
             if (ev.kind === "ca_usage_snapshot") {
               // The snapshot is incremental for the current turn; merge into
@@ -1843,7 +1885,9 @@ export class ComputerAgentServer {
     try {
       const message = typeof body.message === "string" ? body.message : body.message;
       const handle = agent.chat(message as never);
+      const otelTap = { sessionId: sessionId ?? "", counter: 0 };
       for await (const ev of handle as AsyncIterable<HarnessEvent>) {
+        emitToAuditSink(this.opts.auditSink, otelTap, ev);
         const persisted: PersistedEvent = {
           id: eventIndex++,
           ts: new Date(),
@@ -2221,9 +2265,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   };
 
   // Optional: in-process Anthropic ↔ OpenAI translator proxy. When
-  // LYZR_PROXY_ENABLED=1 we boot @computeragent/llm-proxy-openai on
-  // 127.0.0.1:<port> so claude-agent-sdk / deepagents can target Lyzr (or
-  // any OpenAI-Chat-Completions backend) by setting `envs.ANTHROPIC_BASE_URL`
+  // PROXY_ENABLED=1 we boot @computeragent/llm-proxy-openai on
+  // 127.0.0.1:<port> so claude-agent-sdk / deepagents can target any
+  // OpenAI-Chat-Completions backend by setting `envs.ANTHROPIC_BASE_URL`
   // = "http://127.0.0.1:<port>" on a /run or sandbox chat. Substrates
   // running on the same host can reach the proxy via loopback (bwrap and
   // local share the host's network namespace; e2b cannot — it would need
@@ -2231,23 +2275,41 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   //
   // gitagent doesn't need this proxy at all — gitclaw natively speaks OpenAI
   // Chat Completions via GITCLAW_MODEL_BASE_URL + provider:model@baseUrl.
-  let lyzrProxyHandle: { port: number; close: () => Promise<void> } | null = null;
-  if (process.env.LYZR_PROXY_ENABLED === "1") {
+  let proxyHandle: { port: number; close: () => Promise<void> } | null = null;
+  if (process.env.PROXY_ENABLED === "1") {
     const { startProxy } = await import("@computeragent/llm-proxy-openai");
-    const proxyToken = process.env.LYZR_UPSTREAM_TOKEN;
-    if (!proxyToken) {
-      console.error("[lyzr-proxy] LYZR_PROXY_ENABLED=1 but LYZR_UPSTREAM_TOKEN is not set — skipping");
+    const proxyToken = process.env.UPSTREAM_TOKEN;
+    const proxyBase = process.env.UPSTREAM_BASE;
+    if (!proxyToken || !proxyBase) {
+      console.error("[proxy] PROXY_ENABLED=1 but UPSTREAM_TOKEN or UPSTREAM_BASE is not set — skipping");
     } else {
-      lyzrProxyHandle = await startProxy({
-        port: intEnv("LYZR_PROXY_PORT", 8788),
+      proxyHandle = await startProxy({
+        port: intEnv("PROXY_PORT", 8788),
         upstream: {
-          base: process.env.LYZR_UPSTREAM_BASE ?? "https://agent-dev.test.studio.lyzr.ai",
-          path: process.env.LYZR_UPSTREAM_PATH ?? "/v4/chat/completions",
+          base: proxyBase,
+          path: process.env.UPSTREAM_PATH ?? "/v1/chat/completions",
           token: proxyToken,
-          ...(process.env.LYZR_UPSTREAM_MODEL ? { modelOverride: process.env.LYZR_UPSTREAM_MODEL } : {}),
+          ...(process.env.UPSTREAM_MODEL ? { modelOverride: process.env.UPSTREAM_MODEL } : {}),
         },
       });
     }
+  }
+
+  // Optional: OpenTelemetry. Boot the global tracer/meter/logger when
+  // OTEL_EXPORTER_OTLP_ENDPOINT is set; the sink then forwards every
+  // HarnessEvent emitted by /run, /tasks, and /sandboxes/:id/chat as
+  // spec-compliant `gen_ai.*` spans + metrics. Disable by leaving
+  // OTEL_EXPORTER_OTLP_ENDPOINT unset (sink stays null).
+  let auditSink: AuditSink | undefined;
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    configureOtel({
+      serviceName: process.env.OTEL_SERVICE_NAME ?? "computeragent-server",
+      exporter: "otlp-http",
+      endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+      sampleRate: Number(process.env.OTEL_SAMPLE_RATE ?? 1.0),
+    });
+    auditSink = new OtelAuditSink();
+    console.log(`[otel] OTLP/HTTP exporter → ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}`);
   }
 
   const server = new ComputerAgentServer({
@@ -2262,12 +2324,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     ...(Object.keys(stateStores).length > 0 ? { stateStores } : {}),
     defaultStateStore,
     sandbox: sandboxCfg,
+    ...(auditSink ? { auditSink } : {}),
   });
 
   // ── Optional: Slack bots — mount under /slack/{bot}/events.
   //
   // Two bots exposed when SLACK_BOTS_ENABLED=1:
-  //   /slack/claudebot/events  → claude-agent-sdk + (optional) LYZR proxy
+  //   /slack/claudebot/events  → claude-agent-sdk + (optional) translator proxy
   //   /slack/gitagent/events   → gitagent direct
   //
   // Each bot maps a Slack thread to a warm /sandboxes instance with
@@ -2298,8 +2361,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         server.mount(slackApp);
         slackBotNames = bots.map((b) => b.name);
 
-        // AgentOS control-panel API — backs the private dashboard at
-        // agentos.clawagent.sh. Mounted at /agentos/api/*, stays behind Basic Auth.
+        // AgentOS control-panel API — backs the AgentOS dashboard. Mounted
+        // at /agentos/api/*, stays behind Basic Auth.
         //
         // Agents = the Slack bots (mapped) + web-only agents (Claude Code, Deep
         // Agent) that drive the same general-agent repo on different harnesses.
@@ -2317,15 +2380,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         }));
         const generalAgentSource = process.env.AGENTOS_GENERAL_SOURCE
           ?? bots.find((b) => b.name === "gitagent")?.source
-          ?? "github.com/shreyas-lyzr/general-agent";
+          ?? "github.com/open-gitagent/general-agent";
         const githubToken = process.env.GITHUB_TOKEN;
         // claude-agent-sdk + deepagents speak the Anthropic Messages API. Route
-        // them through the in-process Lyzr proxy when enabled (same backend as
-        // GitAgent — the proxy overrides the model), else use a real Anthropic key.
+        // them through the in-process translator proxy when enabled (same backend
+        // as GitAgent — the proxy overrides the model), else use a real Anthropic
+        // key.
         let anthropicEnvs: Record<string, string> | null = null;
-        if (process.env.LYZR_PROXY_ENABLED === "1") {
-          const port = process.env.LYZR_PROXY_PORT ?? "8788";
-          anthropicEnvs = { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: "lyzr-via-proxy" };
+        if (process.env.PROXY_ENABLED === "1") {
+          const port = process.env.PROXY_PORT ?? "8788";
+          anthropicEnvs = { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: "via-proxy" };
         } else if (process.env.ANTHROPIC_API_KEY) {
           anthropicEnvs = { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY };
         }
@@ -2367,58 +2431,58 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           }
           // GAP Promoter — gitagent (gitclaw) agent that converts repos to the
           // GitAgent Protocol, opens PRs, and submits to the Open GAP registry.
-          // Runs on gitagent via the Lyzr-direct path (openai:<model> + gitclaw
+          // Runs on gitagent via the OpenAI-direct path (openai:<model> + gitclaw
           // base url), with a GitHub token in its sandbox (GH_TOKEN/GITHUB_TOKEN).
           if (!agentDefs.some((a) => a.name === "gap-promoter")) {
             const promoterToken = process.env.GAP_PROMOTER_GITHUB_TOKEN ?? githubToken;
-            const lyzrBase = process.env.LYZR_UPSTREAM_BASE;
-            const lyzrToken = process.env.LYZR_UPSTREAM_TOKEN;
-            const lyzrModel = process.env.LYZR_UPSTREAM_MODEL;
+            const upstreamBase = process.env.UPSTREAM_BASE;
+            const upstreamToken = process.env.UPSTREAM_TOKEN;
+            const upstreamModel = process.env.UPSTREAM_MODEL;
             const gitEnvs: Record<string, string> = {};
-            if (lyzrBase && lyzrToken) {
-              gitEnvs.GITCLAW_MODEL_BASE_URL = lyzrBase.replace(/\/+$/, "") + "/v4";
-              gitEnvs.OPENAI_API_KEY = lyzrToken;
+            if (upstreamBase && upstreamToken) {
+              gitEnvs.GITCLAW_MODEL_BASE_URL = upstreamBase.replace(/\/+$/, "") + "/v4";
+              gitEnvs.OPENAI_API_KEY = upstreamToken;
             }
             if (promoterToken) { gitEnvs.GITHUB_TOKEN = promoterToken; gitEnvs.GH_TOKEN = promoterToken; }
             agentDefs.push({
               name: "gap-promoter", label: "GitAgent", harness: "gitagent",
               source: process.env.GAP_PROMOTER_SOURCE ?? "github.com/open-gitagent/gap-promoter",
-              model: lyzrModel ? `openai:${lyzrModel}` : undefined,
+              model: upstreamModel ? `openai:${upstreamModel}` : undefined,
               envs: gitEnvs,
               gitToken: promoterToken,
             });
           }
           // Framework Translator — translates AI-agent code across frameworks
-          // (LangGraph, CrewAI, OpenAI Agents SDK, AutoGen, …, Lyzr ADK).
-          // Runs on the gitagent (gitclaw) harness via the Lyzr-direct path
-          // (GITCLAW_MODEL_BASE_URL + OPENAI_API_KEY + model openai:<lyzrModel>),
+          // (LangGraph, CrewAI, OpenAI Agents SDK, AutoGen, …).
+          // Runs on the gitagent (gitclaw) harness via the OpenAI-direct path
+          // (GITCLAW_MODEL_BASE_URL + OPENAI_API_KEY + model openai:<upstreamModel>),
           // same wiring as gap-promoter — NOT the Anthropic proxy. gitagent reads
-          // agent.yaml runtime.max_turns (4000) and is built for the Lyzr model's
+          // agent.yaml runtime.max_turns (4000) and is built for an OpenAI-compatible
           // tool-use loop. Keeps EXA_API_KEY (exa-research). Uses the GAP_PROMOTER
           // PAT (shared with gap-promoter, per explicit request) so it can push the
           // translated code / open PRs; falls back to the shared GITHUB_TOKEN.
           if (!agentDefs.some((a) => a.name === "framework-translator")) {
-            const lyzrBase = process.env.LYZR_UPSTREAM_BASE;
-            const lyzrToken = process.env.LYZR_UPSTREAM_TOKEN;
-            const lyzrModel = process.env.LYZR_UPSTREAM_MODEL;
+            const upstreamBase = process.env.UPSTREAM_BASE;
+            const upstreamToken = process.env.UPSTREAM_TOKEN;
+            const upstreamModel = process.env.UPSTREAM_MODEL;
             const ftGitToken = process.env.GAP_PROMOTER_GITHUB_TOKEN ?? githubToken;
             const ftEnvs: Record<string, string> = {};
-            if (lyzrBase && lyzrToken) {
-              ftEnvs.GITCLAW_MODEL_BASE_URL = lyzrBase.replace(/\/+$/, "") + "/v4";
-              ftEnvs.OPENAI_API_KEY = lyzrToken;
+            if (upstreamBase && upstreamToken) {
+              ftEnvs.GITCLAW_MODEL_BASE_URL = upstreamBase.replace(/\/+$/, "") + "/v4";
+              ftEnvs.OPENAI_API_KEY = upstreamToken;
             }
             if (process.env.EXA_API_KEY) ftEnvs.EXA_API_KEY = process.env.EXA_API_KEY;
             if (ftGitToken) { ftEnvs.GITHUB_TOKEN = ftGitToken; ftEnvs.GH_TOKEN = ftGitToken; }
             agentDefs.push({
               name: "framework-translator", label: "GitAgent", harness: "gitagent",
-              source: process.env.FRAMEWORK_TRANSLATOR_SOURCE ?? "github.com/shreyas-lyzr/framework-translator-agent",
-              model: lyzrModel ? `openai:${lyzrModel}` : undefined,
+              source: process.env.FRAMEWORK_TRANSLATOR_SOURCE ?? "github.com/open-gitagent/framework-translator-agent",
+              model: upstreamModel ? `openai:${upstreamModel}` : undefined,
               envs: ftEnvs,
               gitToken: ftGitToken,
             });
           }
         } else {
-          console.warn("[agentos] no LYZR proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
+          console.warn("[agentos] no translator proxy or ANTHROPIC_API_KEY — Claude Code / Deep Agent not registered");
         }
         const onlyEnv = process.env.AGENTOS_AGENTS_ONLY;
         const filteredAgentDefs = onlyEnv
@@ -2438,10 +2502,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
   }
   // Graceful shutdown — kill the proxy too when the main server stops.
+  // Flush OTel exporters FIRST so in-flight spans land before sockets close.
   for (const sig of ["SIGINT", "SIGTERM"] as const) {
     process.on(sig, () => {
       void (async () => {
-        await lyzrProxyHandle?.close().catch(() => {});
+        if (auditSink) await shutdownOtel(2_000).catch(() => {});
+        await proxyHandle?.close().catch(() => {});
         await server.close().catch(() => {});
         process.exit(0);
       })();
@@ -2449,9 +2515,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   const { host, port } = await server.listen();
   console.log(`ComputerAgentServer listening on http://${host}:${port}`);
-  if (lyzrProxyHandle) {
-    console.log(`Anthropic↔OpenAI proxy listening on http://127.0.0.1:${lyzrProxyHandle.port}`);
-    console.log(`  → use envs.ANTHROPIC_BASE_URL=http://127.0.0.1:${lyzrProxyHandle.port} on /run for claude-agent-sdk + deepagents`);
+  if (proxyHandle) {
+    console.log(`Anthropic↔OpenAI proxy listening on http://127.0.0.1:${proxyHandle.port}`);
+    console.log(`  → use envs.ANTHROPIC_BASE_URL=http://127.0.0.1:${proxyHandle.port} on /run for claude-agent-sdk + deepagents`);
   }
   if (slackBotNames.length > 0) {
     console.log(`Slack bots active: ${slackBotNames.join(", ")}`);
@@ -2491,7 +2557,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log("  curl -N -X POST http://" + host + ":" + port + "/run \\");
   console.log("    -H 'content-type: application/json' \\");
   console.log("    -d '{");
-  console.log('      "source": "github.com/shreyas-lyzr/pdf-agent",');
+  console.log('      "source": "github.com/open-gitagent/example-pdf-agent",');
   console.log('      "harness": "claude-agent-sdk",');
   console.log('      "runtime": "local",');
   console.log('      "options": { "permissionMode": "bypassPermissions", "settingSources": ["project"] },');

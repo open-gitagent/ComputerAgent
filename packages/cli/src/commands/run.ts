@@ -1,5 +1,5 @@
 import { defineCommand } from "citty";
-import { ComputerAgent, type IdentitySource } from "@computeragent/sdk";
+import { ComputerAgent, type IdentitySource } from "@open-gitagent/sdk";
 import { renderEventLine } from "../output.js";
 
 const DEFAULT_HARNESS_URL = "http://127.0.0.1:7700";

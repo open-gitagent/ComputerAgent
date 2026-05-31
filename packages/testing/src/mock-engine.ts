@@ -4,8 +4,8 @@ import type {
   EngineDriver,
   EngineEvent,
   PermissionRequest,
-} from "@computeragent/protocol";
-import type { PermissionResult } from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
+import type { PermissionResult } from "@open-gitagent/protocol";
 
 /**
  * A scripted "step" the MockEngine performs. Tests build a sequence of these

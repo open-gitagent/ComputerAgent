@@ -13,8 +13,8 @@ import { ClaudeAgentEngine } from "@computeragent/engine-claude-agent-sdk";
 import { GitAgentEngine } from "@computeragent/engine-gitagent";
 import { DeepAgentsEngine } from "@computeragent/engine-deepagents";
 import { GitAgentProtocolLoader } from "@computeragent/identity-gitagentprotocol";
-import { createLogger, type SessionStore } from "@computeragent/protocol";
-import { MongoSessionStore } from "@computeragent/session-store-mongo";
+import { createLogger, type SessionStore } from "@open-gitagent/protocol";
+import { MongoSessionStore } from "@open-gitagent/session-store-mongo";
 
 const PORT = Number(process.env.PORT ?? 7700);
 const logger = createLogger({ component: "harness" });

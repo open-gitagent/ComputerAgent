@@ -10,7 +10,7 @@
  *   ANTHROPIC_API_KEY=sk-ant-... bun run examples/wedge3-vzvm-demo.ts
  */
 
-import { ComputerAgent } from "@computeragent/sdk";
+import { ComputerAgent } from "@open-gitagent/sdk";
 import { VZVMSubstrate } from "@computeragent/runtime-vzvm";
 
 const anthropicKey = process.env.ANTHROPIC_API_KEY;

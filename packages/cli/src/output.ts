@@ -1,4 +1,4 @@
-import type { HarnessEvent } from "@computeragent/sdk";
+import type { HarnessEvent } from "@open-gitagent/sdk";
 
 /**
  * Render a HarnessEvent as a single line of human-readable output.
@@ -14,6 +14,10 @@ export function renderEventLine(ev: HarnessEvent): string | null {
       return `■ ended  reason=${ev.reason}${ev.errorMessage ? `  error=${ev.errorMessage}` : ""}`;
     case "ca_permission_request":
       return `? permission  callId=${ev.callId}  tool=${ev.toolName}`;
+    case "ca_permission_decision":
+      return `✓ permission  callId=${ev.callId}  decision=${ev.decision}`;
+    case "ca_turn_started":
+      return `▸ turn ${ev.turnIndex}`;
     case "ca_usage_snapshot": {
       const cost = ev.costUsd !== undefined ? `$${ev.costUsd.toFixed(4)}` : "";
       const tokens =

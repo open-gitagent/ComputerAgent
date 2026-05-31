@@ -5,8 +5,9 @@ import type {
   PermissionResult,
   SessionStoreConfig,
   UserMessage,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 import type { Substrate } from "./substrate.js";
+import type { AgentTelemetry } from "./telemetry.js";
 
 /** Convenience: any input shape accepted by `agent.chat()`. */
 export type ChatInput =
@@ -156,6 +157,19 @@ export interface ComputerAgentOptions {
     readonly policyId: string;
     readonly principalId: string;
   };
+  /**
+   * Optional telemetry hook. When supplied, the SDK fires `onAgentConstructed`
+   * once at construction, `onChatStart`/`onChatEnd` paired around each chat,
+   * and `onClose` from `dispose()`. The first-class implementation is
+   * `@open-gitagent/agent-registry-mongo` which writes to the `agent_registry`
+   * and `agent_logs` collections AgentOS reads. Telemetry exceptions are
+   * caught and never propagate — telemetry must never break an agent run.
+   *
+   * This is the hook that makes library-mode deployments observable: when a
+   * customer just `npm install computeragent` into their existing worker and
+   * passes a Mongo-backed telemetry, the AgentOS dashboard sees every run.
+   */
+  readonly telemetry?: AgentTelemetry;
   /**
    * When true, sets `COMPUTERAGENT_LOG=debug` in the harness env (forcing
    * every engine + framework log line to surface) and emits one client-side

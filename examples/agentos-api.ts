@@ -1,24 +1,116 @@
 /**
  * AgentOS control-panel API — a Hono sub-app mounted at /agentos/api/*.
  *
- * Backs the private React dashboard at agentos.clawagent.sh. Read-only views of
+ * Backs the AgentOS React dashboard. Read-only views of
  * agents, their persisted request logs, and past sessions (transcripts), plus a
  * thin "create a chat sandbox for this agent" endpoint so the web console drives
  * the SAME agent config as Slack (via sandboxBodyForBot) without exposing secrets
  * to the browser.
  *
  * All routes live under /agentos/api/* and stay behind the server's Basic Auth
- * (NOT whitelisted). In production Caddy gates agentos.clawagent.sh with its own
- * basic_auth and injects the Node API credential when proxying /api/* here.
+ * (NOT whitelisted). In production your reverse proxy gates the dashboard host
+ * with its own basic_auth and injects the Node API credential when proxying
+ * /api/* here.
  */
 import { Hono } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
+import type { MiddlewareHandler } from "hono";
 import { MongoClient, type Collection } from "mongodb";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { IdentitySource, type IdentitySource as IdentitySourceT } from "@open-gitagent/protocol";
 import { sandboxBodyForBot } from "./slack-bot.ts";
 import { AgentLogStore } from "./agent-log-store.ts";
 import { ScheduleStore, computeNextRun, describeSchedule, type ScheduleKind } from "./schedule-store.ts";
 import { runAgentOnce } from "./scheduler.ts";
 import { AgentPolicyStore } from "./agent-policy-store.ts";
+
+// ── Cookie-based session auth ───────────────────────────────────────────────
+// HMAC-signed cookie (no DB session table — stateless). Format:
+//   <user>.<exp_ms>.<base64url(hmac_sha256(secret, user.exp))>
+// The secret is AGENTOS_SESSION_SECRET in env (regenerate to invalidate
+// every existing session); falls back to a per-process random secret so
+// dev works without env setup.
+const SESSION_SECRET =
+  process.env.AGENTOS_SESSION_SECRET || randomBytes(32).toString("hex");
+const SESSION_COOKIE = "agentos_session";
+const SESSION_MAX_AGE_SEC = 7 * 24 * 60 * 60; // 7 days
+
+function signSession(user: string, expMs: number): string {
+  const data = `${user}.${expMs}`;
+  const sig = createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
+  return `${data}.${sig}`;
+}
+
+function verifySession(cookie: string): { user: string; exp: number } | null {
+  const parts = cookie.split(".");
+  if (parts.length !== 3) return null;
+  const [user, expStr, sig] = parts;
+  const expected = createHmac("sha256", SESSION_SECRET).update(`${user}.${expStr}`).digest("base64url");
+  // constant-time compare
+  const a = Buffer.from(sig, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  const exp = Number.parseInt(expStr, 10);
+  if (!Number.isFinite(exp) || Date.now() > exp) return null;
+  return { user, exp };
+}
+
+function checkBasic(header: string | undefined): string | null {
+  if (!header || !header.startsWith("Basic ")) return null;
+  const expectedUser = process.env.API_AUTH_USER;
+  const expectedPass = process.env.API_AUTH_PASS;
+  if (!expectedUser || !expectedPass) return null;
+  try {
+    const [user, pass] = Buffer.from(header.slice(6), "base64").toString().split(":");
+    if (user === expectedUser && pass === expectedPass) return user;
+  } catch { /* malformed */ }
+  return null;
+}
+
+/** Hono middleware enforcing auth: cookie session OR genuine Basic header
+ * (curl users). Returns 401 if neither. Sets c.var.user on success. */
+const requireAuth: MiddlewareHandler = async (c, next) => {
+  const cookie = getCookie(c, SESSION_COOKIE);
+  if (cookie) {
+    const session = verifySession(cookie);
+    if (session) {
+      c.set("user", session.user);
+      return next();
+    }
+  }
+  const basicUser = checkBasic(c.req.header("authorization"));
+  if (basicUser) {
+    c.set("user", basicUser);
+    return next();
+  }
+  return c.json({ error: { code: "UNAUTHENTICATED" } }, 401);
+};
+
+/**
+ * Normalize a stored `source` field (string | IdentitySource | undefined) into a
+ * `{source, sourceUrl}` pair for the dashboard:
+ *
+ *   - structured IdentitySource → return as-is + extract the canonical URL/path.
+ *   - bare string → keep as the legacy string form (in-memory agents still
+ *     pass plain `source: "github.com/..."`); URL is derived heuristically.
+ *
+ * The dashboard treats `sourceUrl` as the agent's canonical identity (the
+ * thing that's clickable + the de-duplication key across multiple workers
+ * that registered the same git source).
+ */
+function normalizeSource(raw: unknown): { source: IdentitySourceT | string; sourceUrl: string | null } {
+  if (raw && typeof raw === "object") {
+    const parsed = IdentitySource.safeParse(raw);
+    if (parsed.success) {
+      const s = parsed.data;
+      if (s.type === "git") return { source: s, sourceUrl: s.url };
+      if (s.type === "local") return { source: s, sourceUrl: s.path };
+      return { source: s, sourceUrl: "inline" };
+    }
+  }
+  const str = typeof raw === "string" ? raw : "";
+  return { source: str, sourceUrl: str || null };
+}
 
 /** An agent the control panel can list, chat with, and inspect. Covers both
  * Slack bots and web-only agents. */
@@ -88,22 +180,115 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     (await db()).collection<ThreadDoc>("slack_threads");
   const sessionsColl = async (): Promise<Collection<SessionDoc>> =>
     (await db()).collection<SessionDoc>("sessions");
+  /**
+   * agent_registry — agents registered dynamically by SDK consumers via the
+   * `@open-gitagent/agent-registry-mongo` telemetry hook (or directly via the
+   * POST /agentos/api/agents/register endpoint below). The dashboard unions
+   * these with the server's hardcoded `opts.agents` (in-memory) — the
+   * in-memory list takes precedence on name collision so the
+   * harness/source/token wiring stays authoritative for agents this server
+   * itself runs (Slack bots, framework-translator, etc).
+   *
+   * This is what makes library-mode deployments visible: a customer's
+   * Temporal worker pod runs `new ComputerAgent({telemetry: new MongoTelemetry(...)})`
+   * and the dashboard shows the agent immediately.
+   */
+  interface RegistryDoc {
+    _id: string;
+    label?: string;
+    harness?: string;
+    source?: unknown;
+    model?: string;
+    registeredBy?: string;
+    registeredAt?: Date;
+    updatedAt?: Date;
+    lastSeen?: Date;
+  }
+  const registryColl = async (): Promise<Collection<RegistryDoc>> =>
+    (await db()).collection<RegistryDoc>("agent_registry");
+
+  /**
+   * chat_pins — server-side mapping of agent → current dashboard chat session.
+   *
+   * Lets the SPA reuse the same sessionId across browser refreshes / sandbox
+   * restarts without holding any state in the browser. Same pattern Slack
+   * uses for thread → sessionId, but keyed on agent name for the dashboard's
+   * single "current chat" semantics.
+   *
+   * The actual conversation memory lives in the harness server's
+   * sessionStore (Mongo) keyed by sessionId; this collection is just the
+   * pointer to "which sessionId is the agent's current dashboard chat."
+   */
+  interface ChatPinDoc {
+    _id: string;       // agent name
+    sessionId: string;
+    updatedAt: Date;
+  }
+  const chatPinsColl = async (): Promise<Collection<ChatPinDoc>> =>
+    (await db()).collection<ChatPinDoc>("chat_pins");
 
   const byName = new Map<string, AgentDef>(opts.agents.map((a) => [a.name, a]));
   const app = new Hono();
 
+  // ── Auth: login / logout / me ──────────────────────────────────────────
+  // These three endpoints are PUBLIC (not gated by requireAuth). Everything
+  // else under /agentos/api/* is mounted AFTER the requireAuth middleware
+  // below, so the surface is locked down by default.
+
+  app.post("/agentos/api/login", async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { user?: string; pass?: string };
+    const expectedUser = process.env.API_AUTH_USER;
+    const expectedPass = process.env.API_AUTH_PASS;
+    if (!expectedUser || !expectedPass) {
+      return c.json({ error: { code: "AUTH_NOT_CONFIGURED" } }, 503);
+    }
+    if (body.user !== expectedUser || body.pass !== expectedPass) {
+      // 401 with no body discrimination — don't help bruteforcers.
+      return c.json({ error: { code: "INVALID_CREDENTIALS" } }, 401);
+    }
+    const expMs = Date.now() + SESSION_MAX_AGE_SEC * 1000;
+    const token = signSession(body.user, expMs);
+    setCookie(c, SESSION_COOKIE, token, {
+      httpOnly: true,
+      secure: true,            // reverse proxy terminates TLS so all real-world requests are https
+      sameSite: "Strict",
+      maxAge: SESSION_MAX_AGE_SEC,
+      path: "/",
+    });
+    return c.json({ ok: true, user: body.user });
+  });
+
+  app.post("/agentos/api/logout", (c) => {
+    deleteCookie(c, SESSION_COOKIE, { path: "/" });
+    return c.json({ ok: true });
+  });
+
+  app.get("/agentos/api/me", (c) => {
+    const cookie = getCookie(c, SESSION_COOKIE);
+    if (cookie) {
+      const session = verifySession(cookie);
+      if (session) return c.json({ user: session.user, source: "cookie" });
+    }
+    const basicUser = checkBasic(c.req.header("authorization"));
+    if (basicUser) return c.json({ user: basicUser, source: "basic" });
+    return c.json({ user: null }, 401);
+  });
+
+  // Everything else under /agentos/api/* requires auth.
+  app.use("/agentos/api/*", requireAuth);
+
   // SRS (policy backend) — hoisted so the chat-sandbox handler and the
   // policy-proxy routes share the same config.
-  const srsBase = (process.env.SRS_BASE_URL ?? "https://srs-dev.test.studio.lyzr.ai").replace(/\/+$/, "");
-  const srsKey = process.env.LYZR_API_KEY ?? process.env.SRS_API_KEY ?? "";
+  const srsBase = (process.env.SRS_BASE_URL ?? "").replace(/\/+$/, "");
+  const srsKey = process.env.SRS_API_KEY ?? "";
   const srsHeaders = (extra: Record<string, string> = {}): Record<string, string> => {
     const h: Record<string, string> = { ...extra };
     if (srsKey) h["x-api-key"] = srsKey;
     return h;
   };
   const srsProxy = async (method: string, path: string, body?: unknown): Promise<Response> => {
-    if (!srsKey) {
-      return new Response(JSON.stringify({ error: { code: "SRS_NOT_CONFIGURED", message: "LYZR_API_KEY not set" } }), { status: 503, headers: { "content-type": "application/json" } });
+    if (!srsKey || !srsBase) {
+      return new Response(JSON.stringify({ error: { code: "SRS_NOT_CONFIGURED", message: "SRS_BASE_URL and SRS_API_KEY must be set" } }), { status: 503, headers: { "content-type": "application/json" } });
     }
     const init: RequestInit = {
       method,
@@ -128,8 +313,60 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     } catch { /* best-effort */ }
 
     const threads = await threadsColl();
-    const out = [];
+
+    // Pull dynamically-registered agents from agent_registry. Best-effort:
+    // if the collection doesn't exist yet (fresh deployment), or Mongo is
+    // briefly unavailable, fall back to just the in-memory list.
+    let registryRows: RegistryDoc[] = [];
+    try {
+      registryRows = await (await registryColl())
+        .find({})
+        .sort({ lastSeen: -1, updatedAt: -1 })
+        .toArray();
+    } catch {
+      /* fall through with empty list */
+    }
+
+    // Union by name. In-memory wins on collision so server-hosted agents
+    // (Slack bots, framework-translator, etc) retain their authoritative
+    // harness/source/token wiring even if a worker registered the same name.
+    const seen = new Set<string>(opts.agents.map((a) => a.name));
+    const combined: Array<{
+      name: string;
+      label: string;
+      harness: string;
+      source: unknown;
+      model: string | null;
+      origin: "in-memory" | "registry";
+      registeredBy?: string;
+      lastSeen?: Date;
+    }> = [];
     for (const a of opts.agents) {
+      combined.push({
+        name: a.name,
+        label: a.label,
+        harness: a.harness,
+        source: a.source,
+        model: a.model ?? null,
+        origin: "in-memory",
+      });
+    }
+    for (const r of registryRows) {
+      if (seen.has(r._id)) continue;
+      combined.push({
+        name: r._id,
+        label: r.label ?? r._id,
+        harness: r.harness ?? "unknown",
+        source: r.source ?? "",
+        model: r.model ?? null,
+        origin: "registry",
+        registeredBy: r.registeredBy,
+        lastSeen: r.lastSeen,
+      });
+    }
+
+    const out = [];
+    for (const a of combined) {
       const docs = await threads.find({ bot: a.name }).toArray();
       const sessionIds = new Set(docs.map((d) => d.sessionId));
       let active = 0;
@@ -141,12 +378,20 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
         const t = d.lastMessageAt ? new Date(d.lastMessageAt) : null;
         return t && (!acc || t > acc) ? t : acc;
       }, null);
+      // Normalize source — structured IdentitySource (from agent_registry
+      // upserts via MongoTelemetry) becomes a {source, sourceUrl} pair the
+      // dashboard renders as a clickable owner/repo identity for git sources.
+      const { source, sourceUrl } = normalizeSource(a.source);
       out.push({
         name: a.name,
         label: a.label,
         harness: a.harness,
-        source: a.source,
-        model: a.model ?? null,
+        source,
+        sourceUrl,
+        model: a.model,
+        origin: a.origin,
+        registeredBy: a.registeredBy ?? null,
+        lastSeen: a.lastSeen ? a.lastSeen.toISOString() : null,
         sandboxCapable: sandboxCapable(a.harness),
         sessionCount: sessionIds.size,
         activeSandboxes: active,
@@ -155,6 +400,111 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
       });
     }
     return c.json({ agents: out });
+  });
+
+  // Lookup by source URL — used to detect "same agent, different name"
+  // (e.g. dev + prod workers both registering the same git repo as separate
+  // names). The dashboard groups these visually.
+  app.get("/agentos/api/agents/by-source", async (c) => {
+    const url = c.req.query("url");
+    if (!url) return c.json({ error: { code: "BAD_REQUEST", message: "`url` required" } }, 400);
+    const matches: Array<{ name: string; source: IdentitySourceT | string; sourceUrl: string | null }> = [];
+    for (const a of opts.agents) {
+      const norm = normalizeSource(a.source);
+      if (norm.sourceUrl === url) matches.push({ name: a.name, source: norm.source, sourceUrl: norm.sourceUrl });
+    }
+    try {
+      const rows = await (await registryColl()).find({}).toArray();
+      for (const r of rows) {
+        const norm = normalizeSource(r.source);
+        if (norm.sourceUrl === url) {
+          matches.push({ name: r._id, source: norm.source, sourceUrl: norm.sourceUrl });
+        }
+      }
+    } catch {
+      /* registry collection optional */
+    }
+    return c.json({ url, matches });
+  });
+
+  // ── Agent registry CRUD ─────────────────────────────────────────────────
+  // Registry-side mutations only — the in-memory list configured at server
+  // startup is never modified by these endpoints. Library-mode SDK consumers
+  // can also write directly via `MongoTelemetry`; this endpoint is for ops
+  // tools / manual registration from the dashboard.
+
+  app.post("/agentos/api/agents/register", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) return c.json({ error: { code: "BAD_REQUEST", message: "`name` required" } }, 400);
+    const now = new Date();
+    const set: Partial<RegistryDoc> = {
+      label: typeof body.label === "string" ? body.label : undefined,
+      harness: typeof body.harness === "string" ? body.harness : undefined,
+      source: body.source ?? undefined,
+      model: typeof body.model === "string" ? body.model : undefined,
+      registeredBy: typeof body.registeredBy === "string" ? body.registeredBy : undefined,
+      updatedAt: now,
+      lastSeen: now,
+    };
+    for (const k of Object.keys(set) as (keyof typeof set)[]) {
+      if (set[k] === undefined) delete set[k];
+    }
+    await (
+      await registryColl()
+    ).updateOne(
+      { _id: name },
+      { $set: set, $setOnInsert: { _id: name, registeredAt: now } },
+      { upsert: true },
+    );
+    return c.json({ ok: true, name });
+  });
+
+  app.patch("/agentos/api/agents/:name", async (c) => {
+    const name = c.req.param("name");
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (byName.has(name)) {
+      return c.json(
+        {
+          error: {
+            code: "IN_MEMORY_AGENT",
+            message: "This agent is configured at server startup; edit examples/computeragent-server.ts instead.",
+          },
+        },
+        409,
+      );
+    }
+    const set: Partial<RegistryDoc> = {
+      label: typeof body.label === "string" ? body.label : undefined,
+      harness: typeof body.harness === "string" ? body.harness : undefined,
+      source: body.source,
+      model: typeof body.model === "string" ? body.model : undefined,
+      updatedAt: new Date(),
+    };
+    for (const k of Object.keys(set) as (keyof typeof set)[]) {
+      if (set[k] === undefined) delete set[k];
+    }
+    const r = await (await registryColl()).updateOne({ _id: name }, { $set: set });
+    if (r.matchedCount === 0) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+    return c.json({ ok: true });
+  });
+
+  app.delete("/agentos/api/agents/:name", async (c) => {
+    const name = c.req.param("name");
+    if (byName.has(name)) {
+      return c.json(
+        {
+          error: {
+            code: "IN_MEMORY_AGENT",
+            message: "This agent is configured at server startup; remove it from examples/computeragent-server.ts and restart.",
+          },
+        },
+        409,
+      );
+    }
+    const r = await (await registryColl()).deleteOne({ _id: name });
+    if (r.deletedCount === 0) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+    return c.json({ ok: true });
   });
 
   // ── Request logs ────────────────────────────────────────────────────────
@@ -208,7 +558,16 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
   app.get("/agentos/api/sessions/:id", async (c) => {
     const id = c.req.param("id");
     const [sessions, threads] = [await sessionsColl(), await threadsColl()];
-    const session = await sessions.findOne({ _id: id });
+    // Two storage shapes:
+    //   - gitagent / engine-agnostic: sessions._id == sessionId
+    //   - claude-agent-sdk: sessions._id is a UUID, sessionId is embedded in
+    //     projectKey (a flattened version of the workdir path), e.g.
+    //     "-tmp-computeragent-sessions-agentos-architect-<uuid>"
+    // Try both so transcripts work uniformly across harnesses.
+    const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const session =
+      (await sessions.findOne({ _id: id })) ??
+      (await sessions.findOne({ projectKey: { $regex: `${escapedId}$` } }));
     const thread = await threads.findOne({ sessionId: id });
     return c.json({
       sessionId: id,
@@ -220,22 +579,81 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
           }
         : null,
       updatedAt: session?.updatedAt ? new Date(session.updatedAt).toISOString() : null,
-      entries: (session?.entries ?? []).map((e) => ({ type: e.type ?? "assistant", text: e.text ?? "" })),
+      // Multiple session-storage shapes, depending on the harness:
+      //   gitagent           → {type:"user"|"assistant", text}
+      //   claude-agent-sdk   → {type:"user", message:{role,content}} where
+      //                        content is either a string or [{type:"text",text}]
+      //                        plus meta events (queue-operation) with no text
+      // We normalize to {type:"user"|"assistant", text} for the SPA.
+      entries: (session?.entries ?? [])
+        .map((raw) => {
+          const e = raw as Record<string, unknown>;
+          if (e.type === "queue-operation") return { type: "meta", text: "" };
+          const message = (e.message ?? null) as { role?: string; content?: unknown } | null;
+          const role = (message?.role as string | undefined) ?? (e.type as string | undefined) ?? "assistant";
+          const content: unknown = message?.content ?? e.content ?? e.text;
+          let text = "";
+          if (typeof content === "string") text = content;
+          else if (Array.isArray(content)) {
+            text = content
+              .filter((b): b is { type: string; text: string } =>
+                !!b && typeof b === "object" && (b as { type?: string }).type === "text")
+              .map((b) => b.text)
+              .join("\n");
+          }
+          const role2 = role === "user" || role === "assistant" ? role : "assistant";
+          return { type: role2, text: text.trim() };
+        })
+        .filter((e) => e.text.length > 0),
     });
   });
 
   // ── Create a chat sandbox for an agent (web console) ─────────────────────
-  // Builds the SAME sandbox config the Slack flow uses (Lyzr model, envs,
+  // Builds the SAME sandbox config the Slack flow uses (proxy model, envs,
   // gitToken) server-side. Pass an existing sessionId to resume that thread's
   // conversation memory; otherwise a fresh console session is minted.
+  // Look up an agent by name — in-memory first, then the Mongo registry.
+  // Registry agents have no auth/envs persisted; the server's own env (forwarded
+  // via inheritEssentialHostEnv) provides ANTHROPIC_API_KEY etc.
+  async function resolveAgent(name: string): Promise<AgentDef | undefined> {
+    const inMem = byName.get(name);
+    if (inMem) return inMem;
+    try {
+      const doc = await (await registryColl()).findOne({ _id: name });
+      if (!doc) return undefined;
+      const srcStr = typeof doc.source === "string"
+        ? doc.source
+        : (doc.source as { url?: string; path?: string })?.url ?? (doc.source as { path?: string })?.path ?? "";
+      return {
+        name: doc._id,
+        label: doc.label ?? doc._id,
+        harness: doc.harness ?? "claude-agent-sdk",
+        source: srcStr,
+        model: doc.model,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
   app.post("/agentos/api/agents/:name/chat-sandbox", async (c) => {
-    const agent = byName.get(c.req.param("name"));
+    const agent = await resolveAgent(c.req.param("name"));
     if (!agent) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 404);
     if (!sandboxCapable(agent.harness)) {
       return c.json({ error: { code: "NO_SANDBOX", message: `${agent.label} runs one-shot — use /run` } }, 400);
     }
     const body = await c.req.json().catch(() => ({})) as { sessionId?: string };
-    const sessionId = body.sessionId || `agentos-${agent.name}-${randomUUID().slice(0, 12)}`;
+
+    // Resume order: explicit body.sessionId > server-pinned > new
+    let sessionId = body.sessionId;
+    if (!sessionId) {
+      try {
+        const pin = await (await chatPinsColl()).findOne({ _id: agent.name });
+        if (pin?.sessionId) sessionId = pin.sessionId;
+      } catch { /* fall through to fresh */ }
+    }
+    if (!sessionId) sessionId = `agentos-${agent.name}-${randomUUID().slice(0, 12)}`;
+
     // Lookup policy binding (if any) and translate to a sandbox policy spec.
     let policySpec: { kind: "srs"; endpoint: string; apiKey: string; policyId: string; principalId: string } | undefined;
     if (opts.policyStore && srsKey) {
@@ -265,14 +683,57 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
       return c.json({ error: { code: "SANDBOX_CREATE_FAILED", detail: text.slice(0, 300) } }, 502);
     }
     const j = await r.json() as { sandboxId: string };
+
+    // Pin this sessionId as the agent's current dashboard chat so the next
+    // boot from any browser resumes the same conversation.
+    try {
+      await (await chatPinsColl()).updateOne(
+        { _id: agent.name },
+        { $set: { sessionId, updatedAt: new Date() } },
+        { upsert: true },
+      );
+    } catch { /* best effort */ }
+
+    // Also write a slack_threads-style row so the /sessions + /agents
+    // endpoints (which join by `bot`) can see web chats. We reuse this
+    // collection rather than introduce a separate "web_threads" so the
+    // dashboard's session list is uniformly populated. Slack threads use a
+    // real channel+threadTs; web threads use channel="web" + the sessionId
+    // as the synthetic threadTs.
+    try {
+      const now = new Date();
+      await threadsColl().then((threads) => threads.updateOne(
+        { _id: `web:${sessionId}` },
+        {
+          $set: {
+            bot: agent.name,
+            channel: "web",
+            threadTs: sessionId,
+            sessionId,
+            sandboxId: j.sandboxId,
+            snapshotId: null,
+            lastMessageAt: now,
+          },
+          $setOnInsert: { createdAt: now },
+        },
+        { upsert: true },
+      ));
+    } catch { /* best effort — dashboard will fall back to empty session list */ }
+
     return c.json({ sandboxId: j.sandboxId, sessionId, bot: agent.name });
+  });
+
+  // DELETE the agent's chat pin — "New chat" button.
+  app.delete("/agentos/api/agents/:name/chat-pin", async (c) => {
+    try { await (await chatPinsColl()).deleteOne({ _id: c.req.param("name") }); } catch { /* ignore */ }
+    return c.json({ ok: true });
   });
 
   // ── One-shot run (for deepagents, which has no warm-sandbox support) ─────
   // Streams a fresh POST /run back to the browser. No conversation memory
   // across turns — each message is an independent run.
   app.post("/agentos/api/agents/:name/run", async (c) => {
-    const agent = byName.get(c.req.param("name"));
+    const agent = await resolveAgent(c.req.param("name"));
     if (!agent) return c.json({ error: { code: "UNKNOWN_AGENT" } }, 404);
     const body = await c.req.json().catch(() => ({})) as { message?: string };
     const runBody: Record<string, unknown> = {
@@ -410,9 +871,9 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     return c.json({ ok: true, running: true });
   });
 
-  // ── Policies — proxy SRS so the browser never sees LYZR_API_KEY ─────────
+  // ── Policies — proxy SRS so the browser never sees SRS_API_KEY ─────────
   //
-  // SRS (Lyzr Studio Responsible AI APIs) owns policy CRUD. We forward
+  // The external SRS (Service-RBAC-Service) owns policy CRUD. We forward
   // GET/POST/PUT/DELETE on /v1/rai/policies, inject `x-api-key` server-side,
   // and pass the body through unchanged. The dropdown on the agent screen
   // uses GET /policies to populate; the policy editor uses POST/PUT.
@@ -457,6 +918,27 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
   });
 
   app.get("/agentos/api/health", (c) => c.json({ ok: true, agents: opts.agents.map((a) => a.name) }));
+
+  // ── Policies stubs ─────────────────────────────────────────────────────────
+  // The Policies tab is wired against an external SRS (Security/Runtime/Safety)
+  // service in the upstream design. In this deployment SRS isn't running, so
+  // every endpoint returns an empty list / not-found so the UI shows clean
+  // EmptyState components instead of a "404" error toast.
+  //
+  // When the SRS proxy lands, drop this block — agentos-api should reverse
+  // proxy the policy paths instead of stubbing.
+  app.get("/agentos/api/policies", (c) => c.json({ policies: [] }));
+  app.get("/agentos/api/policies/:id", (c) => c.json({ error: { code: "NOT_FOUND" } }, 404));
+  app.post("/agentos/api/policies", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED", message: "Policy service (SRS) is not deployed in this environment." } }, 503));
+  app.put("/agentos/api/policies/:id", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
+  app.delete("/agentos/api/policies/:id", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
+  app.get("/agentos/api/agents/:name/policy", (c) => c.json({ binding: null }));
+  app.put("/agentos/api/agents/:name/policy", (c) => c.json({ binding: null }));
+  app.get("/agentos/api/opa-policies", (c) => c.json({ policies: [] }));
+  app.get("/agentos/api/opa-policies/:id", (c) => c.json({ error: { code: "NOT_FOUND" } }, 404));
+  app.post("/agentos/api/opa-policies", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
+  app.put("/agentos/api/opa-policies/:id", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
+  app.delete("/agentos/api/opa-policies/:id", (c) => c.json({ error: { code: "SRS_NOT_CONFIGURED" } }, 503));
 
   return app;
 }

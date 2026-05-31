@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
+import { RefreshCw, Inbox } from "lucide-react";
 import { api, type LogEntry } from "../api.ts";
+import { Button } from "./ui/button.tsx";
+import { Badge } from "./ui/badge.tsx";
+import { Skeleton } from "./ui/skeleton.tsx";
+import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group.tsx";
+import { EmptyState } from "./composite/EmptyState.tsx";
 
-const SOURCE_STYLE: Record<string, string> = {
-  slack: "bg-indigo-500/20 text-indigo-300",
-  web: "bg-emerald-500/20 text-emerald-300",
-  schedule: "bg-amber-500/20 text-amber-300",
+const SOURCE_VARIANT: Record<LogEntry["source"], "default" | "secondary" | "warning" | "info"> = {
+  slack: "info",
+  web: "success" as const as "default",
+  schedule: "warning",
 };
 
 export function LogsTab({ agent }: { agent: string }) {
@@ -13,19 +19,33 @@ export function LogsTab({ agent }: { agent: string }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "schedule">("all");
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = (quiet = false) => {
     if (!quiet) setLoading(true);
-    api.logs(agent, 200)
-      .then((l) => { setLogs(l); setErr(null); })
+    else setRefreshing(true);
+    api
+      .logs(agent, 200)
+      .then((l) => {
+        setLogs(l);
+        setErr(null);
+      })
       .catch((e) => setErr(String(e)))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setRefreshing(false);
+      });
   };
-  useEffect(() => { load(); }, [agent]);
-  // Auto-refresh so scheduled/slack/web runs appear without a manual reload.
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent]);
+
   useEffect(() => {
     const t = setInterval(() => load(true), 15_000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent]);
 
   const shown = filter === "schedule" ? logs.filter((l) => l.source === "schedule") : logs;
@@ -33,50 +53,79 @@ export function LogsTab({ agent }: { agent: string }) {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-6 py-3 flex items-center gap-3 border-b border-ink-700">
-        <span className="text-sm text-gray-400">{shown.length} request{shown.length !== 1 ? "s" : ""}</span>
-        <div className="flex rounded-lg bg-ink-800 p-0.5 text-xs">
-          <button onClick={() => setFilter("all")} className={`px-2.5 py-1 rounded-md ${filter === "all" ? "bg-accent text-white" : "text-gray-400"}`}>All</button>
-          <button onClick={() => setFilter("schedule")} className={`px-2.5 py-1 rounded-md ${filter === "schedule" ? "bg-accent text-white" : "text-gray-400"}`}>⏱ Scheduled{scheduleCount ? ` (${scheduleCount})` : ""}</button>
-        </div>
-        <span className="text-[10px] text-gray-600">auto-refresh 15s</span>
-        <button onClick={() => load()} className="ml-auto text-xs px-2.5 py-1 rounded bg-ink-700 hover:bg-ink-600">
+      <div className="px-6 py-3 flex items-center gap-3 border-b border-border">
+        <span className="text-xs text-muted-foreground">
+          {shown.length} request{shown.length !== 1 ? "s" : ""}
+        </span>
+        <ToggleGroup
+          type="single"
+          value={filter}
+          onValueChange={(v) => v && setFilter(v as "all" | "schedule")}
+        >
+          <ToggleGroupItem value="all" size="sm">All</ToggleGroupItem>
+          <ToggleGroupItem value="schedule" size="sm">
+            ⏱ Scheduled{scheduleCount ? ` (${scheduleCount})` : ""}
+          </ToggleGroupItem>
+        </ToggleGroup>
+        <span className="text-[10px] text-muted-foreground/70">auto-refresh 15s</span>
+        <Button variant="outline" size="sm" onClick={() => load()} className="ml-auto">
+          <RefreshCw className={refreshing ? "h-3 w-3 animate-spin" : "h-3 w-3"} />
           Refresh
-        </button>
+        </Button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {err && <div className="p-6 text-red-400 text-sm">{err}</div>}
-        {loading && <div className="p-6 text-gray-500 text-sm">Loading…</div>}
-        {!loading && shown.length === 0 && (
-          <div className="p-6 text-gray-500 text-sm">
-            {filter === "schedule"
-              ? "No scheduled runs logged yet — they'll appear here after a schedule fires."
-              : "No logs yet. Requests are recorded from now on — mention the agent in Slack, chat here, or run a schedule."}
+        {err && <div className="p-6 text-destructive text-sm">{err}</div>}
+        {loading && (
+          <div className="p-3 space-y-1.5">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <Skeleton key={i} className="h-14 w-full" />
+            ))}
           </div>
         )}
-        <div className="divide-y divide-ink-700">
+        {!loading && shown.length === 0 && (
+          <EmptyState
+            icon={Inbox}
+            title={filter === "schedule" ? "No scheduled runs yet" : "No logs yet"}
+            body={
+              filter === "schedule"
+                ? "Logs appear here after a schedule fires."
+                : "Requests are recorded from now on — mention the agent in Slack, chat here, or run a schedule."
+            }
+          />
+        )}
+        <div className="divide-y divide-border">
           {shown.map((l) => {
             const open = expanded === l._id;
             return (
-              <div key={l._id} className="px-6 py-3 hover:bg-ink-800/50">
-                <button className="w-full text-left" onClick={() => setExpanded(open ? null : l._id)}>
-                  <div className="flex items-center gap-2 text-xs text-gray-500">
-                    <span className={`rounded px-1.5 py-0.5 ${SOURCE_STYLE[l.source] ?? "bg-ink-600 text-gray-300"}`}>
+              <div key={l._id} className="px-6 py-3 hover:bg-muted/30 transition-colors">
+                <button
+                  type="button"
+                  className="w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset rounded"
+                  onClick={() => setExpanded(open ? null : l._id)}
+                >
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Badge variant={SOURCE_VARIANT[l.source] ?? "secondary"} className="text-[10px]">
                       {l.source === "schedule" ? "⏱ schedule" : l.source}
-                    </span>
-                    {!l.ok && <span className="rounded px-1.5 py-0.5 bg-red-500/20 text-red-300">error</span>}
+                    </Badge>
+                    {!l.ok && (
+                      <Badge variant="destructive" className="text-[10px]">
+                        error
+                      </Badge>
+                    )}
                     <span>{new Date(l.ts).toLocaleString()}</span>
-                    <span className="text-gray-600">·</span>
-                    <span className="text-gray-400">{l.requester}</span>
+                    <span className="text-muted-foreground/50">·</span>
+                    <span>{l.requester}</span>
                   </div>
-                  <div className="mt-1 text-sm text-gray-200 truncate">{l.query || "—"}</div>
-                  {!open && <div className="mt-0.5 text-xs text-gray-500 truncate">{l.reply || "—"}</div>}
+                  <div className="mt-1 text-sm truncate">{l.query || "—"}</div>
+                  {!open && <div className="mt-0.5 text-xs text-muted-foreground truncate">{l.reply || "—"}</div>}
                 </button>
                 {open && (
                   <div className="mt-2 space-y-2">
                     <Field label="Query" value={l.query} />
                     <Field label="Reply" value={l.reply} />
-                    {l.sessionId && <div className="text-[11px] text-gray-600 font-mono">{l.sessionId}</div>}
+                    {l.sessionId && (
+                      <div className="text-[11px] text-muted-foreground font-mono">{l.sessionId}</div>
+                    )}
                   </div>
                 )}
               </div>
@@ -91,8 +140,10 @@ export function LogsTab({ agent }: { agent: string }) {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">{label}</div>
-      <pre className="whitespace-pre-wrap break-words text-sm text-gray-300 bg-ink-800 rounded-lg p-3 max-h-72 overflow-y-auto">{value || "—"}</pre>
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{label}</div>
+      <pre className="whitespace-pre-wrap break-words text-sm bg-card border border-border rounded-md p-3 max-h-72 overflow-y-auto">
+        {value || "—"}
+      </pre>
     </div>
   );
 }

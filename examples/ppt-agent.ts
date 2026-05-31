@@ -18,7 +18,7 @@ if (!ANTHROPIC_API_KEY) throw new Error("Set ANTHROPIC_API_KEY first.");
 
 const TOPIC =
   process.argv[2] ??
-  "10-slide investor deck for Lyzr AI, an enterprise platform for building and governing AI agents. Audience: Series A VCs. Tone: confident, data-driven.";
+  "10-slide investor deck for an example AI startup. Audience: Series A VCs. Tone: confident, data-driven.";
 
 const OUT = join(import.meta.dir ?? __dirname, "decks");
 await mkdir(OUT, { recursive: true });
@@ -26,7 +26,7 @@ await mkdir(OUT, { recursive: true });
 console.log(`\nTopic: ${TOPIC}\nOutput dir: ${OUT}\n`);
 
 await using agent = new ComputerAgent({
-  source: { type: "git", url: "github.com/shreyas-lyzr/ppt-agent" },
+  source: { type: "git", url: "github.com/open-gitagent/example-ppt-agent" },
   harness: "claude-agent-sdk",
   runtime: new LocalSubstrate(),
   envs: { ANTHROPIC_API_KEY },

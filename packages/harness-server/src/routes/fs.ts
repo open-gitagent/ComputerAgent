@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { FsEditBody, FsMkdirBody, FsMoveBody } from "@computeragent/protocol";
+import { FsEditBody, FsMkdirBody, FsMoveBody } from "@open-gitagent/protocol";
 import { BadRequest, NotFound } from "../error-mapper.js";
 import { PathEscapeError } from "../path-jail.js";
 import {

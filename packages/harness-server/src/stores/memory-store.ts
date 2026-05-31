@@ -2,7 +2,7 @@ import type {
   SessionKey,
   SessionStore,
   SessionStoreEntry,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 
 /**
  * In-process SessionStore. Holds appended entries in a Map keyed by sessionId.

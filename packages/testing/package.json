@@ -23,7 +23,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@computeragent/protocol": "workspace:*"
+    "@open-gitagent/protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

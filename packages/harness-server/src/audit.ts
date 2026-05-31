@@ -1,4 +1,4 @@
-import type { HarnessEvent } from "@computeragent/protocol";
+import type { HarnessEvent } from "@open-gitagent/protocol";
 
 /**
  * Pluggable audit hook. The server tees every event into the sink right after

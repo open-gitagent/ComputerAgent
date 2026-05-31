@@ -22,7 +22,7 @@ import { ClaudeAgentEngine } from "@computeragent/engine-claude-agent-sdk";
 import { GitAgentEngine } from "@computeragent/engine-gitagent";
 import { DeepAgentsEngine } from "@computeragent/engine-deepagents";
 import { GitAgentProtocolLoader } from "@computeragent/identity-gitagentprotocol";
-import { createLogger } from "@computeragent/protocol";
+import { createLogger } from "@open-gitagent/protocol";
 
 const PORT = Number(process.env.PORT ?? 7700);
 const logger = createLogger({ component: "harness" });

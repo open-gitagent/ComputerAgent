@@ -16,7 +16,7 @@
  *     bun run examples/wedge3-e2b-demo.ts
  */
 
-import { ComputerAgent } from "@computeragent/sdk";
+import { ComputerAgent } from "@open-gitagent/sdk";
 import { E2BSubstrate } from "@computeragent/runtime-e2b";
 
 const anthropicKey = process.env.ANTHROPIC_API_KEY;

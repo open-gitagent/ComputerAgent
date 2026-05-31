@@ -1,4 +1,4 @@
-import type { StateStore } from "@computeragent/protocol";
+import type { StateStore } from "@open-gitagent/protocol";
 import { S3StateStore, type S3StateStoreOptions } from "./s3-store.js";
 
 /**

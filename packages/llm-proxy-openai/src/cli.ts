@@ -20,7 +20,7 @@ const upstreamBase = process.env.UPSTREAM_BASE;
 const upstreamToken = process.env.UPSTREAM_TOKEN;
 
 if (!upstreamBase) {
-  console.error("ERROR: UPSTREAM_BASE is required (e.g. https://agent-dev.test.studio.lyzr.ai)");
+  console.error("ERROR: UPSTREAM_BASE is required (e.g. https://your-inference-gateway.example.com)");
   process.exit(2);
 }
 if (!upstreamToken) {

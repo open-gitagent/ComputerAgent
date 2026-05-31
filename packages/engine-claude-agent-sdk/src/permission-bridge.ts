@@ -1,5 +1,5 @@
 import type { CanUseTool, HookCallback, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
-import type { PermissionRequest } from "@computeragent/protocol";
+import type { PermissionRequest } from "@open-gitagent/protocol";
 import { classifyRisk } from "./risk.js";
 
 /**

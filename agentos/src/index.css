@@ -2,13 +2,97 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root { height: 100%; }
-body {
-  margin: 0;
-  background: #0e0b07;
-  color: #e7e2d8;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+/* ----------------------------------------------------------------------
+ * Design tokens — refined retro CRT palette.
+ *
+ * Every color shadcn primitives reach for is bound to one of these
+ * variables, so changing a single value here re-skins the whole app.
+ * Light mode is defined for future use but `.dark` is the canonical theme.
+ *
+ * Values are HSL components (without the `hsl(...)` wrapper) because
+ * Tailwind's color binding writes `hsl(var(--token))` itself.
+ * -------------------------------------------------------------------- */
+
+@layer base {
+  :root {
+    /* Surfaces — warmer than pure neutral; sepia-tinted near-black */
+    --background:           28 22% 4%;   /* #0e0b07 — body */
+    --foreground:           36 25% 88%;  /* #e7e2d8 — body text */
+    --card:                 30 21% 7%;   /* #17120c — raised panels */
+    --card-foreground:      36 25% 88%;
+    --popover:              30 23% 9%;   /* #1c1610 — floating surfaces */
+    --popover-foreground:   36 25% 88%;
+    --muted:                30 20% 11%;  /* #221a11 — secondary surface */
+    --muted-foreground:     35 12% 55%;  /* #8a8174 — secondary text */
+
+    /* Borders / inputs */
+    --border:               30 17% 17%;  /* #2f2417 */
+    --input:                30 17% 17%;
+    --ring:                 142 65% 38%; /* CRT green focus ring */
+
+    /* CRT accent — primary action color */
+    --primary:              142 65% 38%; /* #16a34a */
+    --primary-foreground:   144 80% 96%;
+    --secondary:            30 20% 11%;
+    --secondary-foreground: 36 25% 88%;
+    --accent:               30 17% 17%;
+    --accent-foreground:    36 25% 88%;
+
+    /* Semantic */
+    --destructive:          0 70% 50%;
+    --destructive-foreground: 0 0% 98%;
+    --success:              142 65% 42%;
+    --success-foreground:   144 80% 96%;
+    --warning:              38 92% 55%;
+    --warning-foreground:   38 80% 10%;
+
+    /* Radii */
+    --radius:               0.5rem;
+  }
+
+  .dark {
+    /* Dark === default. Light overrides can land here later under :root
+       and dark stays canonical. For now the variables above already
+       represent the dark theme. */
+  }
 }
-* { scrollbar-width: thin; scrollbar-color: #3e3020 transparent; }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-thumb { background: #3e3020; border-radius: 4px; }
+
+/* ----------------------------------------------------------------------
+ * Base styles
+ * -------------------------------------------------------------------- */
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    font-family: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  code, kbd, pre, samp {
+    font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  /* Numerals: tabular by default for tables/metrics */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Custom scrollbar — keeps the CRT feel */
+  * { scrollbar-width: thin; scrollbar-color: hsl(var(--border)) transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 4px; }
+  *::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.4); }
+
+  /* Focus rings — every interactive element gets one */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: calc(var(--radius) - 2px);
+  }
+}

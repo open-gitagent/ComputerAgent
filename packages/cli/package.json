@@ -20,7 +20,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@computeragent/sdk": "workspace:*",
+    "@open-gitagent/sdk": "workspace:*",
     "citty": "^0.1.6"
   },
   "devDependencies": {

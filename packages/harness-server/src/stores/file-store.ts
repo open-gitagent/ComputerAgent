@@ -5,7 +5,7 @@ import type {
   SessionKey,
   SessionStore,
   SessionStoreEntry,
-} from "@computeragent/protocol";
+} from "@open-gitagent/protocol";
 
 /**
  * Durable SessionStore that writes one JSONL file per sessionId under a
