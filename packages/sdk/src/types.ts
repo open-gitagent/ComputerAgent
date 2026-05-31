@@ -42,7 +42,7 @@ export type IdentityLoaderName =
 /**
  * Session-store kinds the harness's default registry knows about. Custom kinds
  * registered via `createHarnessServer({ sessionStores })` are accepted too.
- * (E.g. `@open-gitagent/session-store-mongo` and `-sqlite` register their own.)
+ * (E.g. `@computeragent/session-store-mongo` and `-sqlite` register their own.)
  */
 export type SessionStoreKind =
   | "memory"
@@ -143,6 +143,20 @@ export interface ComputerAgentOptions {
    *   ]
    */
   readonly attachments?: readonly Attachment[];
+  /**
+   * Optional per-session policy decider config. When set, the harness
+   * builds the matching decider (today: SrsPolicyDecider) and gates every
+   * tool call through it. Engine-agnostic; works for any harness that
+   * routes tool calls through onPermissionRequest (claude-agent-sdk via
+   * PreToolUse hook, gitagent via preToolUse).
+   */
+  readonly policy?: {
+    readonly kind: "srs";
+    readonly endpoint: string;
+    readonly apiKey: string;
+    readonly policyId: string;
+    readonly principalId: string;
+  };
   /**
    * Optional telemetry hook. When supplied, the SDK fires `onAgentConstructed`
    * once at construction, `onChatStart`/`onChatEnd` paired around each chat,

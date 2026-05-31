@@ -8,7 +8,7 @@ import type {
   UserMessage,
 } from "@open-gitagent/protocol";
 import { nopLogger } from "@open-gitagent/protocol";
-import { buildCanUseTool } from "./permission-bridge.js";
+import { buildCanUseTool, buildPreToolUseHook } from "./permission-bridge.js";
 import { deriveEngineUuid } from "./derive-uuid.js";
 
 const CAPABILITIES: EngineCapabilities = {
@@ -106,6 +106,14 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
       includePartialMessages: true,
       abortController,
       canUseTool: buildCanUseTool(ctx.onPermissionRequest),
+      // PreToolUse hook — fires even in bypassPermissions mode (where canUseTool
+      // is skipped) and its deny overrides any other permission decision. The
+      // harness routes this to its policy decider; without one, the hook
+      // returns allow and falls through to canUseTool / the default flow.
+      hooks: {
+        ...((ctx.options as { hooks?: ClaudeAgentOptions["hooks"] }).hooks ?? {}),
+        PreToolUse: [{ hooks: [buildPreToolUseHook(ctx.onPermissionRequest)] }],
+      },
       ...(ctx.budget?.maxUsd !== undefined ? { maxBudgetUsd: ctx.budget.maxUsd } : {}),
       ...storeOpts,
     };
@@ -261,13 +269,7 @@ function signalToController(signal: AbortSignal): AbortController {
  *
  * Caller envs (api keys, etc.) override these on conflict.
  */
-/**
- * Pure: snapshot the env vars the spawned harness subprocess needs from the
- * parent process. Includes the standard POSIX/XDG essentials plus the AWS
- * Bedrock envs the Claude Agent SDK reads when `CLAUDE_CODE_USE_BEDROCK=1`.
- * Exported for testability — the engine itself calls it inline.
- */
-export function inheritEssentialHostEnv(): Record<string, string> {
+function inheritEssentialHostEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const k of [
     "HOME",
@@ -279,21 +281,6 @@ export function inheritEssentialHostEnv(): Record<string, string> {
     "CLAUDE_CONFIG_DIR",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
-    // AWS Bedrock — when CLAUDE_CODE_USE_BEDROCK=1, the Claude Agent SDK
-    // switches transport to Bedrock and uses the standard AWS credential
-    // chain. On EKS that means the IRSA-projected web-identity token at
-    // AWS_WEB_IDENTITY_TOKEN_FILE + AWS_ROLE_ARN; locally it's the usual
-    // AWS_PROFILE / shared-credentials flow. Pass these through so the
-    // chain can find them inside the spawned harness subprocess.
-    "CLAUDE_CODE_USE_BEDROCK",
-    "AWS_REGION",
-    "AWS_DEFAULT_REGION",
-    "AWS_BEDROCK_MODEL_ID",
-    "AWS_ROLE_ARN",
-    "AWS_WEB_IDENTITY_TOKEN_FILE",
-    "AWS_PROFILE",
-    "AWS_SHARED_CREDENTIALS_FILE",
-    "AWS_CONFIG_FILE",
   ]) {
     const v = process.env[k];
     if (v) out[k] = v;

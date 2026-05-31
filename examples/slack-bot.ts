@@ -404,11 +404,23 @@ export interface AgentRuntimeSpec {
  * session store, S3 auto-save, TTLs) so the Slack flow and the AgentOS web console
  * create identically-configured sandboxes. Secrets stay server-side.
  */
-export function sandboxBodyForBot(bot: AgentRuntimeSpec, sessionId: string): Record<string, unknown> {
+export interface SandboxPolicySpec {
+  readonly kind: "srs";
+  readonly endpoint: string;
+  readonly apiKey: string;
+  readonly policyId: string;
+  readonly principalId: string;
+}
+
+export function sandboxBodyForBot(
+  bot: AgentRuntimeSpec,
+  sessionId: string,
+  policy?: SandboxPolicySpec,
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     source: bot.source,
     harness: bot.harness,
-    runtime: "bwrap",
+    runtime: process.env.DEFAULT_SANDBOX_RUNTIME ?? "bwrap",
     options: { permissionMode: "bypassPermissions", settingSources: ["project"] },
     sessionId,
     sessionStore: { kind: "mongo" },
@@ -421,6 +433,7 @@ export function sandboxBodyForBot(bot: AgentRuntimeSpec, sessionId: string): Rec
   };
   if (bot.model) body.model = bot.model;
   if (bot.gitToken) body.gitToken = bot.gitToken;
+  if (policy) body.policy = policy;
   return body;
 }
 

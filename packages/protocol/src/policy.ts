@@ -54,7 +54,7 @@ export interface SrsPolicyConfig {
   readonly endpoint: string;
   /** x-api-key for SRS. Never leaves the harness. */
   readonly apiKey: string;
-  /** Policy id whose cedar_guardrail + opa_guardrail to apply. */
+  /** RAI policy_id whose cedar_guardrail + opa_guardrail to apply. */
   readonly policyId: string;
   /** Forwarded to SRS as the `principal_id` for audit. */
   readonly principalId: string;
