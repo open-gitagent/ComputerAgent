@@ -33,17 +33,6 @@ A reference implementation of the **Harness Protocol** — a framework-agnostic 
 - **Production-shaped failure semantics** — explicit, documented contracts: `AuditSink` is fire-and-forget, `SessionStore` is fail-loud, sibling sessions never share blast radius. Validated by an adversarial conformance suite.
 - **Live-tested** — every substrate × every engine × every memory backend verified end-to-end against the real Anthropic API.
 
-### vs. other agent frameworks
-
-| | LangChain / LangGraph | CrewAI | AutoGen | OpenInterpreter | **ComputerAgent** |
-|---|---|---|---|---|---|
-| Agent definition is portable across processes | Python class | Python YAML | Python class | Python | **Git repo / inline manifest (any language)** |
-| Wire protocol you can drive with `curl` | ❌ | ❌ | ❌ | ❌ | **✅ HTTP+SSE** |
-| Same code runs locally + in cloud sandbox + in a VM | Per-integration | Per-integration | Per-integration | Local only | **✅ One-line `runtime:` swap** |
-| Swappable conversation memory backend | Per-integration | ❌ | Per-integration | ❌ | **✅ One-line `sessionStore:` swap** |
-| Resume across process restart, host changes, substrate teardown | Manual | ❌ | Manual | ❌ | **✅ Built-in (`SessionStore`)** |
-| Conformance suite for third-party plug-ins | ❌ | ❌ | ❌ | ❌ | **✅ `@computeragent/testing`** |
-
 ComputerAgent decomposes the agent stack into **four orthogonal axes** — any combination works through the same SDK call:
 
 - **WHAT** — agent identity. Default loader: [GitAgentProtocol](https://github.com/open-gitagent/gitagent-protocol). Add your own with an `IdentityLoader`.
