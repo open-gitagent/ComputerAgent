@@ -269,9 +269,11 @@ function signalToController(signal: AbortSignal): AbortController {
  *
  * Caller envs (api keys, etc.) override these on conflict.
  */
-function inheritEssentialHostEnv(): Record<string, string> {
+export function inheritEssentialHostEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const k of [
+    // POSIX + XDG basics — required for the SDK to resolve $HOME, $PATH, etc.
+    // Without these, transcript-mirror writes silently drop.
     "HOME",
     "PATH",
     "USER",
@@ -281,6 +283,19 @@ function inheritEssentialHostEnv(): Record<string, string> {
     "CLAUDE_CONFIG_DIR",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
+    // Bedrock + AWS IRSA passthrough (task #68 Phase 2a) — when the caller
+    // routes the agent via Bedrock, the AWS SDK's default credential chain
+    // needs these. Picked up automatically from the pod env (IRSA injects
+    // AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE) or developer shell.
+    "CLAUDE_CODE_USE_BEDROCK",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_BEDROCK_MODEL_ID",
+    "AWS_ROLE_ARN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE",
   ]) {
     const v = process.env[k];
     if (v) out[k] = v;
