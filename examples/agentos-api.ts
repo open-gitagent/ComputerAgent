@@ -274,6 +274,9 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     return c.json({ user: null }, 401);
   });
 
+  // Health check stays public so liveness probes can poll it without creds.
+  app.get("/agentos/api/health", (c) => c.json({ ok: true, agents: opts.agents.map((a) => a.name) }));
+
   // Everything else under /agentos/api/* requires auth.
   app.use("/agentos/api/*", requireAuth);
 
@@ -916,8 +919,6 @@ export function createAgentOSApp(opts: AgentOSOptions): Hono {
     await opts.policyStore.delete(c.req.param("name"));
     return c.json({ ok: true });
   });
-
-  app.get("/agentos/api/health", (c) => c.json({ ok: true, agents: opts.agents.map((a) => a.name) }));
 
   // ── Policies stubs ─────────────────────────────────────────────────────────
   // The Policies tab is wired against an external SRS (Security/Runtime/Safety)
