@@ -188,44 +188,11 @@ See [`PLAN.md`](./PLAN.md) for the full architecture history.
 
 ## Architecture in three minutes
 
-```
-User code
-    │
-    │  new ComputerAgent({ source, harness, runtime, sessionStore, envs }).chat(msgs)
-    ▼
-┌─────────────────────────────────────────────┐
-│  @computeragent/sdk                         │
-│  (HTTP+SSE client, ChatHandle, permissions) │
-└─────────────────────────────────────────────┘
-    │
-    │  Harness Protocol (SSE + POST over HTTP)
-    │  /v1/sessions, /chat, /events, /messages, /permission, /cancel, /fs/*
-    ▼
-┌─────────────────────────────────────────────┐
-│  @computeragent/harness-server              │
-│  - Routes (Hono on Bun or Node)             │
-│  - Session lifecycle + permission map       │
-│  - Path-jailed workspace FS over HTTP       │
-│  - Pluggable AuditSink + AuthHandler        │
-│  - SessionStore registry (memory/file/...)  │
-└─────────────────────────────────────────────┘
-    │                  │                   │
-    │ EngineDriver     │ IdentityLoader    │ SessionStore
-    ▼                  ▼                   ▼
-┌──────────────────┐ ┌────────────────────────┐ ┌──────────────────────┐
-│ engine-claude-…  │ │ identity-gitagent…     │ │ MemorySessionStore   │
-│ engine-gitagent  │ │ (your-loader here)     │ │ FileSessionStore     │
-│ (your-engine)    │ └────────────────────────┘ │ MongoSessionStore    │
-└──────────────────┘                            │ SqliteSessionStore   │
-    │                                           │ (your-store here)    │
-    │ Substrate: bootHarness({envs}) → {url}    └──────────────────────┘
-    ▼
-┌──────────────────────────────────────────────────────┐
-│ runtime-local   runtime-e2b   runtime-vzvm           │
-│ (subprocess)    (cloud)        (Apple VZ)            │
-│ (your-substrate here)                                │
-└──────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="./assets/architecture-diagram.png" alt="ComputerAgent — Architecture Overview" width="900">
+</p>
+
+Ten diagrams in one: four orthogonal ports (WHAT/HOW/WHERE/REMEMBER/AUDIT), the HTTP+SSE harness protocol, git-URL-as-identity, the substrate runtime matrix, permission/governance flow, telemetry pipeline, library vs server mode, SessionStore architecture, end-to-end topology, and design principles. Every box is swappable through the same SDK call.
 
 The protocol is the artifact. Engines, identity loaders, substrates, and session stores are plug-ins.
 
