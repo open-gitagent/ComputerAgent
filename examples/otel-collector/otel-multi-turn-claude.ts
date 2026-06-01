@@ -69,10 +69,17 @@ if (!ANTHROPIC_API_KEY) {
 }
 
 const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+// See otel-localhost-claude.ts for the OTEL_EXPORTER_OTLP_HEADERS format.
+// Used by direct-to-New-Relic mode (api-key=<license>).
+const otlpHeaders = parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS);
 configure({
   serviceName: "computeragent-otel-multi-turn",
   ...(otlpEndpoint
-    ? { exporter: "otlp-http" as const, endpoint: otlpEndpoint }
+    ? {
+        exporter: "otlp-http" as const,
+        endpoint: otlpEndpoint,
+        ...(otlpHeaders ? { headers: otlpHeaders } : {}),
+      }
     : { exporter: "console" as const }),
   sampleRate: 1.0,
   captureContent: true,
@@ -81,9 +88,22 @@ configure({
 });
 console.log(
   otlpEndpoint
-    ? `OTel: exporting to OTLP/HTTP at ${otlpEndpoint} (content capture: ON, mode=both)`
+    ? `OTel: exporting to OTLP/HTTP at ${otlpEndpoint}${otlpHeaders ? " (auth: headers set)" : ""} (content capture: ON, mode=both)`
     : `OTel: exporting to console (content capture: ON, mode=both)`,
 );
+
+function parseOtlpHeaders(raw: string | undefined): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  const out: Record<string, string> = {};
+  for (const pair of raw.split(",")) {
+    const idx = pair.indexOf("=");
+    if (idx <= 0) continue;
+    const k = pair.slice(0, idx).trim();
+    const v = pair.slice(idx + 1).trim();
+    if (k) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 const app = createHarnessServer({
   engines: { "claude-agent-sdk": new ClaudeAgentEngine() },

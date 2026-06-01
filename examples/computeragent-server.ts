@@ -2254,6 +2254,19 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? n : fallback;
   };
+  // OTel SDK spec: comma-separated `key=value` pairs.
+  const parseOtlpHeaders = (raw: string | undefined): Record<string, string> | undefined => {
+    if (!raw) return undefined;
+    const out: Record<string, string> = {};
+    for (const pair of raw.split(",")) {
+      const idx = pair.indexOf("=");
+      if (idx <= 0) continue;
+      const k = pair.slice(0, idx).trim();
+      const v = pair.slice(idx + 1).trim();
+      if (k) out[k] = v;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
   const sandboxCfg = {
     maxConcurrent: intEnv("SANDBOX_MAX_CONCURRENT", 8),
     defaultIdleTtlMs: intEnv("SANDBOX_DEFAULT_IDLE_TTL_MS", 10 * 60_000),
@@ -2299,16 +2312,27 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // HarnessEvent emitted by /run, /tasks, and /sandboxes/:id/chat as
   // spec-compliant `gen_ai.*` spans + metrics. Disable by leaving
   // OTEL_EXPORTER_OTLP_ENDPOINT unset (sink stays null).
+  //
+  // OTEL_EXPORTER_OTLP_HEADERS (comma-separated `key=value`) is forwarded to
+  // the exporter for backends that require auth on direct push — primarily
+  // New Relic, where you set:
+  //   OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net
+  //   OTEL_EXPORTER_OTLP_HEADERS=api-key=<NEW_RELIC_LICENSE_KEY>
   let auditSink: AuditSink | undefined;
   if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    const otlpHeaders = parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS);
     configureOtel({
       serviceName: process.env.OTEL_SERVICE_NAME ?? "computeragent-server",
       exporter: "otlp-http",
       endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+      ...(otlpHeaders ? { headers: otlpHeaders } : {}),
       sampleRate: Number(process.env.OTEL_SAMPLE_RATE ?? 1.0),
     });
     auditSink = new OtelAuditSink();
-    console.log(`[otel] OTLP/HTTP exporter → ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}`);
+    console.log(
+      `[otel] OTLP/HTTP exporter → ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}` +
+        (otlpHeaders ? ` (auth: headers set)` : ""),
+    );
   }
 
   const server = new ComputerAgentServer({

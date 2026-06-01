@@ -1,0 +1,67 @@
+# Strategic merge patch for the Control Plane (agentos-server) Deployment.
+#
+# Does three things at once:
+#   1. Swaps MONGO_URL to DocumentDB (mirrors computeragent-server patch).
+#   2. Adds the NEW_RELIC_* env vars for the NerdGraph trace adapter.
+#   3. Sets TRACE_BACKEND feature flag — keep at "clickhouse" until the NRQL
+#      port is validated; flip to "newrelic" to cut over.
+#
+# Apply via:
+#   kubectl patch deployment agentos-server -n computeragent \
+#     --patch-file agentos-server-deployment.patch.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-server
+  namespace: computeragent
+spec:
+  template:
+    spec:
+      containers:
+        - name: agentos-server
+          env:
+            # ─── Mongo → DocumentDB ──────────────────────────────────────────
+            - name: MONGO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: docdb-credentials       # shared with computeragent-server
+                  key: MONGO_URL
+
+            # ─── New Relic NerdGraph adapter ────────────────────────────────
+            - name: NEW_RELIC_USER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: newrelic-api
+                  key: user-api-key
+            - name: NEW_RELIC_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: newrelic-api
+                  key: account-id
+            - name: NEW_RELIC_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: newrelic-api
+                  key: region
+
+            # ─── Trace-backend feature flag ─────────────────────────────────
+            # Acceptable values: "clickhouse" (default during migration),
+            # "newrelic" (cut-over). Flip after dual-export has been running
+            # for at least a week with matching query outputs.
+            - name: TRACE_BACKEND
+              value: "clickhouse"
+
+            # CLICKHOUSE_* env vars remain set until the Workstream C cut-over.
+            # Remove them only after TRACE_BACKEND has been "newrelic" for a
+            # week in prod.
+          volumeMounts:
+            - name: docdb-ca
+              mountPath: /etc/ssl/docdb
+              readOnly: true
+      volumes:
+        - name: docdb-ca
+          configMap:
+            name: docdb-ca
+            items:
+              - key: global-bundle.pem
+                path: global-bundle.pem

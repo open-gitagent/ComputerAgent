@@ -17,10 +17,13 @@ processors:
 exporters:
   # Keep the console exporter wired in so you can still watch spans land live
   # via `docker compose logs -f otel-collector`. Drop it from the pipelines
-  # below once you trust the ClickHouse path.
+  # below once you trust the active sink.
   debug:
     verbosity: detailed
 
+  # ClickHouse sink — kept for the dual-export migration phase. After the
+  # Control Plane is validated against New Relic, remove this exporter and
+  # decommission the ClickHouse statefulset.
   clickhouse:
     endpoint: ${env:CLICKHOUSE_ENDPOINT}
     database: ${env:CLICKHOUSE_DATABASE}
@@ -40,6 +43,35 @@ exporters:
       initial_interval: 5s
       max_interval: 30s
 
+  # New Relic OTLP sink — receives the same OTel signals the ClickHouse
+  # exporter does. New Relic AI Monitoring parses gen_ai.* attributes
+  # natively, so traces and AI metrics show up under APM > AI Monitoring
+  # without any custom instrumentation work.
+  #
+  # Endpoints:
+  #   US datacenter: otlp.nr-data.net:4317
+  #   EU datacenter: otlp.eu01.nr-data.net:4317
+  # Pick via NEW_RELIC_OTLP_ENDPOINT env var; default below is US.
+  #
+  # NEW_RELIC_LICENSE_KEY must be an *ingest* license key (Account Settings
+  # > API keys > Ingest license). Distinct from the User API Key used by the
+  # Control Plane's NerdGraph adapter.
+  otlp/newrelic:
+    endpoint: ${env:NEW_RELIC_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NEW_RELIC_LICENSE_KEY}
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      num_consumers: 10
+      queue_size: 5000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
@@ -50,15 +82,19 @@ service:
     logs:
       level: info
   pipelines:
+    # All three pipelines fan out to BOTH sinks during the migration.
+    # When you cut over fully, replace `[clickhouse, otlp/newrelic]` with
+    # `[otlp/newrelic]` on each pipeline and remove the `clickhouse` block
+    # above.
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug, clickhouse]
+      exporters: [debug, clickhouse, otlp/newrelic]
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug, clickhouse]
+      exporters: [debug, clickhouse, otlp/newrelic]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug, clickhouse]
+      exporters: [debug, clickhouse, otlp/newrelic]

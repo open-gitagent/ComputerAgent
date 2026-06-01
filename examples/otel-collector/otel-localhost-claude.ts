@@ -60,10 +60,21 @@ if (!ANTHROPIC_API_KEY) {
 //    Redaction stays OFF for demo readability; flip it on for anything you
 //    might ever share.
 const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+// Headers come from OTEL_EXPORTER_OTLP_HEADERS (comma-separated `key=value`,
+// matching the OTel SDK spec). Used for backends that require auth on direct
+// OTLP push — primarily New Relic, where you set:
+//   OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net
+//   OTEL_EXPORTER_OTLP_HEADERS=api-key=<NEW_RELIC_LICENSE_KEY>
+// Local collector (no auth) → leave OTEL_EXPORTER_OTLP_HEADERS unset.
+const otlpHeaders = parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS);
 configure({
   serviceName: "computeragent-otel-demo",
   ...(otlpEndpoint
-    ? { exporter: "otlp-http" as const, endpoint: otlpEndpoint }
+    ? {
+        exporter: "otlp-http" as const,
+        endpoint: otlpEndpoint,
+        ...(otlpHeaders ? { headers: otlpHeaders } : {}),
+      }
     : { exporter: "console" as const }),
   sampleRate: 1.0,
   captureContent: true,
@@ -72,9 +83,22 @@ configure({
 });
 console.log(
   otlpEndpoint
-    ? `OTel: exporting to OTLP/HTTP at ${otlpEndpoint} (content capture: ON, mode=both)`
+    ? `OTel: exporting to OTLP/HTTP at ${otlpEndpoint}${otlpHeaders ? " (auth: headers set)" : ""} (content capture: ON, mode=both)`
     : `OTel: exporting to console (content capture: ON, mode=both)`,
 );
+
+function parseOtlpHeaders(raw: string | undefined): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  const out: Record<string, string> = {};
+  for (const pair of raw.split(",")) {
+    const idx = pair.indexOf("=");
+    if (idx <= 0) continue;
+    const k = pair.slice(0, idx).trim();
+    const v = pair.slice(idx + 1).trim();
+    if (k) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 // 2. Boot the harness server with the new audit sink wired in.
 const app = createHarnessServer({

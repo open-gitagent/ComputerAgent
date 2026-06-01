@@ -15,6 +15,13 @@ services:
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-otel}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      # New Relic OTLP sink — set NEW_RELIC_LICENSE_KEY in .env to enable.
+      # Endpoint defaults to the US datacenter; switch to otlp.eu01.nr-data.net:4317 for EU.
+      # The collector tolerates an empty api-key header (it will just 401 in NR);
+      # to fully disable the NR exporter, drop `otlp/newrelic` from the pipelines
+      # in otel-collector-config.yaml.
+      NEW_RELIC_OTLP_ENDPOINT: ${NEW_RELIC_OTLP_ENDPOINT:-otlp.nr-data.net:4317}
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
     ports:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP

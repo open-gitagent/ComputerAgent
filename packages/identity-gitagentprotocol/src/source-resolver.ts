@@ -1,4 +1,4 @@
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import simpleGit from "simple-git";
 import type { IdentitySource } from "@open-gitagent/protocol";
@@ -18,12 +18,20 @@ export async function materialize(source: IdentitySource, workdir: string): Prom
     return workdir;
   }
   if (source.type === "git") {
+    // Idempotent on resume: the harness reuses the same `workdir` when a
+    // session is restored under a stable sessionId (sessionStore in play).
+    // If we already cloned into this dir on a prior boot, `git clone` would
+    // fail with "destination path already exists and is not an empty
+    // directory" — so detect that and skip re-cloning. Identity is fixed
+    // per-sessionId by contract, so the existing checkout is the right one.
+    if (await hasGitCheckout(workdir)) {
+      return source.subdir ? join(workdir, source.subdir) : workdir;
+    }
     const url = normalizeGitUrl(source.url);
-    const cloneTarget = workdir;
     const opts: string[] = ["--depth", "1"];
     if (source.ref) opts.push("--branch", source.ref);
-    await simpleGit().clone(url, cloneTarget, opts);
-    return source.subdir ? join(cloneTarget, source.subdir) : cloneTarget;
+    await simpleGit().clone(url, workdir, opts);
+    return source.subdir ? join(workdir, source.subdir) : workdir;
   }
   if (source.type === "inline") {
     await mkdir(workdir, { recursive: true });
@@ -49,6 +57,15 @@ export async function materialize(source: IdentitySource, workdir: string): Prom
   // exhaustive
   const _exhaustive: never = source;
   throw new Error(`unknown identity source: ${(_exhaustive as { type: string }).type}`);
+}
+
+async function hasGitCheckout(dir: string): Promise<boolean> {
+  try {
+    const st = await stat(join(dir, ".git"));
+    return st.isDirectory() || st.isFile(); // .git can be a file for worktrees/submodules
+  } catch {
+    return false;
+  }
 }
 
 /** Accepts bare `github.com/x/y` and prefixes `https://` for `git clone`. */

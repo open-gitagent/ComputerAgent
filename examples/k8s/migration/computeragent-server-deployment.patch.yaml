@@ -1,0 +1,58 @@
+# Strategic merge patch — swaps MONGO_URL to DocumentDB and mounts the CA bundle
+# into the Computer Agent Server pod.
+#
+# Apply via:
+#   kubectl patch deployment computeragent-server -n computeragent \
+#     --patch-file computeragent-server-deployment.patch.yaml
+#
+# Or with Kustomize:
+#   patches:
+#     - path: computeragent-server-deployment.patch.yaml
+#       target:
+#         kind: Deployment
+#         name: computeragent-server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: computeragent-server
+  namespace: computeragent
+spec:
+  template:
+    spec:
+      containers:
+        - name: computeragent-server
+          env:
+            # Replace the existing MONGO_URL value (previously pointing at the
+            # in-cluster Mongo pod) with the DocumentDB connection string.
+            # Store the full string in a Secret to avoid leaking credentials
+            # in the Deployment spec.
+            - name: MONGO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: docdb-credentials
+                  key: MONGO_URL
+          volumeMounts:
+            # Mount the AWS RDS CA bundle so the Mongo driver can verify the
+            # DocumentDB TLS endpoint. The path here MUST match the tlsCAFile=
+            # query param in the MONGO_URL connection string.
+            - name: docdb-ca
+              mountPath: /etc/ssl/docdb
+              readOnly: true
+      volumes:
+        - name: docdb-ca
+          configMap:
+            name: docdb-ca
+            items:
+              - key: global-bundle.pem
+                path: global-bundle.pem
+---
+# Companion Secret holding the assembled MONGO_URL. Real value goes through
+# external-secrets / SOPS / sealed-secrets.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: docdb-credentials
+  namespace: computeragent
+type: Opaque
+stringData:
+  MONGO_URL: "mongodb://USER:PASS@CLUSTER.cluster-HASH.REGION.docdb.amazonaws.com:27017/computeragent?tls=true&tlsCAFile=/etc/ssl/docdb/global-bundle.pem&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false"

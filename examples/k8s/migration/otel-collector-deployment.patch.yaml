@@ -1,0 +1,33 @@
+# Strategic merge patch — adds the New Relic env vars to the otel-collector
+# Deployment. Apply alongside the updated `otel-collector-config.yaml` that
+# ships both `clickhouse` and `otlp/newrelic` exporters during the migration.
+#
+# Apply via:
+#   kubectl patch deployment otel-collector -n computeragent --patch-file otel-collector-deployment.patch.yaml
+#
+# Or with Kustomize:
+#   patches:
+#     - path: otel-collector-deployment.patch.yaml
+#       target:
+#         kind: Deployment
+#         name: otel-collector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: computeragent
+spec:
+  template:
+    spec:
+      containers:
+        - name: otel-collector
+          env:
+            # Existing CLICKHOUSE_* env vars are untouched.
+            # Add the two New Relic env vars:
+            - name: NEW_RELIC_OTLP_ENDPOINT
+              value: "otlp.nr-data.net:4317"        # US datacenter. Use otlp.eu01.nr-data.net:4317 for EU.
+            - name: NEW_RELIC_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: newrelic-otlp
+                  key: license-key

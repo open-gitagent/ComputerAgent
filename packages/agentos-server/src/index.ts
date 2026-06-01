@@ -9,8 +9,12 @@
 //
 // Talks to:
 //   - ComputerAgent harness (CA_BASE) for sandbox/run/artifact
-//   - MongoDB (MONGO_URL) for registry, threads, sessions, logs, schedules
-//   - ClickHouse (CLICKHOUSE_URL) for OTel traces
+//   - MongoDB / DocumentDB (MONGO_URL) for registry, threads, sessions, logs,
+//     schedules
+//   - Trace store, selected by TRACE_BACKEND env var:
+//       - "clickhouse" (default) → CLICKHOUSE_URL
+//       - "newrelic"             → NerdGraph (NEW_RELIC_USER_API_KEY +
+//                                  NEW_RELIC_ACCOUNT_ID + NEW_RELIC_REGION)
 //
 // Hostable as one Docker container; harness stays on the host (substrate
 // isolation needs root-ish privileges).
@@ -37,10 +41,12 @@ import { obsDashboardRouter } from "./routes/obs-dashboard.js";
 import { obsFieldsRouter } from "./routes/obs-fields.js";
 
 import { pingClickHouse } from "./clickhouse.js";
+import { pingNewRelic } from "./new-relic.js";
 import { pingMongo } from "./mongo.js";
 import { ensureFieldValueMVs } from "./migrations.js";
 import { startScheduler } from "./scheduler.js";
 import { seedDefaultAgentIfRequested } from "./agent-defs.js";
+import { traceBackend } from "./trace-backend.js";
 
 const app = express();
 
@@ -93,12 +99,21 @@ app.listen(PORT, async () => {
   console.log(`[agentos-server] listening on http://localhost:${PORT}`);
   console.log(`[agentos-server] CA_BASE=${process.env["CA_BASE"] ?? "http://127.0.0.1:8787"}`);
 
-  const [mongoOk, chOk] = await Promise.all([pingMongo(), pingClickHouse()]);
-  console.log(`[agentos-server] mongo: ${mongoOk ? "up" : "DOWN (check MONGO_URL)"}`);
-  console.log(`[agentos-server] clickhouse: ${chOk ? "up" : "DOWN (check CLICKHOUSE_URL)"}`);
+  const backend = traceBackend();
+  console.log(`[agentos-server] trace backend: ${backend}`);
 
-  // ClickHouse MVs — best-effort, never crash startup.
-  if (chOk) {
+  // Ping the active trace backend in parallel with Mongo. The OTHER backend
+  // can still be reachable during dual-export, but we only block on the one
+  // routes actually call.
+  const traceProbe = backend === "newrelic" ? pingNewRelic() : pingClickHouse();
+  const [mongoOk, traceOk] = await Promise.all([pingMongo(), traceProbe]);
+  console.log(`[agentos-server] mongo: ${mongoOk ? "up" : "DOWN (check MONGO_URL)"}`);
+  console.log(
+    `[agentos-server] ${backend}: ${traceOk ? "up" : `DOWN (check ${backend === "newrelic" ? "NEW_RELIC_USER_API_KEY/ACCOUNT_ID" : "CLICKHOUSE_URL"})`}`,
+  );
+
+  // ClickHouse MVs — only relevant when TRACE_BACKEND=clickhouse. Best-effort.
+  if (backend === "clickhouse" && traceOk) {
     try {
       const result = await ensureFieldValueMVs();
       if (result.status === "skipped") {
