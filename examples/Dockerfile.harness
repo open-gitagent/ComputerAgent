@@ -1,4 +1,15 @@
-# ComputerAgent harness — runs examples/computeragent-server.ts via bun.
+# ComputerAgent harness — runs one of the example server entries via bun.
+#
+# Defaults to examples/computeragent-server.ts (full harness: /run + /sandboxes
+# + /tasks + /snapshots, port 8787).
+#
+# Override the entry to build the BARE harness instead (just /v1/sessions/*
+# on port 7700), used by the Python qa-worker:
+#   docker build -f examples/Dockerfile.harness \
+#     --build-arg ENTRY=examples/harness-server.ts \
+#     -t harness-server .
+#
+# Same image layers in both cases — only the CMD differs.
 #
 # Build from the REPO ROOT so pnpm workspace resolution works:
 #   docker build -f examples/Dockerfile.harness -t computeragent-harness .
@@ -50,4 +61,11 @@ EXPOSE 8787
 # handles this).
 VOLUME ["/tmp/computeragent-sessions"]
 
-CMD ["bun", "run", "examples/computeragent-server.ts"]
+# Entry script — override at build time for the bare harness variant:
+#   --build-arg ENTRY=examples/harness-server.ts
+ARG ENTRY=examples/computeragent-server.ts
+ENV ENTRY=${ENTRY}
+
+# Shell form so $ENTRY is expanded at runtime by /bin/sh; `exec` keeps bun
+# as PID 1 (signals + Docker stop semantics still work).
+CMD exec bun run "$ENTRY"

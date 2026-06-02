@@ -44,12 +44,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The two harness images share examples/Dockerfile.harness — only
+          # the entry script differs (ENTRY build arg).
           - name: harness-server
-            dockerfile: deploy/fullstack-base/harness-server.Dockerfile
-            build_args: ""
+            dockerfile: examples/Dockerfile.harness
+            entry: examples/harness-server.ts
+            build_args: harness
           - name: computeragent-server
             dockerfile: examples/Dockerfile.harness
-            build_args: ""
+            entry: examples/computeragent-server.ts
+            build_args: harness
           - name: agentos-server
             dockerfile: packages/agentos-server/Dockerfile
             build_args: ""
@@ -100,14 +104,27 @@ jobs:
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push ${{ matrix.name }} (non-SPA)
-        if: matrix.build_args != 'spa'
+      - name: Build and push ${{ matrix.name }} (agentos-server)
+        if: matrix.build_args == ''
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Build and push ${{ matrix.name }} (harness variant)
+        if: matrix.build_args == 'harness'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            ENTRY=${{ matrix.entry }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 

@@ -78,11 +78,14 @@ IFS=',' read -ra TARGETS <<< "${IMAGES}"
 for img in "${TARGETS[@]}"; do
   case "${img}" in
     harness-server)
+      # Bare harness — same Dockerfile, ENTRY override to harness-server.ts.
       build_one harness-server \
-        "${REPO_ROOT}/deploy/fullstack-base/harness-server.Dockerfile" \
-        "${REPO_ROOT}"
+        "${REPO_ROOT}/examples/Dockerfile.harness" \
+        "${REPO_ROOT}" \
+        --build-arg "ENTRY=examples/harness-server.ts"
       ;;
     computeragent-server)
+      # Default ENTRY in the Dockerfile already points at computeragent-server.ts.
       build_one computeragent-server \
         "${REPO_ROOT}/examples/Dockerfile.harness" \
         "${REPO_ROOT}"
