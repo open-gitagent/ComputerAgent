@@ -1,0 +1,143 @@
+# Build the four ComputerAgent images in parallel and push to AWS ECR:
+#   - harness-server          (deploy/fullstack-base/harness-server.Dockerfile)
+#   - computeragent-server    (examples/Dockerfile.harness)
+#   - agentos-server          (packages/agentos-server/Dockerfile)
+#   - agentos-spa             (agentos/Dockerfile, uses VITE_AGENTOS_DEFAULT_*)
+#
+# Required repo secrets (Settings → Secrets and variables → Actions → Secrets):
+#   AWS_ACCOUNT_ID            12-digit AWS account id
+#   AWS_ACCESS_KEY_ID         IAM user / role key with ECR push on agentos/*
+#   AWS_SECRET_ACCESS_KEY     paired secret
+#
+# Optional repo variables (Settings → Secrets and variables → Actions → Variables):
+#   AWS_REGION                default: us-east-1
+#   VITE_AGENTOS_DEFAULT_HARNESS, VITE_AGENTOS_DEFAULT_SOURCE,
+#   VITE_AGENTOS_DEFAULT_MODEL — baked into the SPA bundle at build time
+#
+# Triggers:
+#   - push to deploy         → build + push (tags: <sha>, deploy)
+#   - tag v*                 → build + push (tags: <sha>, deploy, <tag>)
+#   - workflow_dispatch      → manual
+#   - pull_request to deploy → build only (no push)
+#
+# `deploy` is the long-lived release branch — merge feature branches into it
+# when you're ready to ship to EKS. Main can move independently.
+name: build-images
+
+on:
+  push:
+    branches: [deploy]
+    tags: ['v*']
+  pull_request:
+    branches: [deploy]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: harness-server
+            dockerfile: deploy/fullstack-base/harness-server.Dockerfile
+            build_args: ""
+          - name: computeragent-server
+            dockerfile: examples/Dockerfile.harness
+            build_args: ""
+          - name: agentos-server
+            dockerfile: packages/agentos-server/Dockerfile
+            build_args: ""
+          - name: agentos-spa
+            dockerfile: agentos/Dockerfile
+            # Build args are evaluated by docker/build-push-action's `build-args:`
+            # field below — we set them via vars at the step level instead.
+            build_args: spa
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: tag
+        run: |
+          SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "semver=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        if: github.event_name != 'pull_request'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        if: github.event_name != 'pull_request'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compose image tags
+        id: tags
+        run: |
+          REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          REPO="agentos/${{ matrix.name }}"
+          TAGS="${REGISTRY}/${REPO}:${{ steps.tag.outputs.sha }}"
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/deploy" ]]; then
+            TAGS="${TAGS},${REGISTRY}/${REPO}:deploy"
+          fi
+          if [[ -n "${{ steps.tag.outputs.semver }}" ]]; then
+            TAGS="${TAGS},${REGISTRY}/${REPO}:${{ steps.tag.outputs.semver }}"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.name }} (non-SPA)
+        if: matrix.build_args != 'spa'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Build and push agentos-spa (with VITE_ build args)
+        if: matrix.build_args == 'spa'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            VITE_AGENTOS_DEFAULT_HARNESS=${{ vars.VITE_AGENTOS_DEFAULT_HARNESS || 'claude-agent-sdk' }}
+            VITE_AGENTOS_DEFAULT_SOURCE=${{ vars.VITE_AGENTOS_DEFAULT_SOURCE || 'github.com/shreyas-lyzr/general-agent' }}
+            VITE_AGENTOS_DEFAULT_MODEL=${{ vars.VITE_AGENTOS_DEFAULT_MODEL || 'claude-sonnet-4-6' }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "### Pushed ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tags:" >> "$GITHUB_STEP_SUMMARY"
+          for t in $(echo "${{ steps.tags.outputs.tags }}" | tr ',' '\n'); do
+            echo "- \`$t\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          echo "Bump kustomize:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+          echo "kustomize edit set image agentos/${{ matrix.name }}=${REGISTRY}/agentos/${{ matrix.name }}:${{ steps.tag.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
