@@ -33,11 +33,22 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.js
 COPY packages packages
 COPY examples examples
 
-# Workspace install + full build. We build the whole graph because the harness
-# pulls in many workspace packages (sdk, runtime-local, engine-*, etc.) and we
-# don't want to enumerate them by hand.
-RUN pnpm install --frozen-lockfile \
- && pnpm -r build || true   # tolerate the known-failing cli package
+# Workspace install + targeted build.
+#
+# Split into two RUN steps and replaced `pnpm -r build || true` with a filtered
+# build. The old one-liner `pnpm install --frozen-lockfile && pnpm -r build || true`
+# was a sh `(A && B) || true`, so `|| true` silently masked install failures
+# (native-gyp on alpine) AND any earlier-than-harness build failure — producing
+# images with no node_modules or no packages/harness-server/dist/, which crashed
+# at startup with `Cannot find package 'computeragent'` / `Cannot find module
+# '@computeragent/harness-server'`.
+#
+# `pnpm --filter <pkg>...` (trailing ellipsis) builds <pkg> plus its transitive
+# workspace deps. That covers everything the harness/examples actually need
+# while skipping the known-failing @computeragent/cli package.
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @computeragent/harness-server... \
+         --filter @computeragent/examples... build
 
 
 # ── Runtime ────────────────────────────────────────────────────────────
