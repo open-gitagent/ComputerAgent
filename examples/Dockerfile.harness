@@ -22,9 +22,12 @@
 FROM oven/bun:1-alpine AS builder
 WORKDIR /app
 
-# git for any postinstall + the workspace install. pnpm comes via bun's
-# global install since the alpine bun image has no npm.
-RUN apk add --no-cache git \
+# git for any postinstall, plus python3/make/g++ so native-gyp deps
+# (better-sqlite3, cpu-features, etc.) can compile on alpine. Without
+# the toolchain, `pnpm install --frozen-lockfile` exits non-zero on the
+# first native postinstall. pnpm comes via bun's global install since
+# the alpine bun image has no npm.
+RUN apk add --no-cache git python3 make g++ pkgconfig \
  && bun install -g pnpm@9.4.0
 ENV PATH="/root/.bun/install/global/node_modules/.bin:$PATH"
 
