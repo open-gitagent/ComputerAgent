@@ -15,13 +15,21 @@
 #   VITE_AGENTOS_DEFAULT_MODEL — baked into the SPA bundle at build time
 #
 # Triggers:
-#   - push to deploy         → build + push (tags: <sha>, deploy)
-#   - tag v*                 → build + push (tags: <sha>, deploy, <tag>)
+#   - push to deploy         → build + push (tag: <sha>)
+#   - tag v*                 → build + push (tags: <sha>, <semver>)
 #   - workflow_dispatch      → manual
 #   - pull_request to deploy → build only (no push)
 #
 # `deploy` is the long-lived release branch — merge feature branches into it
 # when you're ready to ship to EKS. Main can move independently.
+#
+# ── Tag policy ──────────────────────────────────────────────────────────────
+# ECR repos are IMMUTABLE, so we only ever push SHA-based tags + semver tags.
+# Floating `deploy` / `main` tags would conflict with IMMUTABLE on every
+# subsequent push. To roll forward: bump kustomize image tag to the new SHA.
+#
+# If the SHA already exists in ECR (re-run of the same commit), the workflow
+# detects it and skips the build entirely → no-op success, no error.
 name: build-images
 
 on:
@@ -95,17 +103,34 @@ jobs:
         run: |
           REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
           REPO="agentos/${{ matrix.name }}"
+          # ECR is IMMUTABLE → SHA-only by default, plus semver on tag pushes.
           TAGS="${REGISTRY}/${REPO}:${{ steps.tag.outputs.sha }}"
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/deploy" ]]; then
-            TAGS="${TAGS},${REGISTRY}/${REPO}:deploy"
-          fi
           if [[ -n "${{ steps.tag.outputs.semver }}" ]]; then
             TAGS="${TAGS},${REGISTRY}/${REPO}:${{ steps.tag.outputs.semver }}"
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if image already exists at this SHA
+        id: exists
+        if: github.event_name != 'pull_request'
+        run: |
+          # ECR is IMMUTABLE — if the SHA tag exists, ANY push (even the
+          # identical bytes) is rejected. Make re-runs idempotent by exiting
+          # the build cleanly when the image is already there.
+          if aws ecr describe-images \
+               --repository-name "${{ steps.tags.outputs.repo }}" \
+               --image-ids "imageTag=${{ steps.tag.outputs.sha }}" \
+               --region "${{ env.AWS_REGION }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Skipping build::Image ${{ steps.tags.outputs.repo }}:${{ steps.tag.outputs.sha }} already exists in ECR — no rebuild needed."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build and push ${{ matrix.name }} (agentos-server)
-        if: matrix.build_args == ''
+        if: matrix.build_args == '' && steps.exists.outputs.skip != 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -116,7 +141,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
       - name: Build and push ${{ matrix.name }} (harness variant)
-        if: matrix.build_args == 'harness'
+        if: matrix.build_args == 'harness' && steps.exists.outputs.skip != 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -129,7 +154,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
       - name: Build and push agentos-spa (with VITE_ build args)
-        if: matrix.build_args == 'spa'
+        if: matrix.build_args == 'spa' && steps.exists.outputs.skip != 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -146,15 +171,20 @@ jobs:
       - name: Summary
         if: github.event_name != 'pull_request'
         run: |
-          echo "### Pushed ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.exists.outputs.skip }}" == "true" ]]; then
+            echo "### ${{ matrix.name }} — skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Image already exists at \`${{ steps.tags.outputs.repo }}:${{ steps.tag.outputs.sha }}\` — no rebuild." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Pushed ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Tags:" >> "$GITHUB_STEP_SUMMARY"
+            for t in $(echo "${{ steps.tags.outputs.tags }}" | tr ',' '\n'); do
+              echo "- \`$t\`" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Tags:" >> "$GITHUB_STEP_SUMMARY"
-          for t in $(echo "${{ steps.tags.outputs.tags }}" | tr ',' '\n'); do
-            echo "- \`$t\`" >> "$GITHUB_STEP_SUMMARY"
-          done
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
           echo "Bump kustomize:" >> "$GITHUB_STEP_SUMMARY"
           echo '```bash' >> "$GITHUB_STEP_SUMMARY"
-          echo "kustomize edit set image agentos/${{ matrix.name }}=${REGISTRY}/agentos/${{ matrix.name }}:${{ steps.tag.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "kustomize edit set image agentos/${{ matrix.name }}=${{ steps.tags.outputs.registry }}/agentos/${{ matrix.name }}:${{ steps.tag.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

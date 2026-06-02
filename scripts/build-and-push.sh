@@ -45,6 +45,16 @@ build_one() {
   local repo="agentos/${name}"
   local image="${REGISTRY}/${repo}:${IMAGE_TAG}"
 
+  # ECR repos are IMMUTABLE. If this SHA already exists, exit cleanly so
+  # repeated runs of the same commit are no-ops (matches CI behavior).
+  if [ "${PUSH}" = "1" ] && aws ecr describe-images \
+       --repository-name "${repo}" \
+       --image-ids "imageTag=${IMAGE_TAG}" \
+       --region "${AWS_REGION}" >/dev/null 2>&1; then
+    echo "─── skipping ${name} ─── image ${image} already in ECR"
+    return 0
+  fi
+
   echo
   echo "─── building ${name} ───"
   echo "  dockerfile : ${dockerfile}"
@@ -54,13 +64,11 @@ build_one() {
   docker build \
     -f "${dockerfile}" \
     -t "${image}" \
-    -t "${REGISTRY}/${repo}:main" \
     "${extra_args[@]}" \
     "${context}"
 
   if [ "${PUSH}" = "1" ]; then
     docker push "${image}"
-    docker push "${REGISTRY}/${repo}:main"
     echo "✓ pushed ${image}"
   else
     echo "✓ built ${image} (PUSH=0, skipping push)"
