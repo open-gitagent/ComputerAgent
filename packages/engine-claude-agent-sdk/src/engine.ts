@@ -102,7 +102,15 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
       // isn't in the env we pass to query(), the subprocess can't resolve the
       // write path and silently drops every mirror frame. ctx.envs alone
       // typically only carries API keys — that's not enough.
-      env: { ...inheritEssentialHostEnv(), ...ctx.envs },
+      //
+      // IS_SANDBOX=1: the harness always runs the CLI with permissionMode
+      // bypassPermissions (→ --dangerously-skip-permissions). Claude Code
+      // refuses that flag when running as root ("cannot be used with
+      // root/sudo privileges") and exits 1 — which is exactly what happens in
+      // our containers (they run as uid 0). Since the CLI is already confined
+      // to an isolated substrate workdir, declare IS_SANDBOX so skip-permissions
+      // is allowed regardless of uid. Default first so ctx.envs can override.
+      env: { IS_SANDBOX: "1", ...inheritEssentialHostEnv(), ...ctx.envs },
       includePartialMessages: true,
       abortController,
       canUseTool: buildCanUseTool(ctx.onPermissionRequest),
