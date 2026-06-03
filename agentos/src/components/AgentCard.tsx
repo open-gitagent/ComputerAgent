@@ -1,4 +1,4 @@
-import { GitBranch, FolderTree, Code2, MessageSquare, Activity, Clock, ExternalLink } from "lucide-react";
+import { GitBranch, FolderTree, Code2, MessageSquare, Activity, Clock, ExternalLink, Trash2 } from "lucide-react";
 import { type Agent, displaySource } from "../api.ts";
 import { Badge } from "./ui/badge.tsx";
 import { cn } from "../lib/cn.ts";
@@ -50,10 +50,13 @@ export function AgentCard({
   agent: a,
   selected,
   onClick,
+  onDelete,
 }: {
   agent: Agent;
   selected: boolean;
   onClick: () => void;
+  /** When provided, a trash affordance shows on hover (used by the registry). */
+  onDelete?: () => void;
 }) {
   const sourceUrl = a.sourceUrl ?? "";
   const displayName = agentNameFromSource(sourceUrl, a.name);
@@ -66,13 +69,29 @@ export function AgentCard({
     <button
       onClick={onClick}
       className={cn(
-        "group w-full text-left rounded-xl border bg-background transition overflow-hidden shadow-sm",
+        "group relative w-full text-left rounded-xl border bg-background transition overflow-hidden shadow-sm",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         selected
           ? "border-primary/50 ring-1 ring-primary/30 shadow-md shadow-primary/10"
           : "border-border/60 hover:border-border hover:bg-muted/30 hover:shadow-md",
       )}
     >
+      {onDelete && (
+        <span
+          role="button"
+          tabIndex={0}
+          title="Delete agent"
+          aria-label={`Delete ${a.name}`}
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onDelete(); }
+          }}
+          className="absolute right-2 top-2 z-10 h-6 w-6 grid place-items-center rounded-md text-muted-foreground/70 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-opacity cursor-pointer"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </span>
+      )}
+
       {/* HEADER */}
       <div className="px-3 pt-3 pb-2.5">
         <div className="flex items-start gap-2.5 min-w-0">

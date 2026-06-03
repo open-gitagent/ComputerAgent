@@ -7,7 +7,7 @@ import { Card } from "./ui/card.tsx";
 import { Badge } from "./ui/badge.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.tsx";
 import { api, type Agent } from "../api.ts";
-import { streamChat } from "../sse.ts";
+import { streamChat, streamCompletion } from "../sse.ts";
 import { cn } from "../lib/cn.ts";
 
 interface ChatTurn {
@@ -92,22 +92,14 @@ export function HomePage({
     setSessionId(null);
   }, [framework]);
 
-  // Pick which registered agent the home chat talks to. Explicit framework →
-  // its mapped agent; "auto" → the first registered agent (falling back to the
-  // framework's default name). sandboxCapable comes from the registry when the
-  // agent is known, else inferred (deepagents run one-shot).
+  // Explicit framework → its mapped agent. sandboxCapable comes from the
+  // registry when the agent is known, else inferred (deepagents run one-shot).
   const resolveTarget = (): { name: string; sandboxCapable: boolean } => {
-    if (framework === "auto" && agents.length > 0) {
-      return { name: agents[0].name, sandboxCapable: agents[0].sandboxCapable };
-    }
     const name = selected.agent ?? agents[0]?.name ?? "gitagent";
     const found = agents.find((a) => a.name === name);
     return { name, sandboxCapable: found ? found.sandboxCapable : selected.id !== "deep-agent" };
   };
 
-  // Home chat now runs as a REAL agent through the ComputerAgent server: it
-  // boots/reuses a harness sandbox (or one-shot /run for deepagents) and streams
-  // the result. The harness owns Claude calls, tools, sessions, and telemetry.
   const submit = async () => {
     const msg = prompt.trim();
     if (!msg || busy) return;
@@ -124,6 +116,25 @@ export function HomePage({
         return next;
       });
 
+    // Auto → agent-less Claude completion (direct /api/completion proxy). No
+    // sandbox, no specific bot — predictable plain Claude chat. The explicit
+    // runtime picks below run as real agents through the harness instead.
+    if (framework === "auto") {
+      try {
+        await streamCompletion(
+          history.map((m) => ({ role: m.role, content: m.text })),
+          { onText: setAssistant, onError: (e) => setAssistant(`⚠️ ${e}`), onDone: () => {} },
+        );
+      } catch (e) {
+        setAssistant(`⚠️ ${String(e)}`);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    // Explicit runtime → run as a REAL agent through the ComputerAgent server:
+    // boot/reuse a harness sandbox (or one-shot /run for deepagents) and stream.
     try {
       const target = resolveTarget();
       let streamUrl: string;

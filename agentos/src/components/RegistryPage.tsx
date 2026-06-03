@@ -6,12 +6,23 @@
  */
 import { useMemo, useState } from "react";
 import { Search, X } from "lucide-react";
+import { toast } from "sonner";
 import { api, type Agent } from "../api.ts";
 import { AgentCard } from "./AgentCard.tsx";
 import { RegisterAgentForm } from "./RegisterAgentForm.tsx";
 import { PageHeader } from "./composite/PageHeader.tsx";
 import { Input } from "./ui/input.tsx";
 import { Skeleton } from "./ui/skeleton.tsx";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog.tsx";
 
 function SectionLabel({ name, count }: { name: string; count: number }) {
   return (
@@ -39,6 +50,23 @@ export function RegistryPage({
   onReload: () => void;
 }) {
   const [search, setSearch] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    try {
+      await api.unregisterAgent(pendingDelete.name);
+      toast.success(`Deleted "${pendingDelete.name}"`);
+      setPendingDelete(null);
+      onReload();
+    } catch (e) {
+      toast.error(`Delete failed: ${String(e)}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const filtered = useMemo(() => {
     if (!search.trim()) return agents;
@@ -122,7 +150,13 @@ export function RegistryPage({
               <SectionLabel name="Hosted" count={grouped.hosted.length} />
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {grouped.hosted.map((a) => (
-                  <AgentCard key={a.name} agent={a} selected={selected === a.name} onClick={() => onOpenAgent(a.name)} />
+                  <AgentCard
+                    key={a.name}
+                    agent={a}
+                    selected={selected === a.name}
+                    onClick={() => onOpenAgent(a.name)}
+                    onDelete={() => setPendingDelete(a)}
+                  />
                 ))}
               </div>
             </section>
@@ -133,13 +167,44 @@ export function RegistryPage({
               <SectionLabel name="Library" count={grouped.library.length} />
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {grouped.library.map((a) => (
-                  <AgentCard key={a.name} agent={a} selected={selected === a.name} onClick={() => onOpenAgent(a.name)} />
+                  <AgentCard
+                    key={a.name}
+                    agent={a}
+                    selected={selected === a.name}
+                    onClick={() => onOpenAgent(a.name)}
+                    onDelete={() => setPendingDelete(a)}
+                  />
                 ))}
               </div>
             </section>
           )}
         </div>
       </div>
+
+      <AlertDialog open={!!pendingDelete} onOpenChange={(o) => !o && setPendingDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete agent?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes <span className="font-mono">{pendingDelete?.name}</span> from the registry. Its
+              sessions and logs are not deleted, but it will no longer appear here or be chattable. This can't be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                confirmDelete();
+              }}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
