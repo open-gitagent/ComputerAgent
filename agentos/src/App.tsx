@@ -184,6 +184,7 @@ export default function App() {
                   key={agent.name}
                   agent={agent.name}
                   sandboxCapable={agent.sandboxCapable}
+                  liveChatCapable={agent.liveChatCapable !== false}
                   initialMessage={launchMessage}
                   onConsumedInitial={() => setLaunchMessage(null)}
                 />

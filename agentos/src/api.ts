@@ -23,6 +23,11 @@ export interface Agent {
   sourceUrl: string | null;
   model: string | null;
   sandboxCapable: boolean;
+  /** True when the agent can actually spin up a live chat sandbox.
+   *  Equals `sandboxCapable && hasResolvableSource(source)`. Library-mode
+   *  agents (Python harness, etc.) have `false` so the UI hides the
+   *  "New chat" button instead of triggering a 400 on click. */
+  liveChatCapable?: boolean;
   sessionCount: number;
   activeSandboxes: number;
   lastActivity: string | null;

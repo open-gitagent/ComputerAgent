@@ -11,11 +11,17 @@ import { cn } from "../lib/cn.ts";
 export function WorkspaceTab({
   agent,
   sandboxCapable,
+  liveChatCapable = true,
   initialMessage,
   onConsumedInitial,
 }: {
   agent: string;
   sandboxCapable: boolean;
+  // True when the agent can spin up a live chat sandbox. False for
+  // library-mode agents (Python harness etc.) whose ``source`` doesn't
+  // resolve into something the server can clone. Defaults to true so
+  // existing callers and registry docs without the field keep working.
+  liveChatCapable?: boolean;
   initialMessage?: string | null;
   onConsumedInitial?: () => void;
 }) {
@@ -61,9 +67,11 @@ export function WorkspaceTab({
           >
             <PanelLeftClose className="h-4 w-4 rotate-180" />
           </Button>
-          <Button onClick={newChat} size="icon" title="New chat" className="h-8 w-8">
-            <Plus className="h-4 w-4" />
-          </Button>
+          {liveChatCapable && (
+            <Button onClick={newChat} size="icon" title="New chat" className="h-8 w-8">
+              <Plus className="h-4 w-4" />
+            </Button>
+          )}
           <div className="mt-1 text-[10px] text-muted-foreground [writing-mode:vertical-rl] rotate-180 tracking-wide">
             {sessions.length} sessions
           </div>
@@ -104,10 +112,12 @@ export function WorkspaceTab({
           <span className="text-xs text-muted-foreground truncate min-w-0">
             {sessions.length} session{sessions.length !== 1 ? "s" : ""}
           </span>
-          <Button variant="default" size="sm" onClick={newChat} className="ml-auto shrink-0 gap-1">
-            <Plus className="h-3 w-3" />
-            New
-          </Button>
+          {liveChatCapable && (
+            <Button variant="default" size="sm" onClick={newChat} className="ml-auto shrink-0 gap-1">
+              <Plus className="h-3 w-3" />
+              New
+            </Button>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto min-w-0">
           {loading && (

@@ -94,10 +94,19 @@ export function HomePage({
 
   // Explicit framework → its mapped agent. sandboxCapable comes from the
   // registry when the agent is known, else inferred (deepagents run one-shot).
-  const resolveTarget = (): { name: string; sandboxCapable: boolean } => {
+  // liveChatCapable additionally checks the source can be resolved — library-
+  // mode agents (Python harness) have a non-resolvable source and so cannot
+  // start a live chat, even though their harness is sandboxable.
+  const resolveTarget = (): {
+    name: string;
+    sandboxCapable: boolean;
+    liveChatCapable: boolean;
+  } => {
     const name = selected.agent ?? agents[0]?.name ?? "gitagent";
     const found = agents.find((a) => a.name === name);
-    return { name, sandboxCapable: found ? found.sandboxCapable : selected.id !== "deep-agent" };
+    const sandboxCap = found ? found.sandboxCapable : selected.id !== "deep-agent";
+    const liveCap = found ? found.liveChatCapable !== false : sandboxCap;
+    return { name, sandboxCapable: sandboxCap, liveChatCapable: liveCap };
   };
 
   const submit = async () => {
@@ -140,6 +149,24 @@ export function HomePage({
       let streamUrl: string;
       let turnSession = sessionId;
 
+      if (!target.liveChatCapable && target.sandboxCapable) {
+        // Library-mode agent: sandbox-capable harness but source isn't
+        // resolvable into a workdir (Python harness, etc.). Surface a
+        // friendly explanation instead of POSTing to /chat-sandbox where
+        // the server would 400 with LIBRARY_AGENT_NO_LIVE_CHAT.
+        setMessages((cur) => [
+          ...cur,
+          {
+            role: "assistant",
+            text:
+              `${target.name} is a library-mode agent — it runs in its host ` +
+              `process (e.g. a Python SDK). AgentOS shows its telemetry but ` +
+              `can't start a new live chat from here. Invoke it from your code.`,
+          },
+        ]);
+        setBusy(false);
+        return;
+      }
       if (target.sandboxCapable) {
         let sb = sandboxId;
         if (!sb) {

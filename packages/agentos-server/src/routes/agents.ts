@@ -16,7 +16,7 @@ import { registryColl, threadsColl, type RegistryDoc } from "../mongo.js";
 import { caBase } from "../upstream.js";
 import { caAuthHeader } from "../auth.js";
 import { agentLogStore } from "../stores/agent-log-store.js";
-import { normalizeSource, registryDocToAgentDef, sandboxCapable } from "../agent-defs.js";
+import { hasResolvableSource, normalizeSource, registryDocToAgentDef, sandboxCapable } from "../agent-defs.js";
 
 export const agentsRouter: IRouter = Router();
 
@@ -60,6 +60,7 @@ agentsRouter.get("/agents", async (_req, res, next) => {
         return t && (!acc || t > acc) ? t : acc;
       }, null);
       const { source, sourceUrl } = normalizeSource(r.source);
+      const sCap = sandboxCapable(agent.harness);
       out.push({
         name: agent.name,
         label: agent.label,
@@ -70,7 +71,14 @@ agentsRouter.get("/agents", async (_req, res, next) => {
         origin: "registry" as const,
         registeredBy: r.registeredBy ?? null,
         lastSeen: r.lastSeen ? r.lastSeen.toISOString() : null,
-        sandboxCapable: sandboxCapable(agent.harness),
+        sandboxCapable: sCap,
+        // True when this agent can actually spin up a live chat sandbox.
+        // ``sandboxCapable`` is true for everything except deepagents;
+        // adding the source-resolvability check hides the chat button for
+        // library-mode (Python harness) agents whose ``source.type`` is
+        // neither git/local nor inline-with-files. UI uses this to
+        // conditionally render the "New chat" button.
+        liveChatCapable: sCap && hasResolvableSource(agent.source),
         sessionCount: sessionIds.size,
         activeSandboxes: active,
         lastActivity: lastActivity ? lastActivity.toISOString() : null,
