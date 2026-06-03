@@ -50,7 +50,13 @@ obsDashboardRouter.get("/dashboard", async (req, res, next) => {
     const fromDate = parseTime(from);
     const toDate = parseTime(to);
     const deltaSec = Math.max(60, (toDate.getTime() - fromDate.getTime()) / 1000);
-    const intervalSec = Math.max(60, Math.round(deltaSec / 60));
+    // Target ~60 buckets across the window, but NEVER let bucket-count exceed
+    // 366 — NRDB rejects TIMESERIES queries above that limit with
+    //   "TIMESERIES supports a maximum of 366 buckets".
+    // Floor at 60s so very short windows don't end up with sub-minute buckets.
+    const NR_BUCKET_CAP = 366;
+    const minIntervalForCap = Math.ceil(deltaSec / NR_BUCKET_CAP);
+    const intervalSec = Math.max(60, minIntervalForCap, Math.round(deltaSec / 60));
 
     const payload = traceBackend() === "newrelic"
       ? await dashboardFromNrql({ fromDate, toDate, intervalSec, agent })
@@ -340,9 +346,15 @@ async function dashboardFromNrql(opts: {
     nrqlQueryRows<{ beginTimeSeconds?: number; count: number }>(
       // TIMESERIES returns rows with `beginTimeSeconds` (numeric epoch) + the metric.
       // We translate that to the ISO string the UI expects.
+      //
+      // Must use the dynamic `intervalSec` (sized to ~60 buckets per the
+      // /dashboard handler) rather than a hardcoded 60s — NRDB caps
+      // TIMESERIES at 366 buckets per query, and 60s buckets over a 24h
+      // window produce 1440, which NerdGraph rejects with
+      //   "TIMESERIES supports a maximum of 366 buckets".
       `SELECT count(*) AS count
        FROM Span ${baseWhere} ${sinceUntil}
-       TIMESERIES 60 seconds`,
+       TIMESERIES ${opts.intervalSec} seconds`,
       params,
     ),
     nrqlQueryRows<{ facet: string; count: number }>(

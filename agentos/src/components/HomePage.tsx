@@ -43,11 +43,11 @@ function FrameworkIcon({ f, size = 32 }: { f: FrameworkDef; size?: number }) {
   );
 }
 
-function greeting(): { word: string; emoji: string } {
+function greeting(): string {
   const h = new Date().getHours();
-  if (h < 12) return { word: "Good morning", emoji: "☀️" };
-  if (h < 17) return { word: "Good afternoon", emoji: "🌤️" };
-  return { word: "Good evening", emoji: "🌙" };
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
 }
 
 export function HomePage({
@@ -60,7 +60,7 @@ export function HomePage({
   const [framework, setFramework] = useState<Framework>("auto");
   const [prompt, setPrompt] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
-  const { word, emoji } = useMemo(greeting, []);
+  const word = useMemo(greeting, []);
 
   const selected = FRAMEWORKS.find((f) => f.id === framework)!;
 
@@ -79,24 +79,28 @@ export function HomePage({
   return (
     <div className="h-full overflow-y-auto bg-background text-foreground">
       {/* Brand */}
-      <div className="flex items-center justify-end px-8 pt-7">
+      <div className="flex items-center justify-between px-8 pt-7">
+        <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
+          Operational
+        </div>
         <div className="flex items-center gap-3">
           <img src="/logos/agentos.png" alt="ComputerAgent" className="h-11 w-11 rounded-xl object-contain" />
           <div className="leading-tight text-right">
             <div className="font-semibold text-[15px] tracking-tight">ComputerAgent Console</div>
-            <div className="text-[12px] italic text-muted-foreground">where ideas become agents</div>
+            <div className="text-[12px] text-muted-foreground">Enterprise agent operations</div>
           </div>
         </div>
       </div>
 
       <div className="max-w-3xl mx-auto px-6 pb-20">
-        {/* Hero — the retro CRT in the field */}
+        {/* Hero */}
         <div className="mt-6 relative rounded-2xl overflow-hidden border border-border h-52">
           <img src="/logos/hero.jpg" alt="ComputerAgent" className="w-full h-full object-cover object-center" />
           <div className="absolute inset-0 bg-gradient-to-t from-background via-background/30 to-transparent" />
           <div className="absolute bottom-3 left-4 right-4 flex items-end justify-between">
             <span className="text-[11px] uppercase tracking-[0.2em] text-sand/80">
-              ComputerAgent · Research Labs
+              ComputerAgent Platform
             </span>
             <span className="h-2 w-2 rounded-full bg-primary shadow-[0_0_10px_hsl(var(--primary))]" />
           </div>
@@ -108,10 +112,9 @@ export function HomePage({
             className="text-5xl tracking-tight"
             style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}
           >
-            <span className="mr-3">{emoji}</span>
-            {word}, Shreyas
+            {word}
           </h1>
-          <p className="mt-4 text-base text-muted-foreground">What would you like to automate today?</p>
+          <p className="mt-4 text-base text-muted-foreground">Describe the task. Your agents will handle it.</p>
         </div>
 
         {/* Prompt box */}
@@ -160,7 +163,7 @@ export function HomePage({
                 submit();
               }
             }}
-            placeholder="Ask me anything — review a GitHub PR, research a topic and send a PDF, summarize a document, dig through a repo, or write a quick script."
+            placeholder="Delegate a task — review a pull request, audit a repository, research a market, draft a report, or run a custom workflow."
             rows={5}
             className="border-0 px-1 text-[16px] leading-relaxed bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 resize-none"
           />
@@ -189,7 +192,7 @@ export function HomePage({
         {/* Framework picker grid */}
         <div className="mt-10">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-[11px] tracking-[0.18em] text-muted-foreground uppercase">Pick a framework</span>
+            <span className="text-[11px] tracking-[0.18em] text-muted-foreground uppercase">Agent runtime</span>
             <button
               onClick={() => setFramework("auto")}
               className="text-[12px] text-muted-foreground hover:text-foreground font-mono transition-colors"
@@ -233,7 +236,7 @@ export function HomePage({
             onClick={onOpenDashboard}
             className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors"
           >
-            Open control panel →
+            Open operations dashboard →
           </button>
         </div>
       </div>

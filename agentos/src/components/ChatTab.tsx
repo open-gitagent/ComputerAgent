@@ -15,6 +15,10 @@ interface Msg {
   text: string;
   files?: string[];
   canContinue?: boolean;
+  // status-only: `false` for terminal/info rows that should NOT show the
+  // spinner (e.g. "Resumed — no stored transcript"). Omitted/true for
+  // transient streaming statuses that get replaced on completion.
+  loading?: boolean;
 }
 
 const CONTINUE_PROMPT =
@@ -66,9 +70,9 @@ export function ChatTab({
           role: e.type.includes("user") ? "user" : "assistant",
           text: e.text,
         }));
-        setMsgs(prior.length ? prior : [{ role: "status", text: "Resumed — no stored transcript. Continue below." }]);
+        setMsgs(prior.length ? prior : [{ role: "status", text: "Resumed — no stored transcript. Continue below.", loading: false }]);
       } catch {
-        setMsgs([{ role: "status", text: "Resumed session — memory is loaded. Continue below." }]);
+        setMsgs([{ role: "status", text: "Resumed session — memory is loaded. Continue below.", loading: false }]);
       }
       await boot(sid);
     })();
@@ -211,9 +215,10 @@ export function ChatTab({
         )}
         {msgs.map((m, i) => {
           if (m.role === "status") {
+            const isLoading = m.loading !== false;
             return (
               <div key={i} className="flex items-center gap-2 text-xs text-muted-foreground italic">
-                <RefreshCw className="h-3 w-3 animate-spin" />
+                {isLoading && <RefreshCw className="h-3 w-3 animate-spin" />}
                 {m.text}
               </div>
             );

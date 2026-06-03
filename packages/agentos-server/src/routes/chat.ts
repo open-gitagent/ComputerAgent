@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { caAuthHeader } from "../auth.js";
 import { caBase, pipeUpstream } from "../upstream.js";
 import { chatPinsColl, threadsColl } from "../mongo.js";
-import { resolveAgent, sandboxBodyFor, sandboxCapable } from "../agent-defs.js";
+import { hasResolvableSource, resolveAgent, sandboxBodyFor, sandboxCapable } from "../agent-defs.js";
 
 export const chatRouter: IRouter = Router();
 
@@ -24,6 +24,23 @@ chatRouter.post("/agents/:name/chat-sandbox", async (req, res, next) => {
     if (!sandboxCapable(agent.harness)) {
       return res.status(400).json({
         error: { code: "NO_SANDBOX", message: `${agent.label} runs one-shot — use /run` },
+      });
+    }
+    // Refuse cleanly if the agent's source can't be resolved into a harness
+    // workdir (legacy "library agents had no files" case — kept as a
+    // safety net for old registry rows). Library-mode agents written by the
+    // Python SDK now ship a full inline source with `files: {agent.yaml,
+    // CLAUDE.md}` so this guard passes and the harness's inline loader
+    // materializes the workdir from those files.
+    if (!hasResolvableSource(agent.source)) {
+      return res.status(400).json({
+        error: {
+          code: "LIBRARY_AGENT_NO_LIVE_CHAT",
+          message:
+            `${agent.label} has no resolvable identity source (no git URL, local path, ` +
+            `or inline files). Historical sessions remain visible in the Chat tab, ` +
+            `but starting a new live conversation needs a runnable source.`,
+        },
       });
     }
 

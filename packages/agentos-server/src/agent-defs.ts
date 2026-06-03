@@ -16,10 +16,30 @@ export interface AgentDef {
   name: string;
   label: string;
   harness: string;
-  source: string;
+  /** Either a string (git URL / local path) or an inline IdentitySource the
+   * harness can clone into a workdir (e.g. one written by the Python SDK's
+   * `AgentRegistrySink` with `files: {agent.yaml, CLAUDE.md, ...}`). */
+  source: string | IdentitySourceT;
   model?: string;
   envs?: Record<string, string>;
   gitToken?: string;
+}
+
+/** True when the source can actually be cloned/loaded by the harness — used
+ *  by `chat-sandbox` and `/run` to refuse cleanly for unresolvable sources. */
+export function hasResolvableSource(source: AgentDef["source"]): boolean {
+  if (typeof source === "string") return source.trim().length > 0;
+  if (source && typeof source === "object") {
+    if (source.type === "git" && source.url) return true;
+    if (source.type === "local" && source.path) return true;
+    if (source.type === "inline") {
+      // Inline is resolvable iff it ships agent.yaml (or any non-empty files
+      // map) — manifest alone is not enough to spin up a sandbox.
+      const files = (source as { files?: Record<string, unknown> }).files;
+      return !!(files && Object.keys(files).length > 0);
+    }
+  }
+  return false;
 }
 
 // deepagents runs one-shot via /run; everything else gets a warm sandbox.
@@ -56,16 +76,46 @@ export async function resolveAgent(name: string): Promise<AgentDef | undefined> 
 }
 
 export function registryDocToAgentDef(doc: RegistryDoc): AgentDef {
-  const srcStr = typeof doc.source === "string"
-    ? doc.source
-    : (doc.source as { url?: string; path?: string } | null)?.url
-      ?? (doc.source as { path?: string } | null)?.path
-      ?? "";
+  // The registry's `source` field can be:
+  //   1. A plain string (legacy git URL / local path), or
+  //   2. An IdentitySource object: {type: "git", url}, {type: "local", path},
+  //      or {type: "inline", manifest, files: {...}}.
+  // For (2) with `git` or `local` we surface the URL/path as a string so
+  // existing callers (sandboxBodyFor, the dashboard) keep working. For
+  // `inline` we pass the FULL object through so the harness's inline loader
+  // gets `files` intact and can spin up a sandbox.
+  let resolvedSource: AgentDef["source"];
+  if (typeof doc.source === "string") {
+    resolvedSource = doc.source;
+  } else if (doc.source && typeof doc.source === "object") {
+    const s = doc.source as {
+      type?: string;
+      url?: string;
+      path?: string;
+      manifest?: unknown;
+      files?: Record<string, unknown>;
+    };
+    if (s.type === "git" && s.url) {
+      resolvedSource = s.url;
+    } else if (s.type === "local" && s.path) {
+      resolvedSource = s.path;
+    } else if (s.type === "inline") {
+      // Pass the IdentitySource through verbatim. sandboxBodyFor will forward
+      // `files` to the harness; the inline loader materializes them in the
+      // sandbox workdir before the engine starts.
+      resolvedSource = doc.source as IdentitySourceT;
+    } else {
+      resolvedSource = (s.url ?? s.path ?? "") as string;
+    }
+  } else {
+    resolvedSource = "";
+  }
+
   return {
     name: doc._id,
     label: doc.label ?? doc._id,
     harness: doc.harness ?? "claude-agent-sdk",
-    source: srcStr,
+    source: resolvedSource,
     ...(doc.model ? { model: doc.model } : {}),
   };
 }
