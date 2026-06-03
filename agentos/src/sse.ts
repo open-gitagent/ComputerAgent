@@ -18,6 +18,66 @@ export function stripAttachMarkers(s: string): { text: string; files: string[] }
   return { text: text || s, files };
 }
 
+export interface CompletionMessage { role: "user" | "assistant"; content: string }
+
+/**
+ * Stream an agent-less Claude completion from `POST /api/completion`. The
+ * backend proxies the Anthropic Messages API and emits simple `delta` / `done`
+ * / `error` SSE frames. `onText` receives the accumulated text on each chunk.
+ */
+export async function streamCompletion(
+  messages: CompletionMessage[],
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch("/api/completion", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    credentials: "include",
+    body: JSON.stringify({ messages }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    let msg = `Completion failed (${res.status})`;
+    try {
+      const j = await res.json();
+      if (j?.error?.message) msg = j.error.message;
+    } catch { /* keep default */ }
+    handlers.onError?.(msg);
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+  let finalText = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+      let ev = ""; let data: any = null;
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) ev = line.slice(7);
+        else if (line.startsWith("data: ")) { try { data = JSON.parse(line.slice(6)); } catch { /* skip */ } }
+      }
+      if (ev === "delta" && typeof data?.text === "string") {
+        finalText += data.text;
+        handlers.onText?.(finalText);
+      } else if (ev === "error") {
+        handlers.onError?.(data?.message ?? "Unknown error");
+        return;
+      } else if (ev === "done") {
+        break;
+      }
+    }
+  }
+  handlers.onDone?.(finalText);
+}
+
 export async function streamChat(
   url: string,
   message: string,

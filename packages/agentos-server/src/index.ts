@@ -35,6 +35,7 @@ import { sessionsRouter } from "./routes/sessions.js";
 import { schedulesRouter } from "./routes/schedules.js";
 import { chatRouter } from "./routes/chat.js";
 import { runRouter } from "./routes/run.js";
+import { completionRouter } from "./routes/completion.js";
 import { policiesRouter } from "./routes/policies.js";
 import { obsTracesRouter } from "./routes/obs-traces.js";
 import { obsDashboardRouter } from "./routes/obs-dashboard.js";
@@ -77,6 +78,7 @@ app.use("/agentos/api", sessionsRouter);  // /sessions, /sessions/:id
 app.use("/agentos/api", schedulesRouter); // /schedules CRUD + /:id/run-now
 app.use("/agentos/api", chatRouter);      // /agents/:name/chat-sandbox, sandbox SSE proxy, artifact
 app.use("/agentos/api", runRouter);       // /agents/:name/run (one-shot SSE)
+app.use("/agentos/api", completionRouter); // /completion (agent-less Claude chat SSE)
 app.use("/agentos/api", policiesRouter);  // /policies, /opa-policies (stubs)
 
 // Observability surface

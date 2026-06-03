@@ -208,7 +208,7 @@ export async function seedDefaultAgentIfRequested(): Promise<void> {
         label: "Claude Code",
         harness: "claude-agent-sdk",
         source: process.env["AGENTOS_DEFAULT_SOURCE"] ?? "github.com/shreyas-lyzr/general-agent",
-        model: process.env["AGENTOS_DEFAULT_MODEL"] ?? "claude-sonnet-4-6",
+        model: process.env["AGENTOS_DEFAULT_MODEL"] ?? "claude-haiku-4-5",
         registeredAt: now,
         updatedAt: now,
         lastSeen: now,
