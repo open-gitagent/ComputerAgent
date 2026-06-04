@@ -6,6 +6,7 @@
 
 import { Router, type Router as IRouter } from "express";
 import { projectEvent, type IngestEvent } from "../stores/telemetry-projection.js";
+import { srsPolicyForAgent } from "../agent-defs.js";
 
 const KNOWN_KINDS = new Set([
   "session_started",
@@ -86,6 +87,20 @@ ingestRouter.post("/events", async (req, res, next) => {
       }
     }
     res.json({ ok: true, ingested, skipped });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Policy config for an agent — lets the library-mode Python SDK resolve which
+// SRS policy applies to an agent the same way the TS harness does, over the
+// same ingest channel (no Mongo creds / no SRS key in the Python process).
+// Returns the {kind:"srs", endpoint, apiKey, policyId, principalId} block from
+// the agent's agent_policies binding, or null when unbound.
+ingestRouter.get("/policy-config/:name", async (req, res, next) => {
+  try {
+    const policy = await srsPolicyForAgent(req.params["name"]!);
+    res.json({ policy: policy ?? null });
   } catch (err) {
     next(err);
   }
