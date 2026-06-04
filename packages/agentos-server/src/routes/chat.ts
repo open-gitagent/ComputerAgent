@@ -11,7 +11,7 @@ import { Router, type Router as IRouter } from "express";
 import { randomUUID } from "node:crypto";
 import { caAuthHeader } from "../auth.js";
 import { caBase, pipeUpstream } from "../upstream.js";
-import { chatPinsColl, threadsColl } from "../mongo.js";
+import { chatPinsColl, chatSessionsColl } from "../mongo.js";
 import { hasResolvableSource, resolveAgent, sandboxBodyFor, sandboxCapable } from "../agent-defs.js";
 
 export const chatRouter: IRouter = Router();
@@ -44,10 +44,12 @@ chatRouter.post("/agents/:name/chat-sandbox", async (req, res, next) => {
       });
     }
 
-    const body = (req.body ?? {}) as { sessionId?: string };
-    // Resume order: explicit body > pinned > new
+    const body = (req.body ?? {}) as { sessionId?: string; forceNew?: boolean };
+    // Resume order: explicit body > pinned > new.
+    // `forceNew` (the dashboard's "New chat" button) skips the pin fallback so
+    // it always mints a fresh session instead of silently resuming the last one.
     let sessionId = body.sessionId;
-    if (!sessionId) {
+    if (!sessionId && !body.forceNew) {
       try {
         const pin = await (await chatPinsColl()).findOne({ _id: agent.name });
         if (pin?.sessionId) sessionId = pin.sessionId;
@@ -109,23 +111,16 @@ chatRouter.post("/agents/:name/chat-sandbox", async (req, res, next) => {
       );
     } catch { /* best-effort */ }
 
-    // Write a synthetic slack_threads row so the Sessions tab sees web chats
-    // uniformly with Slack threads. channel="web", threadTs=sessionId.
+    // Record the web chat session in our own collection so the Sessions tab
+    // can list it. No sandboxId stored — warmth is queried live from the
+    // harness registry, never from a stale persisted flag.
     try {
       const now = new Date();
-      await (await threadsColl()).updateOne(
-        { _id: `web:${sessionId}` },
+      await (await chatSessionsColl()).updateOne(
+        { _id: sessionId },
         {
-          $set: {
-            bot: agent.name,
-            channel: "web",
-            threadTs: sessionId,
-            sessionId,
-            sandboxId: j.sandboxId,
-            snapshotId: null,
-            lastMessageAt: now,
-          },
-          $setOnInsert: { createdAt: now },
+          $set: { agent: agent.name, lastMessageAt: now },
+          $setOnInsert: { _id: sessionId, createdAt: now },
         },
         { upsert: true },
       );

@@ -89,20 +89,21 @@ Optional GitHub repo **variables** (build-time baked into the SPA bundle):
 
 ### 2.3 MongoDB Atlas — AgentOS runtime backend
 
-The Mongo cluster is the source of truth for AgentOS. The Python SDK's `AgentRegistrySink` + `MongoMessageSink` and the AgentOS server both connect here.
+The Mongo cluster is the source of truth for AgentOS. **Only the `agentos-server` connects to Mongo.** As of the post-0.2.1 dev build, the Python SDK no longer writes Mongo directly — it POSTs telemetry to the server's ingest endpoint (`AgentOSHttpSink` → `POST /agentos/api/ingest/events`), and the server owns all writes. (The old `AgentRegistrySink` + `MongoMessageSink` and the `motor` dep were removed — see the Python SDK history below.)
 
-**Collections (database = `AGENTOS_MONGO_DB`):**
-- `agent_registry` — one doc per registered agent (the SDK writes `source.type="library"` for harness-mode agents → AgentOS UI hides the chat-sandbox button for those, see commit `8d829b8`)
+**Collections (database = the server's `MONGO_DATABASE`):**
+- `agent_registry` — one doc per registered agent (the server writes `source.type="library"` for harness-mode agents → AgentOS UI hides the chat-sandbox button for those, see commit `8d829b8`)
 - `agent_logs` — one doc per conversation (one `ComputerAgent` instance = one log row, multi-turn collapses correctly since the 0.2.0 session-id refactor)
-- `sessions` — ordered chat transcript (one doc per session_id, entries appended in order)
+- `sessions` — ordered chat transcript (one doc per session_id, entries appended in order; **`session_started` is the sole creator** of the doc, so a dropped/reordered start can't stub it)
+- `chat_sessions` — the session-index row (`{_id, agent, createdAt, lastMessageAt}`) the dashboard's session list + per-agent `sessionCount`/`lastActivity` read. The server projection writes this so library-mode sessions show up (the old Python sink omitted it).
 - `agent_messages` — per-event audit trail (every assistant_message / tool_use / tool_result lands here)
-- `slack_threads` — chat-channel state
+- `slack_threads` — Slack-bot chat-channel state only; **not** written by the ingest projection (it was dead/legacy for library agents).
 
-**Credentials required (runtime env, anywhere the SDK or server runs):**
-- `AGENTOS_MONGO_URL` — `mongodb+srv://<user>:<pass>@<cluster>.mongodb.net`
-- `AGENTOS_MONGO_DB` — usually `computeragent` / `computeragent-prod` / `computeragent-test` per env
+**Credentials required:**
+- On the **SDK** side: `AGENTOS_INGEST_URL` (e.g. `https://<host>/agentos/api/ingest/events`) + optional `AGENTOS_INGEST_TOKEN` (sent as `Authorization: Bearer …`). No Mongo creds.
+- On the **server** side: `MONGO_URL` + `MONGO_DATABASE` (this is the DB the collections above live in).
 
-**Behaviour:** when `AGENTOS_MONGO_URL` is set, the default telemetry pipeline auto-attaches **both** the registry sink and the message sink. Pre-0.2.0 only the registry sink auto-attached and `agent_messages` was empty — that bug is fixed.
+**Behaviour:** when `AGENTOS_INGEST_URL` is set, the SDK's default telemetry pipeline auto-attaches `AgentOSHttpSink` (gated on the `[agentos]` extra, which is now `httpx`-based). Each event carries a stable `event_id` so the server's writes are idempotent on retry. ⚠️ When the server's `AGENTOS_INGEST_TOKEN` is unset the ingest route is **open** (anonymous writes) — set it on any network-exposed deployment.
 
 ---
 
@@ -253,7 +254,7 @@ Top-level directories (`pnpm` workspace, `turbo` for the build graph):
                            └──────────────────┘
 ```
 
-The Python SDK (`computer-agent-py`) re-implements the harness layer in Python with the same four orthogonal axes. It writes to the same MongoDB collections via `AgentRegistrySink` + `MongoMessageSink` so library-mode Python agents show up in the AgentOS UI alongside TS harness-server-hosted ones.
+The Python SDK (`computer-agent-py`) re-implements the harness layer in Python with the same four orthogonal axes. It POSTs telemetry to the AgentOS server (`AgentOSHttpSink` → `POST /agentos/api/ingest/events`), which projects it into the same MongoDB collections so library-mode Python agents show up in the AgentOS UI alongside TS harness-server-hosted ones. (Through 0.2.x the SDK wrote Mongo directly via `AgentRegistrySink` + `MongoMessageSink`; that was removed in favour of HTTP ingest so the SDK needs no Mongo creds and the schema lives server-side.)
 
 ---
 
@@ -271,9 +272,13 @@ ANTHROPIC_API_KEY=sk-ant-...
 GITCLAW_MODEL_BASE_URL=https://api.lyzr.ai/v1
 OPENAI_API_KEY=sk-...
 
-# AgentOS Mongo (auto-attaches both sinks when set)
-AGENTOS_MONGO_URL=mongodb+srv://user:pass@cluster.mongodb.net
-AGENTOS_MONGO_DB=computeragent
+# AgentOS persistence — SDK POSTs telemetry to the server; the server writes Mongo.
+# On the SDK (library/worker) side:
+AGENTOS_INGEST_URL=https://<agentos-host>/agentos/api/ingest/events
+AGENTOS_INGEST_TOKEN=<shared-secret>          # optional; must match the server's
+# On the agentos-server side (NOT the SDK):
+MONGO_URL=mongodb+srv://user:pass@cluster.mongodb.net
+MONGO_DATABASE=computeragent
 
 # OTel → New Relic
 OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net
@@ -356,6 +361,7 @@ pnpm build && pnpm start                  # node dist/index.js
 | `COOKIE_SECURE` | derived from `NODE_ENV` | Force `true` / `false` explicitly |
 | `AGENTOS_SESSION_SECRET` | random per boot | Cookie-session secret. **Set to a stable value in prod** or sessions are invalidated on restart |
 | `API_AUTH_USER` + `API_AUTH_PASS` | unset | Basic-auth gate on the API. When unset the API is open (relies on network policy) |
+| `AGENTOS_INGEST_TOKEN` | unset | Bearer token guarding `POST /agentos/api/ingest/events` (the Python SDK's telemetry ingest). When unset the route is **open** (anonymous writes to registry/logs/sessions) — set it on any network-exposed pod. The SDK must send the same value as `AGENTOS_INGEST_TOKEN`. |
 | `AGENTOS_RUNTIME` | unset | Default substrate name used by the "Register agent" form (`local` / `bwrap` / `e2b` / `vzvm`) |
 | `AGENTOS_SEED_DEFAULT` | unset | Set to `1` to auto-seed a default agent into the registry on first boot |
 | `AGENTOS_DEFAULT_SOURCE` | `github.com/shreyas-lyzr/general-agent` | Used by the seed agent |

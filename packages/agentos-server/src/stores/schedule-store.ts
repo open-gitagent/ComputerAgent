@@ -104,6 +104,12 @@ export const scheduleStore = {
     await (await coll()).deleteOne({ _id: id });
   },
 
+  /** Cascade helper — drop every schedule for an agent. Returns the count. */
+  async deleteByAgent(agentName: string): Promise<number> {
+    const r = await (await coll()).deleteMany({ agentName });
+    return r.deletedCount ?? 0;
+  },
+
   async due(now: Date = new Date()): Promise<Schedule[]> {
     return (await coll()).find({ enabled: true, nextRunAt: { $lte: now } }).toArray();
   },

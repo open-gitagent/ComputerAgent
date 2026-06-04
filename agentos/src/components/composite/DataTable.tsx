@@ -24,6 +24,8 @@ export function DataTable<T>({
   onRowClick,
   rowKey,
   className,
+  initialSortKey = null,
+  initialSortDir = "desc",
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -32,9 +34,13 @@ export function DataTable<T>({
   onRowClick?: (row: T) => void;
   rowKey: (row: T, index: number) => string;
   className?: string;
+  /** Column key to sort by on first render (must have a `sortBy`). */
+  initialSortKey?: string | null;
+  /** Initial sort direction when `initialSortKey` is set. */
+  initialSortDir?: "asc" | "desc";
 }) {
-  const [sortKey, setSortKey] = React.useState<string | null>(null);
-  const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc");
+  const [sortKey, setSortKey] = React.useState<string | null>(initialSortKey);
+  const [sortDir, setSortDir] = React.useState<"asc" | "desc">(initialSortDir);
 
   const sorted = React.useMemo(() => {
     if (!sortKey) return rows;

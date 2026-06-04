@@ -108,18 +108,32 @@ export interface LogEntry {
 export interface SessionSummary {
   sessionId: string;
   bot: string;
-  channel: string;
-  threadTs: string;
-  sandboxId: string | null;
-  snapshotId: string | null;
+  // True when a live sandbox is currently serving this session — queried from
+  // the harness registry at request time, not a stored flag.
+  warm: boolean;
   createdAt: string | null;
   lastMessageAt: string | null;
+}
+
+// Cascade-delete response shared by agent + session delete. Counts are
+// best-effort; `warnings` carries non-fatal harness/S3 cleanup failures.
+export interface DeleteResult {
+  ok: boolean;
+  deleted: {
+    sessions: number;
+    snapshots: number;
+    sandboxes: number;
+    logs: number;
+    messages: number;
+  };
+  warnings: string[];
 }
 
 export interface TranscriptEntry { type: string; text: string; }
 export interface SessionDetail {
   sessionId: string;
-  thread: Record<string, unknown> | null;
+  bot: string | null;
+  warm: boolean;
   updatedAt: string | null;
   entries: TranscriptEntry[];
 }
@@ -235,7 +249,7 @@ export const api = {
   registerAgent: (input: RegisterAgentInput) =>
     postJSON<{ ok: boolean; name: string }>("/agents/register", input),
   unregisterAgent: (name: string) =>
-    reqJSON<{ ok: boolean }>("DELETE", `/agents/${encodeURIComponent(name)}`),
+    reqJSON<DeleteResult>("DELETE", `/agents/${encodeURIComponent(name)}`),
   patchAgent: (name: string, fields: Partial<Omit<RegisterAgentInput, "name">>) =>
     reqJSON<{ ok: boolean }>("PATCH", `/agents/${encodeURIComponent(name)}`, fields),
   logs: (bot?: string, limit = 100) =>
@@ -243,10 +257,15 @@ export const api = {
   sessions: (bot?: string, limit = 100) =>
     getJSON<{ sessions: SessionSummary[] }>(`/sessions?limit=${limit}${bot ? `&bot=${encodeURIComponent(bot)}` : ""}`).then((d) => d.sessions),
   session: (id: string) => getJSON<SessionDetail>(`/sessions/${encodeURIComponent(id)}`),
-  chatSandbox: (agent: string, sessionId?: string) =>
+  deleteSession: (id: string, bot?: string) =>
+    reqJSON<DeleteResult>(
+      "DELETE",
+      `/sessions/${encodeURIComponent(id)}${bot ? `?bot=${encodeURIComponent(bot)}` : ""}`,
+    ),
+  chatSandbox: (agent: string, opts?: { sessionId?: string; forceNew?: boolean }) =>
     postJSON<{ sandboxId: string; sessionId: string; bot: string }>(
       `/agents/${encodeURIComponent(agent)}/chat-sandbox`,
-      sessionId ? { sessionId } : {},
+      opts?.sessionId ? { sessionId: opts.sessionId } : opts?.forceNew ? { forceNew: true } : {},
     ),
   logWebTurn: (entry: { bot: string; sessionId: string; query: string; reply: string; ok: boolean }) =>
     postJSON<{ ok: boolean }>("/logs", { ...entry, requester: "web" }),

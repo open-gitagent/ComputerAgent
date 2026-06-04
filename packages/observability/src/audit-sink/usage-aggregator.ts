@@ -55,6 +55,21 @@ interface SessionTotals {
   costSemantic?: "cumulative" | "delta";
   /** Wall-clock ms when the session first received a snapshot. */
   startedAt: number;
+  /**
+   * Running totals captured at the start of the current turn. Per-turn span
+   * attributes are `current − turnBaseline`. Empty (all-undefined) until the
+   * first `markTurnBoundary`. Both token sums and the cumulative cost-max are
+   * monotonic, so the subtraction is valid for either cost semantic.
+   */
+  turnBaseline?: TurnBaseline;
+}
+
+interface TurnBaseline {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  costUsd: number;
 }
 
 export class UsageAggregator {
@@ -137,6 +152,53 @@ export class UsageAggregator {
       out[GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] = totals.cacheReadInputTokens;
     }
     if (totals.costUsd !== undefined) out[COMPUTERAGENT_USAGE_COST_USD] = totals.costUsd;
+    return out;
+  }
+
+  /**
+   * Record the current running totals as the baseline for a new turn. Call on
+   * `ca_turn_started`. `turnSpanAttributes` then returns usage accrued since
+   * this point, which is what gets stamped on the per-turn `invoke_agent` root.
+   */
+  markTurnBoundary(sessionId: string): void {
+    const totals = this.getOrCreate(sessionId);
+    totals.turnBaseline = {
+      inputTokens: totals.inputTokens ?? 0,
+      outputTokens: totals.outputTokens ?? 0,
+      cacheCreationInputTokens: totals.cacheCreationInputTokens ?? 0,
+      cacheReadInputTokens: totals.cacheReadInputTokens ?? 0,
+      costUsd: totals.costUsd ?? 0,
+    };
+  }
+
+  /**
+   * Build span attributes for the CURRENT turn — running totals minus the
+   * baseline captured at the last `markTurnBoundary`. Stamped on the per-turn
+   * `invoke_agent` root before it closes so summing across turn-traces gives
+   * the session total without double-counting.
+   */
+  turnSpanAttributes(sessionId: string): Attributes {
+    const totals = this.perSession.get(sessionId);
+    if (!totals) return {};
+    const base = totals.turnBaseline;
+    const out: Attributes = {};
+    if (totals.inputTokens !== undefined) {
+      out[GEN_AI_USAGE_INPUT_TOKENS] = totals.inputTokens - (base?.inputTokens ?? 0);
+    }
+    if (totals.outputTokens !== undefined) {
+      out[GEN_AI_USAGE_OUTPUT_TOKENS] = totals.outputTokens - (base?.outputTokens ?? 0);
+    }
+    if (totals.cacheCreationInputTokens !== undefined) {
+      out[GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS] =
+        totals.cacheCreationInputTokens - (base?.cacheCreationInputTokens ?? 0);
+    }
+    if (totals.cacheReadInputTokens !== undefined) {
+      out[GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] =
+        totals.cacheReadInputTokens - (base?.cacheReadInputTokens ?? 0);
+    }
+    if (totals.costUsd !== undefined) {
+      out[COMPUTERAGENT_USAGE_COST_USD] = totals.costUsd - (base?.costUsd ?? 0);
+    }
     return out;
   }
 

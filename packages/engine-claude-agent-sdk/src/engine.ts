@@ -10,6 +10,7 @@ import type {
 import { nopLogger } from "@open-gitagent/protocol";
 import { buildCanUseTool } from "./permission-bridge.js";
 import { deriveEngineUuid } from "./derive-uuid.js";
+import { pinSessionStoreKey } from "./pin-session-store-key.js";
 
 const CAPABILITIES: EngineCapabilities = {
   streamingInput: true,
@@ -69,18 +70,23 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
       resume?: string;
     } = {};
     if (ctx.sessionStore) {
-      const prior = await ctx.sessionStore.load({
+      // The SDK still gets the derived UUID as its session id (it requires a
+      // valid UUID), but we wrap the store so the DURABLE row keys on the
+      // harness sessionId — unifying `_id` with the dashboard / gitagent /
+      // chat_sessions, so the transcript read finds it by raw sessionId.
+      const store = pinSessionStoreKey(ctx.sessionStore, ctx.sessionId);
+      const prior = await store.load({
         projectKey: PROJECT_KEY,
         sessionId: engineUuid,
       });
       if (prior && prior.length > 0) {
         // Resuming an existing session: pass `resume` only. The Claude SDK
         // uses the resumed session's id internally for future appends.
-        storeOpts = { sessionStore: ctx.sessionStore, resume: engineUuid };
+        storeOpts = { sessionStore: store, resume: engineUuid };
       } else {
         // Fresh session under our deterministic key: pin `sessionId` so
         // appends land under the same key the next turn will look up.
-        storeOpts = { sessionStore: ctx.sessionStore, sessionId: engineUuid };
+        storeOpts = { sessionStore: store, sessionId: engineUuid };
       }
     }
 

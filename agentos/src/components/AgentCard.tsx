@@ -10,21 +10,6 @@ function typeLogo(harness: string): string | null {
   return null;
 }
 
-const NAME_OVERRIDES: Record<string, string> = {
-  "general-agent": "General Agent",
-  "agentos-builder": "AgentOS Builder",
-  "gap-promoter": "GAP Promoter",
-  "framework-translator-agent": "Framework Translator",
-};
-function agentNameFromSource(source: string, fallback: string): string {
-  const slug = source.split("/").pop() ?? "";
-  if (NAME_OVERRIDES[slug]) return NAME_OVERRIDES[slug];
-  if (slug) return slug.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  return fallback
-    .replace(/[-_]+/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
 function timeAgo(iso: string | null): string {
   if (!iso) return "never";
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -58,10 +43,12 @@ export function AgentCard({
   /** When provided, a trash affordance shows on hover (used by the registry). */
   onDelete?: () => void;
 }) {
+  // Show the registered name exactly as typed — never derive it from the
+  // source URL. The source/repo still renders on its own line below.
+  const displayName = a.name;
   const sourceUrl = a.sourceUrl ?? "";
-  const displayName = agentNameFromSource(sourceUrl, a.name);
   const harnessLogo = typeLogo(a.harness);
-  const initial = (displayName || a.name).charAt(0).toUpperCase();
+  const initial = displayName.charAt(0).toUpperCase();
   const isLive = a.activeSandboxes > 0;
   const sd = displaySource(a.source);
 

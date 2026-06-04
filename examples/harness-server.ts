@@ -22,17 +22,28 @@ import { configure as configureOtel, OtelAuditSink, shutdown as shutdownOtel } f
 let auditSink: ConstructorParameters<typeof createHarnessServer>[0]["auditSink"];
 if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
   const otlpHeaders = parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS);
+  // Content capture OFF unless COMPUTERAGENT_CAPTURE_CONTENT is truthy; mode
+  // defaults to "attributes" so content lands on span attributes (what the UI
+  // and NRQL/ClickHouse read), not the logs pipeline.
+  const captureContent = parseCaptureContent(process.env.COMPUTERAGENT_CAPTURE_CONTENT);
   configureOtel({
     serviceName: process.env.OTEL_SERVICE_NAME ?? "harness-server",
     exporter: "otlp-http",
     endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
     ...(otlpHeaders ? { headers: otlpHeaders } : {}),
     sampleRate: Number(process.env.OTEL_SAMPLE_RATE ?? 1.0),
+    captureContent,
+    ...(captureContent
+      ? { captureContentMode: parseCaptureMode(process.env.COMPUTERAGENT_CAPTURE_CONTENT_MODE) }
+      : {}),
   });
   auditSink = new OtelAuditSink();
   console.log(
     `[otel] OTLP/HTTP exporter → ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}` +
-      (otlpHeaders ? " (auth: headers set)" : ""),
+      (otlpHeaders ? " (auth: headers set)" : "") +
+      (captureContent
+        ? ` (content capture: ${parseCaptureMode(process.env.COMPUTERAGENT_CAPTURE_CONTENT_MODE)})`
+        : " (content capture: off)"),
   );
 }
 
@@ -68,4 +79,15 @@ function parseOtlpHeaders(raw: string | undefined): Record<string, string> | und
     if (k) out[k] = v;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// COMPUTERAGENT_CAPTURE_CONTENT=1 (or true/yes/on) → capture prompts/responses/tool IO.
+function parseCaptureContent(raw: string | undefined): boolean {
+  return /^(1|true|yes|on)$/i.test((raw ?? "").trim());
+}
+
+// COMPUTERAGENT_CAPTURE_CONTENT_MODE ∈ attributes|events|both (default attributes).
+function parseCaptureMode(raw: string | undefined): "attributes" | "events" | "both" {
+  const v = (raw ?? "").trim().toLowerCase();
+  return v === "events" || v === "both" || v === "attributes" ? v : "attributes";
 }

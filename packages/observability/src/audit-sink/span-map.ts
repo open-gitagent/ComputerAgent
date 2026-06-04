@@ -8,7 +8,7 @@ import { ERROR_TYPE } from "../semantic/attributes.js";
  * abrupt terminations.
  *
  * Three span shapes per session:
- *   - invoke_agent: at most one open per session (the per-turn root).
+ *   - invoke_agent: at most one open per session (the session-scoped trace root).
  *   - chat: at most one open per session at a time (LLM call in progress).
  *   - execute_tool: any number open in parallel (tool calls), keyed by callId.
  *
@@ -109,6 +109,24 @@ export class SpanMap {
     finalize(fallback.span, opts);
     entry.tools.delete(oldestKey);
     return true;
+  }
+
+  /**
+   * Close the chat + tool spans for a TURN boundary, leaving the per-session
+   * `invoke_agent` root open. Used on `ca_turn_started` so the next turn starts
+   * with a clean chat/tool slate while every turn stays inside the SAME session
+   * trace (the single invoke_agent root spans the whole conversation). Keeps the
+   * session entry alive.
+   */
+  endChatAndTools(sessionId: string, opts: EndOptions): void {
+    const entry = this.perSession.get(sessionId);
+    if (!entry) return;
+    for (const [, rec] of entry.tools) finalize(rec.span, opts);
+    entry.tools.clear();
+    if (entry.chat) {
+      finalize(entry.chat, opts);
+      entry.chat = undefined;
+    }
   }
 
   /**

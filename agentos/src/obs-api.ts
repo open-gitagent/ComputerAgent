@@ -58,6 +58,8 @@ export interface SearchQuery {
   limit?: number;
   orderBy?: "timestamp" | "duration_ms" | "cost_usd" | "input_tokens" | "output_tokens";
   orderDir?: "asc" | "desc";
+  /** Time-cursor for pagination (ms epoch): return only traces older than this. */
+  before?: number;
 }
 
 export interface DashboardData {

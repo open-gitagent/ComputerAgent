@@ -31,6 +31,7 @@ export function ChatTab({
   onConsumedResume,
   initialMessage,
   onConsumedInitial,
+  onSessionStarted,
 }: {
   agent: string;
   sandboxCapable: boolean;
@@ -38,6 +39,9 @@ export function ChatTab({
   onConsumedResume: () => void;
   initialMessage?: string | null;
   onConsumedInitial?: () => void;
+  /** Fired once a sandbox boots and a sessionId is established (new or resumed),
+   *  so the parent can refresh / highlight the session list. */
+  onSessionStarted?: (sessionId: string) => void;
 }) {
   const [sandboxId, setSandboxId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -91,9 +95,14 @@ export function ChatTab({
     setBooting(true);
     setErr(null);
     try {
-      const r = await api.chatSandbox(agent, resume);
+      // No `resume` → this is a fresh "New chat": force a brand-new session so
+      // the server doesn't silently resume the agent's pinned (last) session.
+      const r = await api.chatSandbox(agent, resume ? { sessionId: resume } : { forceNew: true });
       setSandboxId(r.sandboxId);
       setSessionId(r.sessionId);
+      // Tell the parent a session now exists so the sidebar can show/highlight
+      // it — a freshly-created chat has no row in the list until this fires.
+      onSessionStarted?.(r.sessionId);
       return r.sandboxId;
     } catch (e) {
       setErr(String(e));
@@ -210,7 +219,7 @@ export function ChatTab({
         )}
         {msgs.length === 0 && !err && (
           <div className="h-full grid place-items-center text-muted-foreground text-sm">
-            Talk to {agent}. It runs with the same config as in Slack.
+            Talk to {agent}. It runs with its configured identity and tools.
           </div>
         )}
         {msgs.map((m, i) => {
