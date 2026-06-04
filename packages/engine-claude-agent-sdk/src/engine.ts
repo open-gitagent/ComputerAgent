@@ -118,6 +118,43 @@ export class ClaudeAgentEngine implements EngineDriver<ClaudeAgentOptions> {
       ...storeOpts,
     };
 
+    // Policy enforcement that survives bypassPermissions. canUseTool is skipped
+    // under --dangerously-skip-permissions, so the policy decider wired into
+    // onPermissionRequest never fires. A PreToolUse hook, by contrast, runs for
+    // EVERY tool call regardless of permission mode — route it through
+    // onPermissionRequest (which consults the bound decider → SRS → OPA/Cedar)
+    // and translate a deny into the hook's deny decision. Only registered when
+    // a policy is active, so non-policy agents keep autonomous bypass behavior.
+    if (ctx.policyActive) {
+      (options as Record<string, unknown>)["hooks"] = {
+        PreToolUse: [
+          {
+            hooks: [
+              async (input: unknown, toolUseId?: string) => {
+                const pre = input as { tool_name?: string; tool_input?: Record<string, unknown> };
+                const result = await ctx.onPermissionRequest({
+                  callId: toolUseId ?? `hook-${pre.tool_name ?? "tool"}`,
+                  toolName: pre.tool_name ?? "",
+                  input: pre.tool_input ?? {},
+                });
+                if (result.behavior === "deny") {
+                  log.info("policy.hook_deny", { sessionId: ctx.sessionId, toolName: pre.tool_name });
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: "PreToolUse",
+                      permissionDecision: "deny",
+                      permissionDecisionReason: result.message ?? "blocked by policy",
+                    },
+                  };
+                }
+                return {};
+              },
+            ],
+          },
+        ],
+      };
+    }
+
     try {
       for await (const message of query({ prompt, options })) {
         if (ctx.abortSignal.aborted) break;

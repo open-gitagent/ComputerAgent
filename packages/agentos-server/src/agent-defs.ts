@@ -10,7 +10,7 @@
 // the registry can be world-readable without leaking provider keys.
 
 import { IdentitySource, type IdentitySource as IdentitySourceT } from "@open-gitagent/protocol";
-import { registryColl, type RegistryDoc } from "./mongo.js";
+import { getDb, registryColl, type RegistryDoc } from "./mongo.js";
 
 export interface AgentDef {
   name: string;
@@ -183,6 +183,31 @@ export function runBodyFor(agent: AgentDef, message: string): Record<string, unk
   if (agent.model) body.model = agent.model;
   if (agent.gitToken) body.gitToken = agent.gitToken;
   return body;
+}
+
+/**
+ * Build the SRS policy config for an agent if it has a bound RAI policy.
+ *
+ * Returns null when SRS isn't configured (`SRS_BASE_URL` unset) or the agent
+ * has no binding in `agent_policies`. The harness's SrsPolicyDecider uses
+ * `endpoint` to reach SRS per tool call — `SRS_BASE_URL` is reachable from the
+ * harness container too (host.docker.internal:8500 on Docker Desktop), so the
+ * same value works for both agentos and the spawned harness.
+ */
+export async function srsPolicyForAgent(agentName: string): Promise<Record<string, unknown> | null> {
+  const endpoint = process.env["SRS_BASE_URL"];
+  if (!endpoint) return null;
+  const doc = await (await getDb())
+    .collection<{ _id: string; policyId: string }>("agent_policies")
+    .findOne({ _id: agentName });
+  if (!doc?.policyId) return null;
+  return {
+    kind: "srs",
+    endpoint,
+    apiKey: process.env["SRS_API_KEY"] ?? "",
+    policyId: doc.policyId,
+    principalId: agentName,
+  };
 }
 
 export class HttpError extends Error {

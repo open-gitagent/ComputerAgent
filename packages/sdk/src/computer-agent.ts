@@ -482,6 +482,9 @@ export class ComputerAgent {
     if (this.opts.attachments && this.opts.attachments.length > 0) {
       body.attachments = this.opts.attachments;
     }
+    // Forward per-tool-call policy config so the harness builds its decider
+    // (SrsPolicyDecider). Without this the harness never gates tool calls.
+    if (this.opts.policy) body.policy = this.opts.policy;
 
     const res = await this.fetchImpl(`${harnessUrl}/v1/sessions`, {
       method: "POST",

@@ -49,6 +49,14 @@ export interface EngineContext<TOptions = unknown> {
   readonly userMessageQueue: AsyncIterable<UserMessage>;
   /** Engine calls this for permission gating; framework handles the round-trip. */
   readonly onPermissionRequest: (req: PermissionRequest) => Promise<PermissionResult>;
+  /**
+   * True when a policy decider is bound for this session. Engines whose
+   * permission path can be bypassed (e.g. claude-agent-sdk under
+   * `bypassPermissions`, which skips `canUseTool`) should additionally gate
+   * tools through an always-on mechanism — a `PreToolUse` hook that routes to
+   * `onPermissionRequest` — so policy enforcement survives bypass mode.
+   */
+  readonly policyActive?: boolean;
   /** Wired to `POST /cancel`; engine must observe and bail. */
   readonly abortSignal: AbortSignal;
   /** Optional hard cost cap. */

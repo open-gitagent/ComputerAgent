@@ -144,6 +144,21 @@ export interface ComputerAgentOptions {
    */
   readonly attachments?: readonly Attachment[];
   /**
+   * Optional per-tool-call policy enforcement. When set, the harness builds a
+   * decider from this config and gates every tool call through it. Currently
+   * only Lyzr SRS is supported: the harness fetches the RAI policy once, then
+   * POSTs each tool call to SRS's `/v1/guardrails/evaluate-tool-call` for an
+   * allow/deny decision (fail-closed). Forwarded verbatim in the createSession
+   * body; the harness constructs the `SrsPolicyDecider`.
+   */
+  readonly policy?: {
+    readonly kind: "srs";
+    readonly endpoint: string;
+    readonly apiKey: string;
+    readonly policyId: string;
+    readonly principalId: string;
+  };
+  /**
    * Optional telemetry hook. When supplied, the SDK fires `onAgentConstructed`
    * once at construction, `onChatStart`/`onChatEnd` paired around each chat,
    * and `onClose` from `dispose()`. The first-class implementation is

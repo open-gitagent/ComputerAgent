@@ -42,6 +42,17 @@ services:
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
       - ./examples/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    # # The collector config references these via ${env:...}. env_file brings
+    # # NEW_RELIC_LICENSE_KEY from .env; the rest point at the internal services.
+    # env_file:
+    #   - .env
+    # environment:
+    #   CLICKHOUSE_ENDPOINT: tcp://clickhouse:9000?dial_timeout=10s
+    #   CLICKHOUSE_DATABASE: otel
+    #   CLICKHOUSE_USER: default
+    #   CLICKHOUSE_PASSWORD: ""
+    #   # New Relic OTLP gRPC ingest (US). Use otlp.eu01.nr-data.net:4317 for EU.
+    #   NEW_RELIC_OTLP_ENDPOINT: otlp.nr-data.net:4317
     depends_on:
       - clickhouse
 
@@ -81,6 +92,11 @@ services:
       MONGO_DATABASE: ${MONGO_DATABASE:-computeragent-test}
       CLICKHOUSE_URL: http://clickhouse:8123
       NODE_ENV: production
+      # SRS (guardrails) runs as a SEPARATE compose stack. It publishes :8500
+      # on the host, so we reach it via host.docker.internal (works on Docker
+      # Desktop / macOS out of the box) — no shared network needed.
+      SRS_BASE_URL: ${SRS_BASE_URL:-http://host.docker.internal:8500}
+      SRS_API_KEY: ${SRS_API_KEY:-demo}
       # The SPA proxies through nginx (same origin), so sameSite=strict is
       # fine. But the public port is plain HTTP, so secure cookies would
       # block login. Disable the secure flag unless a TLS proxy is in front.
