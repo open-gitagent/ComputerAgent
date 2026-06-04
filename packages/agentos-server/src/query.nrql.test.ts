@@ -179,7 +179,10 @@ describe("buildNrqlTraceListQuery", () => {
     // then renames to `TraceId`.
     expect(nrql).toContain("FACET trace.id");
     expect(nrql).not.toContain("FACET trace.id AS");
-    expect(nrql).toContain("latest(name)");
+    // Root name/op/duration come from the parentless root span, not latest().
+    expect(nrql).toContain("filter(latest(name), WHERE parent.id IS NULL)");
+    expect(nrql).toContain("filter(latest(`gen_ai.operation.name`), WHERE parent.id IS NULL)");
+    expect(nrql).toContain("filter(latest(duration.ms), WHERE parent.id IS NULL)");
     expect(nrql).toContain("sum(`computeragent.usage.cost_usd`)");
     expect(nrql).toContain("filter(count(*), WHERE otel.status_code");
   });
@@ -194,5 +197,27 @@ describe("buildNrqlTraceListQuery", () => {
     });
     expect(nrql).toContain("WHERE `gen_ai.request.model` = {p0:String}");
     expect(params).toEqual({ p0: "sonnet" });
+  });
+
+  it("orders by the bare SELECT alias (not backticked, not a raw aggregate)", () => {
+    // NRQL rejects `ORDER BY min(timestamp) DESC` ("unexpected DESC"), and a
+    // backticked `\`started_at_ms\`` is read as a (nonexistent) attribute so the
+    // sort is silently dropped. The bare alias references the computed column.
+    const { nrql } = buildNrqlTraceListQuery({});
+    expect(nrql).toContain("ORDER BY started_at_ms DESC");
+    expect(nrql).not.toContain("ORDER BY `started_at_ms`");
+    expect(nrql).not.toContain("ORDER BY min(timestamp)");
+    // The alias must exist in the SELECT.
+    expect(nrql).toContain("AS started_at_ms");
+  });
+
+  it("adds a time-cursor predicate when `before` is set", () => {
+    const { nrql, params } = buildNrqlTraceListQuery({ before: 1717000000000 });
+    expect(nrql).toContain("timestamp < {before_ms:Float64}");
+    expect(params["before_ms"]).toBe(1717000000000);
+    // Renders to a raw number (not a quoted ISO timestamp).
+    expect(renderNrql("WHERE timestamp < {before_ms:Float64}", params)).toBe(
+      "WHERE timestamp < 1717000000000",
+    );
   });
 });

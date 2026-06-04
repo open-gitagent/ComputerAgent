@@ -467,12 +467,32 @@ interface SandboxSummary {
 
 class SandboxRegistry {
   private readonly sandboxes = new Map<string, LiveSandbox>();
+  // sessionId → sandboxId. A sandbox is tied to exactly one session; this
+  // index lets POST /sandboxes be idempotent per session (reuse the warm
+  // instance instead of booting a second one) and powers the by-session
+  // warmth lookup the dashboard reads to render the "warm" badge.
+  private readonly bySession = new Map<string, string>();
   private reapTimer: NodeJS.Timeout | null = null;
 
   size(): number { return this.sandboxes.size; }
   get(id: string): LiveSandbox | undefined { return this.sandboxes.get(id); }
   has(id: string): boolean { return this.sandboxes.has(id); }
-  insert(sb: LiveSandbox): void { this.sandboxes.set(sb.id, sb); }
+  insert(sb: LiveSandbox): void {
+    this.sandboxes.set(sb.id, sb);
+    this.bySession.set(sb.sessionId, sb.id);
+  }
+
+  /**
+   * Look up the live sandbox for a session, or undefined if none is warm.
+   * Self-heals a stale index entry if the sandbox was already detached.
+   */
+  getBySession(sessionId: string): LiveSandbox | undefined {
+    const id = this.bySession.get(sessionId);
+    if (!id) return undefined;
+    const sb = this.sandboxes.get(id);
+    if (!sb) { this.bySession.delete(sessionId); return undefined; }
+    return sb;
+  }
 
   list(): SandboxSummary[] {
     return [...this.sandboxes.values()].map(summarize);
@@ -486,6 +506,9 @@ class SandboxRegistry {
     const sb = this.sandboxes.get(id);
     if (!sb) return undefined;
     this.sandboxes.delete(id);
+    // Only clear the session index if it still points at THIS sandbox — a
+    // newer sandbox may have already claimed the session.
+    if (this.bySession.get(sb.sessionId) === id) this.bySession.delete(sb.sessionId);
     return sb;
   }
 
@@ -1142,9 +1165,6 @@ export class ComputerAgentServer {
     this.app.post("/sandboxes", async (c) => {
       const cfg = this.opts.sandbox ?? {};
       const max = cfg.maxConcurrent ?? 8;
-      if (this.sandboxes.size() >= max) {
-        return c.json({ error: { code: "TOO_MANY_SANDBOXES", active: this.sandboxes.size(), max } }, 429);
-      }
 
       let body: SandboxBody;
       try {
@@ -1152,6 +1172,39 @@ export class ComputerAgentServer {
       } catch (err) {
         return c.json({ error: { code: "INVALID_JSON", message: (err as Error).message } }, 400);
       }
+
+      // Idempotent per session: a sandbox is tied to exactly one sessionId.
+      // If the caller pins a sessionId that already has a live (non-expired)
+      // sandbox, hand that warm instance back instead of booting a second one
+      // for the same conversation. This is what keeps "reopen a chat" instant
+      // and the sandbox genuinely tied to the session.
+      if (body.sessionId) {
+        const existing = this.sandboxes.getBySession(body.sessionId);
+        if (
+          existing &&
+          existing.state !== "expired" &&
+          existing.state !== "disposed" &&
+          existing.expiresAt.getTime() > Date.now()
+        ) {
+          return c.json({
+            sandboxId: existing.id,
+            sessionId: existing.sessionId,
+            state: existing.state,
+            createdAt: existing.createdAt,
+            expiresAt: existing.expiresAt,
+            idleExpiresAt: existing.idleExpiresAt,
+            idleTtlMs: existing.idleTtlMs,
+            ttlMs: existing.ttlMs,
+            reused: true,
+          });
+        }
+      }
+
+      // Capacity is only spent by NEW sandboxes — a reuse above never 429s.
+      if (this.sandboxes.size() >= max) {
+        return c.json({ error: { code: "TOO_MANY_SANDBOXES", active: this.sandboxes.size(), max } }, 429);
+      }
+
       // Reuse the run-body validator, minus the message check — a sandbox is
       // created BEFORE any turn arrives, so message lives on /chat.
       const v = validateSandboxBody(body);
@@ -1237,6 +1290,17 @@ export class ComputerAgentServer {
       return c.json({ sandboxes: this.sandboxes.list() });
     });
 
+    // O(1) "is this session warm?" lookup, keyed by sessionId rather than
+    // sandboxId. Returns the live sandbox summary, or 404 {warm:false} when
+    // the session has no warm instance (never started, or already reaped).
+    this.app.get("/sandboxes/by-session/:sid", (c) => {
+      const sb = this.sandboxes.getBySession(c.req.param("sid"));
+      if (!sb || sb.state === "expired" || sb.state === "disposed") {
+        return c.json({ warm: false }, 404);
+      }
+      return c.json(summarize(sb));
+    });
+
     this.app.get("/sandboxes/:id", (c) => {
       const sb = this.sandboxes.get(c.req.param("id"));
       if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
@@ -1289,12 +1353,16 @@ export class ComputerAgentServer {
       const id = c.req.param("id");
       const sb = this.sandboxes.get(id);
       if (!sb) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+      // ?save=false skips the dispose-time auto-save snapshot. Used by the
+      // AgentOS cascade delete, which is about to wipe the agent's S3 state
+      // anyway — writing a final snapshot just to delete it is wasteful.
+      const save = c.req.query("save") !== "false";
       // Capture usage BEFORE disposing — the registry removal nulls the agent.
       const finalUsage = sb.usage;
       const turnCount = sb.turnCount;
-      const pre = this.buildAutoSavePreDispose(sb);
+      const pre = save ? this.buildAutoSavePreDispose(sb) : undefined;
       await this.sandboxes.remove(id, "explicit", pre);
-      return c.json({ ok: true, sandboxId: id, finalUsage, turnCount, autoSaved: Boolean(sb.autoSave) });
+      return c.json({ ok: true, sandboxId: id, finalUsage, turnCount, autoSaved: save && Boolean(sb.autoSave) });
     });
 
     this.app.post("/sandboxes/:id/chat", async (c) => {
@@ -2270,6 +2338,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     return Object.keys(out).length > 0 ? out : undefined;
   };
+  // COMPUTERAGENT_CAPTURE_CONTENT=1 (or true/yes/on) → capture prompts/responses/tool IO.
+  const parseCaptureContent = (raw: string | undefined): boolean =>
+    /^(1|true|yes|on)$/i.test((raw ?? "").trim());
+  // COMPUTERAGENT_CAPTURE_CONTENT_MODE ∈ attributes|events|both. Defaults to
+  // "attributes" (span attributes are what the dashboard/NRQL/ClickHouse read).
+  const parseCaptureMode = (raw: string | undefined): "attributes" | "events" | "both" => {
+    const v = (raw ?? "").trim().toLowerCase();
+    return v === "events" || v === "both" || v === "attributes" ? v : "attributes";
+  };
   const sandboxCfg = {
     maxConcurrent: intEnv("SANDBOX_MAX_CONCURRENT", 8),
     defaultIdleTtlMs: intEnv("SANDBOX_DEFAULT_IDLE_TTL_MS", 10 * 60_000),
@@ -2324,17 +2401,30 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   let auditSink: AuditSink | undefined;
   if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
     const otlpHeaders = parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS);
+    // Content capture (prompts, responses, tool args/results) is OFF unless
+    // COMPUTERAGENT_CAPTURE_CONTENT is truthy. Mode defaults to "attributes"
+    // so captured content lands on span attributes — which is what the AgentOS
+    // dashboard + NRQL/ClickHouse queries read ("events" mode would ship it to
+    // the logs pipeline, invisible to the trace UI).
+    const captureContent = parseCaptureContent(process.env.COMPUTERAGENT_CAPTURE_CONTENT);
     configureOtel({
       serviceName: process.env.OTEL_SERVICE_NAME ?? "computeragent-server",
       exporter: "otlp-http",
       endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
       ...(otlpHeaders ? { headers: otlpHeaders } : {}),
       sampleRate: Number(process.env.OTEL_SAMPLE_RATE ?? 1.0),
+      captureContent,
+      ...(captureContent
+        ? { captureContentMode: parseCaptureMode(process.env.COMPUTERAGENT_CAPTURE_CONTENT_MODE) }
+        : {}),
     });
     auditSink = new OtelAuditSink();
     console.log(
       `[otel] OTLP/HTTP exporter → ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}` +
-        (otlpHeaders ? ` (auth: headers set)` : ""),
+        (otlpHeaders ? ` (auth: headers set)` : "") +
+        (captureContent
+          ? ` (content capture: ${parseCaptureMode(process.env.COMPUTERAGENT_CAPTURE_CONTENT_MODE)})`
+          : " (content capture: off)"),
     );
   }
 

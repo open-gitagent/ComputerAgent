@@ -152,6 +152,8 @@ export function TraceList({
       loading={loading}
       onRowClick={onSelect}
       rowKey={(r) => r.TraceId}
+      initialSortKey="time"
+      initialSortDir="desc"
       empty={
         <EmptyState
           icon={Search}

@@ -57,8 +57,14 @@ export function RegistryPage({
     if (!pendingDelete) return;
     setDeleting(true);
     try {
-      await api.unregisterAgent(pendingDelete.name);
-      toast.success(`Deleted "${pendingDelete.name}"`);
+      const res = await api.unregisterAgent(pendingDelete.name);
+      const d = res.deleted;
+      toast.success(`Deleted "${pendingDelete.name}"`, {
+        description: `${d.sessions} session(s), ${d.sandboxes} sandbox(es), ${d.snapshots} snapshot(s) removed.`,
+      });
+      if (res.warnings?.length) {
+        toast.warning(`Some cleanup was skipped`, { description: res.warnings.slice(0, 3).join("; ") });
+      }
       setPendingDelete(null);
       onReload();
     } catch (e) {
@@ -186,8 +192,9 @@ export function RegistryPage({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete agent?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently removes <span className="font-mono">{pendingDelete?.name}</span> from the registry. Its
-              sessions and logs are not deleted, but it will no longer appear here or be chattable. This can't be undone.
+              This permanently removes <span className="font-mono">{pendingDelete?.name}</span> and{" "}
+              <span className="font-semibold">everything it produced</span> — all chat sessions, live sandboxes,
+              saved workspace state in S3, logs, messages, and schedules. This can't be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

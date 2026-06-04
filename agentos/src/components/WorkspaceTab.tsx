@@ -1,11 +1,22 @@
 import { useEffect, useState } from "react";
-import { Plus, PanelLeftClose, MessageSquare } from "lucide-react";
+import { Plus, PanelLeftClose, MessageSquare, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { api, type SessionSummary } from "../api.ts";
 import { ChatTab } from "./ChatTab.tsx";
 import { Button } from "./ui/button.tsx";
 import { Badge } from "./ui/badge.tsx";
 import { Skeleton } from "./ui/skeleton.tsx";
 import { EmptyState } from "./composite/EmptyState.tsx";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog.tsx";
 import { cn } from "../lib/cn.ts";
 
 export function WorkspaceTab({
@@ -29,7 +40,12 @@ export function WorkspaceTab({
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
   const [resumeId, setResumeId] = useState<string | null>(null);
+  // Session the open ChatTab is actually talking to. Set when a new chat boots
+  // (so it highlights in the list) without remounting the chat via `resumeId`.
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [chatKey, setChatKey] = useState<string>(() => `new-${Date.now()}`);
+  const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const loadSessions = () => {
     setLoading(true);
@@ -47,11 +63,43 @@ export function WorkspaceTab({
 
   const openSession = (sid: string) => {
     setResumeId(sid);
+    setActiveSessionId(sid);
     setChatKey(`s-${sid}-${Date.now()}`);
   };
   const newChat = () => {
     setResumeId(null);
+    setActiveSessionId(null);
     setChatKey(`new-${Date.now()}`);
+  };
+  // A new chat's session only exists once its sandbox boots — surface it in the
+  // list (and highlight it) without remounting the live ChatTab.
+  const onSessionStarted = (sid: string) => {
+    setActiveSessionId(sid);
+    loadSessions();
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const sid = pendingDelete.sessionId;
+    setDeleting(true);
+    try {
+      const res = await api.deleteSession(sid, pendingDelete.bot || agent);
+      const d = res.deleted;
+      toast.success("Session deleted", {
+        description: `${d.sandboxes} sandbox(es), ${d.snapshots} snapshot(s) removed.`,
+      });
+      if (res.warnings?.length) {
+        toast.warning("Some cleanup was skipped", { description: res.warnings.slice(0, 3).join("; ") });
+      }
+      setPendingDelete(null);
+      // If the deleted session was open, drop back to a fresh chat.
+      if (resumeId === sid || activeSessionId === sid) newChat();
+      loadSessions();
+    } catch (e) {
+      toast.error(`Delete failed: ${String(e)}`);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   if (collapsed) {
@@ -88,6 +136,7 @@ export function WorkspaceTab({
               onConsumedInitial?.();
               loadSessions();
             }}
+            onSessionStarted={onSessionStarted}
           />
         </div>
       </div>
@@ -137,34 +186,43 @@ export function WorkspaceTab({
           {sessions.map((s) => {
             // Chop the agentos-<agentname>- prefix so the unique part is
             // visible at the START of the truncated label.
-            const label = s.sessionId
-              .replace(/^slack-/, "")
-              .replace(/^agentos-[a-z0-9-]+?-/, "");
+            const label = s.sessionId.replace(/^agentos-[a-z0-9-]+?-/, "");
             const ts = s.lastMessageAt ? new Date(s.lastMessageAt) : null;
             const tsShort = ts
               ? ts.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
               : "";
             return (
-              <button
-                key={s.sessionId}
-                title={s.sessionId}
-                onClick={() => openSession(s.sessionId)}
-                className={cn(
-                  "w-full text-left px-3 py-2.5 border-b border-border/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset min-w-0",
-                  resumeId === s.sessionId ? "bg-muted ring-1 ring-primary/40" : "hover:bg-muted/40",
-                )}
-              >
-                <div className="text-xs font-mono truncate text-foreground/90 min-w-0">{label}</div>
-                <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground min-w-0">
-                  {s.sandboxId && (
-                    <Badge variant="success" className="shrink-0 text-[9px] py-0 px-1.5">warm</Badge>
+              <div key={s.sessionId} className="group relative border-b border-border/50">
+                <button
+                  title={s.sessionId}
+                  onClick={() => openSession(s.sessionId)}
+                  className={cn(
+                    "w-full text-left px-3 py-2.5 pr-8 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset min-w-0",
+                    activeSessionId === s.sessionId ? "bg-muted ring-1 ring-primary/40" : "hover:bg-muted/40",
                   )}
-                  {s.snapshotId && (
-                    <Badge variant="secondary" className="shrink-0 text-[9px] py-0 px-1.5">snap</Badge>
-                  )}
-                  <span className="ml-auto truncate min-w-0">{tsShort}</span>
-                </div>
-              </button>
+                >
+                  <div className="text-xs font-mono truncate text-foreground/90 min-w-0">{label}</div>
+                  <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground min-w-0">
+                    {s.warm && (
+                      <Badge variant="success" className="shrink-0 text-[9px] py-0 px-1.5">warm</Badge>
+                    )}
+                    <span className="ml-auto truncate min-w-0">{tsShort}</span>
+                  </div>
+                </button>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  title="Delete session"
+                  aria-label={`Delete session ${label}`}
+                  onClick={(e) => { e.stopPropagation(); setPendingDelete(s); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); setPendingDelete(s); }
+                  }}
+                  className="absolute right-1.5 top-2 z-10 h-6 w-6 grid place-items-center rounded-md text-muted-foreground/70 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-opacity cursor-pointer"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </span>
+              </div>
             );
           })}
         </div>
@@ -182,8 +240,34 @@ export function WorkspaceTab({
             onConsumedInitial?.();
             loadSessions();
           }}
+          onSessionStarted={onSessionStarted}
         />
       </div>
+
+      <AlertDialog open={!!pendingDelete} onOpenChange={(o) => !o && setPendingDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes this conversation, its live sandbox, and any saved
+              workspace state in S3. This can't be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                confirmDelete();
+              }}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -10,7 +10,13 @@ import { MeterProvider } from "@opentelemetry/sdk-metrics";
 import type { AuditRecord } from "@computeragent/harness-server";
 import type { HarnessEvent } from "@open-gitagent/protocol";
 import { OtelAuditSink } from "./otel-audit-sink.js";
-import { GEN_AI_CONVERSATION_ID, GEN_AI_TOOL_NAME, GenAiOperationName } from "../semantic/attributes.js";
+import {
+  COMPUTERAGENT_USAGE_COST_USD,
+  GEN_AI_CONVERSATION_ID,
+  GEN_AI_TOOL_NAME,
+  GEN_AI_USAGE_INPUT_TOKENS,
+  GenAiOperationName,
+} from "../semantic/attributes.js";
 
 /**
  * Phase 3 — verifies the new protocol events drive the right span lifecycle:
@@ -160,6 +166,137 @@ describe("ca_turn_started drives per-turn invoke_agent roots", () => {
     expect(agents[1]!.attributes[GEN_AI_CONVERSATION_ID]).toBe(SESSION_ID);
     // DIFFERENT trace ids — the spec uses correlation, not parent-child.
     expect(agents[0]!.spanContext().traceId).not.toBe(agents[1]!.spanContext().traceId);
+  });
+
+  it("stamps each turn root with that turn's usage delta, not the session total", () => {
+    const sink = new OtelAuditSink();
+    // turn 0 — 100 input tokens this turn (cumulative-reporting engine: running total = 100)
+    sink.onEvent(rec(baseSessionStarted));
+    sink.onEvent(rec({ kind: "ca_turn_started", sessionId: SESSION_ID, turnIndex: 0 }));
+    sink.onEvent(rec(systemInit));
+    sink.onEvent(
+      rec({
+        kind: "sdk_message",
+        sessionId: SESSION_ID,
+        payload: {
+          type: "assistant",
+          message: { model: "claude-haiku-4-5-20251001", content: [{ type: "text", text: "turn 0" }] },
+        },
+      }),
+    );
+    sink.onEvent(
+      rec({ kind: "ca_usage_snapshot", sessionId: SESSION_ID, inputTokens: 100, costSemantic: "delta" }),
+    );
+    sink.onEvent(
+      rec({
+        kind: "sdk_message",
+        sessionId: SESSION_ID,
+        payload: { type: "result", subtype: "success", model: "claude-haiku-4-5-20251001", stop_reason: "end_turn" },
+      }),
+    );
+
+    // turn 1 — 150 more input tokens this turn (session running total now 250)
+    sink.onEvent(rec({ kind: "ca_turn_started", sessionId: SESSION_ID, turnIndex: 1 }));
+    sink.onEvent(
+      rec({
+        kind: "sdk_message",
+        sessionId: SESSION_ID,
+        payload: {
+          type: "assistant",
+          message: { model: "claude-haiku-4-5-20251001", content: [{ type: "text", text: "turn 1" }] },
+        },
+      }),
+    );
+    sink.onEvent(
+      rec({ kind: "ca_usage_snapshot", sessionId: SESSION_ID, inputTokens: 150, costSemantic: "delta" }),
+    );
+    sink.onEvent(
+      rec({
+        kind: "sdk_message",
+        sessionId: SESSION_ID,
+        payload: { type: "result", subtype: "success", model: "claude-haiku-4-5-20251001", stop_reason: "end_turn" },
+      }),
+    );
+    sink.onEvent(rec({ kind: "ca_session_ended", sessionId: SESSION_ID, reason: "complete" }));
+
+    const agents = findByName(spanExporter.getFinishedSpans(), "invoke_agent haiku-bot");
+    expect(agents).toHaveLength(2);
+    // Each turn root carries ONLY its own turn's tokens (100 and 150) — never
+    // the cumulative 250 — so summing across turn-traces gives the session
+    // total without double-counting. Order-independent multiset check.
+    const perTurnInput = agents.map((a) => a.attributes[GEN_AI_USAGE_INPUT_TOKENS]).sort();
+    expect(perTurnInput).toEqual([100, 150]);
+  });
+
+  // Regression: the ComputerAgent SDK synthesizes a `ca_session_ended` at the
+  // end of EVERY turn (the server session stays alive for the next chat). The
+  // sink must NOT tear down session identity on that event, or turns ≥2 lose
+  // their agent name → no invoke_agent root opens → a rootless `chat` trace
+  // with no cost/tokens (the exact bug seen in New Relic).
+  it("opens an invoke_agent root on EVERY turn even when ca_session_ended fires per turn", () => {
+    const sink = new OtelAuditSink();
+    sink.onEvent(rec(baseSessionStarted));
+
+    // turn 0
+    sink.onEvent(rec({ kind: "ca_turn_started", sessionId: SESSION_ID, turnIndex: 0 }));
+    sink.onEvent(rec(systemInit));
+    sink.onEvent(
+      rec({
+        kind: "sdk_message",
+        sessionId: SESSION_ID,
+        payload: {
+          type: "assistant",
+          message: { model: "claude-haiku-4-5-20251001", content: [{ type: "text", text: "turn 0" }] },
+        },
+      }),
+    );
+    sink.onEvent(rec({ kind: "ca_usage_snapshot", sessionId: SESSION_ID, inputTokens: 10, costUsd: 0.01, costSemantic: "delta" }));
+    sink.onEvent(
+      rec({
+        kind: "sdk_message",
+        sessionId: SESSION_ID,
+        payload: { type: "result", subtype: "success", model: "claude-haiku-4-5-20251001", stop_reason: "end_turn" },
+      }),
+    );
+    // SDK-synthesized per-turn terminator.
+    sink.onEvent(rec({ kind: "ca_session_ended", sessionId: SESSION_ID, reason: "complete" }));
+
+    // turn 1 — SAME session, NO new ca_session_started (identity must persist).
+    sink.onEvent(rec({ kind: "ca_turn_started", sessionId: SESSION_ID, turnIndex: 1 }));
+    sink.onEvent(
+      rec({
+        kind: "sdk_message",
+        sessionId: SESSION_ID,
+        payload: {
+          type: "assistant",
+          message: { model: "claude-haiku-4-5-20251001", content: [{ type: "text", text: "turn 1" }] },
+        },
+      }),
+    );
+    sink.onEvent(rec({ kind: "ca_usage_snapshot", sessionId: SESSION_ID, inputTokens: 20, costUsd: 0.02, costSemantic: "delta" }));
+    sink.onEvent(
+      rec({
+        kind: "sdk_message",
+        sessionId: SESSION_ID,
+        payload: { type: "result", subtype: "success", model: "claude-haiku-4-5-20251001", stop_reason: "end_turn" },
+      }),
+    );
+    sink.onEvent(rec({ kind: "ca_session_ended", sessionId: SESSION_ID, reason: "complete" }));
+
+    const spans = spanExporter.getFinishedSpans();
+    // BOTH turns produced an invoke_agent root (not just turn 0).
+    const agents = findByName(spans, "invoke_agent haiku-bot");
+    expect(agents).toHaveLength(2);
+    // No rootless chat span: every chat span has a parent (its turn's root).
+    const chats = findByName(spans, "chat claude-haiku-4-5-20251001");
+    expect(chats).toHaveLength(2);
+    for (const c of chats) expect(c.parentSpanId).toBeTruthy();
+    // Each turn root carries its own turn's cost (0.01 and 0.02) — not "—".
+    const costs = agents.map((a) => a.attributes[COMPUTERAGENT_USAGE_COST_USD]).sort();
+    expect(costs).toEqual([0.01, 0.02]);
+    // Two distinct traces, one shared conversation id.
+    expect(agents[0]!.spanContext().traceId).not.toBe(agents[1]!.spanContext().traceId);
+    for (const a of agents) expect(a.attributes[GEN_AI_CONVERSATION_ID]).toBe(SESSION_ID);
   });
 });
 

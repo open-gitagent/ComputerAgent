@@ -1,4 +1,11 @@
-import { SpanKind, context as otelContext, trace, type Attributes, type Span } from "@opentelemetry/api";
+import {
+  ROOT_CONTEXT,
+  SpanKind,
+  context as otelContext,
+  trace,
+  type Attributes,
+  type Span,
+} from "@opentelemetry/api";
 import type { AuditSink, AuditRecord } from "@computeragent/harness-server";
 import type { HarnessEvent } from "@open-gitagent/protocol";
 import { getTracer, getMeter, getLogger, getConfig } from "../provider.js";
@@ -35,17 +42,29 @@ import {
  * OpenTelemetry GenAI-semconv-compliant spans + metrics from every
  * `HarnessEvent` the framework tees here.
  *
- * Phase-2 scope: single-turn happy path for the claude-agent-sdk engine.
+ * Trace model: ONE trace per TURN (per the OTel GenAI semconv, where
+ * `invoke_agent` is a single agent *invocation*, and Claude Code's own OTel,
+ * whose root span is per user turn). Each `ca_turn_started` opens a fresh
+ * `invoke_agent` ROOT span — a new trace — under which that turn's chat +
+ * execute_tool spans nest. All turns of one session share the same
+ * `gen_ai.conversation.id = sessionId`, which is the cross-turn correlation
+ * key (the read side groups turn-traces back into a conversation by it).
  *
- *   Trace tree produced per session:
+ *   Turn 0:  invoke_agent <agent.name>     [gen_ai.conversation.id = sessionId]  ← trace A
+ *            └── chat <model>
+ *   Turn 1:  invoke_agent <agent.name>     [gen_ai.conversation.id = sessionId]  ← trace B
+ *            ├── chat <model>              decides the tool call
+ *            ├── execute_tool <name>
+ *            └── chat <model>              summarises the result
  *
- *     invoke_agent <agent.name>     [gen_ai.conversation.id = sessionId]
- *     └── chat <model>              opened lazily on first sdk_message with model
- *         ├── execute_tool <name>   opened on ca_permission_request / tool_use
- *         └── execute_tool <name>
+ * Why per-turn and not one session-long root: an OTel span only exports when
+ * it ends. A session-scoped root would stay invisible/rootless until the
+ * session closes and be lost entirely on a crash; per-turn roots export the
+ * moment a turn finishes and survive mid-session termination.
  *
- * Phase 3 adds: multi-turn (`ca_turn_started`), permission-decision close
- * (`ca_permission_decision`), tool span close on deny.
+ * `ca_turn_started` closes the prior turn's root + its children (stamping that
+ * turn's usage delta) and opens the next turn's root.
+ * `ca_permission_decision = "deny"` closes the pending execute_tool span.
  *
  * Fire-and-forget contract: never throws into the caller. Any exception in
  * the dispatcher is caught and logged; the session is unaffected.
@@ -54,9 +73,16 @@ export class OtelAuditSink implements AuditSink {
   private readonly spans = new SpanMap();
   private readonly usage: UsageAggregator;
   private readonly content = new ContentAccumulator();
-  /** Per-session metadata learned from `ca_session_started`. */
+  /**
+   * Per-session metadata learned from `ca_session_started`. Retained for the
+   * session's whole lifetime — NOT cleared on `ca_session_ended`, because the
+   * ComputerAgent SDK synthesizes a `ca_session_ended` at the end of EVERY turn
+   * (the server session stays alive for the next chat). Clearing identity there
+   * would leave every turn after the first with no `invoke_agent` root. Bounded
+   * by `remember()` so retention can't leak.
+   */
   private readonly sessionMeta = new Map<string, SessionMeta>();
-  /** Per-session model name (learned from sdk_message system_init). */
+  /** Per-session model name (learned from sdk_message system_init). Same retention as sessionMeta. */
   private readonly sessionModel = new Map<string, string>();
 
   constructor() {
@@ -66,6 +92,19 @@ export class OtelAuditSink implements AuditSink {
   /** Current frozen config, or a safe default when no `configure()` has run. */
   private cfg(): TracerConfig {
     return getConfig() ?? FALLBACK_CONFIG;
+  }
+
+  /**
+   * Insert into a session-keyed identity map with FIFO eviction. Since these
+   * maps are NOT cleared on `ca_session_ended` (see sessionMeta doc), this caps
+   * total retained sessions so a long-lived process can't grow unbounded.
+   */
+  private remember<V>(map: Map<string, V>, key: string, value: V): void {
+    if (!map.has(key) && map.size >= MAX_TRACKED_SESSIONS) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) map.delete(oldest);
+    }
+    map.set(key, value);
   }
 
   onEvent(record: AuditRecord): void {
@@ -113,7 +152,8 @@ export class OtelAuditSink implements AuditSink {
   }
 
   // ---------------------------------------------------------------------
-  // ca_session_started → record metadata (invoke_agent opens on ca_turn_started)
+  // ca_session_started → record metadata (the per-turn root opens on
+  // ca_turn_started; the session itself is never a span)
   // ---------------------------------------------------------------------
 
   private onSessionStarted(
@@ -126,41 +166,36 @@ export class OtelAuditSink implements AuditSink {
       agentVersion: event.identity.version,
     };
     if (event.identity.sha) meta.agentSha = event.identity.sha;
-    this.sessionMeta.set(sessionId, meta);
-    // Per OpenTelemetry GenAI semconv, invoke_agent represents the execution
-    // of one agent invocation (one user turn), not the session. We open it
-    // on `ca_turn_started`. If a backward-compatible client sends no
-    // ca_turn_started, the legacy fallback opens it inside ensureInvokeAgent().
+    this.remember(this.sessionMeta, sessionId, meta);
+    // No span opens here. `invoke_agent` is per turn (one trace per turn), so
+    // the root is created on the first ca_turn_started. The session is tracked
+    // only via the gen_ai.conversation.id stamped on every turn's spans.
   }
 
   // ---------------------------------------------------------------------
-  // ca_turn_started → open a fresh per-turn invoke_agent root
+  // ca_turn_started → close the prior turn's root, open a fresh one (new trace)
   // ---------------------------------------------------------------------
 
   private onTurnStarted(
     sessionId: string,
     event: Extract<HarnessEvent, { kind: "ca_turn_started" }>,
   ): void {
-    // Close any prior turn's invoke_agent + still-open children.
-    // Tokens/cost already flushed to the prior root by usage-snapshot ingest;
-    // here we just clean up the in-flight span tree.
+    // Close the previous turn's tree, stamping THAT turn's usage delta on its
+    // root before it ends. Children (chat + tools) close first, then the root.
     const prior = this.spans.getInvokeAgent(sessionId);
     if (prior) {
-      // Stamp running totals on the prior root and close it cleanly. The
-      // usage aggregator keeps cumulative state per session — we DO NOT
-      // call usage.endSession yet (that happens on ca_session_ended).
-      const usageAttrs = this.usage.spanAttributes(sessionId);
-      prior.setAttributes(usageAttrs);
+      prior.setAttributes(this.usage.turnSpanAttributes(sessionId));
+      this.spans.endChatAndTools(sessionId, { status: "ok" });
       this.spans.endInvokeAgent(sessionId, { status: "ok" });
     }
-    // Per-turn lifecycle: each turn starts fresh chat + tool tracking, since
-    // those are children of the per-turn root. Flush any leftover children
-    // defensively (in practice the engine should have closed them itself).
-    this.spans.endAllForSession(sessionId, { status: "ok" });
     // Reset captured content — each turn is a distinct LLM operation and
     // gets its own gen_ai.input.messages / gen_ai.output.messages set.
     this.content.reset(sessionId);
-    this.openInvokeAgentForTurn(sessionId);
+    // Baseline the usage accumulator so this turn's root gets only this turn's
+    // tokens/cost (running totals minus the baseline), not the session total.
+    this.usage.markTurnBoundary(sessionId);
+    // Open this turn's root — a fresh trace.
+    this.openInvokeAgent(sessionId);
 
     // Capture the triggering user message into the accumulator. This is the
     // canonical source of gen_ai.input.messages — engines like claude-agent-sdk
@@ -176,9 +211,11 @@ export class OtelAuditSink implements AuditSink {
     }
   }
 
-  private openInvokeAgentForTurn(sessionId: string): void {
+  private openInvokeAgent(sessionId: string): void {
     const meta = this.sessionMeta.get(sessionId);
     if (!meta) return;
+    // Idempotent: never open a second root for a session.
+    if (this.spans.getInvokeAgent(sessionId)) return;
     const providerName = providerForEngine(meta.engineName);
     const attrs: Attributes = {
       [GEN_AI_OPERATION_NAME]: GenAiOperationName.INVOKE_AGENT,
@@ -194,23 +231,28 @@ export class OtelAuditSink implements AuditSink {
     const model = this.sessionModel.get(sessionId);
     if (model) attrs[GEN_AI_REQUEST_MODEL] = model;
 
-    const span = getTracer().startSpan(`invoke_agent ${meta.agentName}`, {
-      kind: SpanKind.CLIENT,
-      attributes: attrs,
-    });
+    // Pin to ROOT_CONTEXT so each turn's invoke_agent is its own fresh trace
+    // and can never nest under an ambient active span (e.g. a prior turn's
+    // span left active in the async context, or future HTTP instrumentation).
+    const span = getTracer().startSpan(
+      `invoke_agent ${meta.agentName}`,
+      { kind: SpanKind.INTERNAL, attributes: attrs },
+      ROOT_CONTEXT,
+    );
     this.spans.setInvokeAgent(sessionId, span);
   }
 
   /**
-   * Legacy fallback: ensure an invoke_agent exists for this session, in case
-   * an audit producer (older harness, custom client) sends sdk_message events
-   * without first emitting ca_turn_started. The session-metadata table is
-   * still populated by ca_session_started.
+   * Legacy fallback: ensure a turn root exists, in case an audit producer
+   * (older harness, custom client) sends sdk_message events without first
+   * emitting ca_turn_started. The session-metadata table is still populated by
+   * ca_session_started, so this lazily opens the root rather than orphaning
+   * the turn's spans into a parentless trace.
    */
   private ensureInvokeAgent(sessionId: string): void {
     if (this.spans.getInvokeAgent(sessionId)) return;
     if (!this.sessionMeta.has(sessionId)) return;
-    this.openInvokeAgentForTurn(sessionId);
+    this.openInvokeAgent(sessionId);
   }
 
   // ---------------------------------------------------------------------
@@ -290,12 +332,13 @@ export class OtelAuditSink implements AuditSink {
     // so input/output messages aren't lost on the error path.
     if (this.spans.getCurrentChat(sessionId)) this.writeChatContent(sessionId);
 
-    // Stamp accumulated usage on the chat span (if present) and the
-    // invoke_agent (so dashboards filtering on conversation get totals).
-    const usageAttrs = this.usage.spanAttributes(sessionId);
-    const chat = this.spans.getCurrentChat(sessionId);
+    // Stamp the FINAL turn's usage delta on its turn root ONLY. Usage lives on
+    // exactly one span per turn (the root), so summing token/cost attributes
+    // across a trace's spans — or across a conversation's turn-traces — yields
+    // the correct total with no double-counting. Each root carries only its
+    // own turn's tokens/cost (per-turn delta).
+    const usageAttrs = this.usage.turnSpanAttributes(sessionId);
     const agent = this.spans.getInvokeAgent(sessionId);
-    if (chat) chat.setAttributes(usageAttrs);
     if (agent) agent.setAttributes(usageAttrs);
 
     const isError = event.reason !== "complete";
@@ -321,8 +364,13 @@ export class OtelAuditSink implements AuditSink {
       errorType,
     );
 
-    this.sessionMeta.delete(sessionId);
-    this.sessionModel.delete(sessionId);
+    // Do NOT delete sessionMeta / sessionModel here. The ComputerAgent SDK
+    // synthesizes a `ca_session_ended` at the end of EVERY turn (the server
+    // session lives on for the next chat), so deleting identity would leave
+    // turns ≥2 with no agent name → `openInvokeAgent` would early-return and
+    // those turns would emit a rootless `chat` trace with no cost/tokens. We
+    // retain identity (bounded by `remember`) and refresh it on the next
+    // `ca_session_started`. Only the per-turn span/usage/content state resets.
     this.content.reset(sessionId);
   }
 
@@ -380,7 +428,7 @@ export class OtelAuditSink implements AuditSink {
     switch (ev.kind) {
       case "system_init":
         if (ev.model) {
-          this.sessionModel.set(sessionId, ev.model);
+          this.remember(this.sessionModel, sessionId, ev.model);
           this.spans.getInvokeAgent(sessionId)?.setAttribute(GEN_AI_REQUEST_MODEL, ev.model);
         }
         return;
@@ -388,7 +436,7 @@ export class OtelAuditSink implements AuditSink {
       case "assistant_text":
       case "assistant_thinking":
         if (ev.kind === "assistant_text" && ev.model) {
-          this.sessionModel.set(sessionId, ev.model);
+          this.remember(this.sessionModel, sessionId, ev.model);
         }
         this.ensureChatSpan(sessionId);
         return;
@@ -535,6 +583,13 @@ interface SessionMeta {
   agentVersion: string;
   agentSha?: string;
 }
+
+/**
+ * Cap on retained per-session identity (sessionMeta / sessionModel). These maps
+ * are not cleared on `ca_session_ended` (the SDK fires that per turn), so this
+ * bounds growth in a long-lived server. FIFO-evicted in `remember()`.
+ */
+const MAX_TRACKED_SESSIONS = 10_000;
 
 /**
  * Used when no `configure()` has run yet (e.g. test harness, library use

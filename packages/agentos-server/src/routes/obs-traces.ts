@@ -130,45 +130,40 @@ async function fetchTraceDetailClickhouse(traceId: string): Promise<SpanRow[]> {
  * 2000 spans get truncated; this matches ClickHouse's pragmatic behavior.
  */
 async function fetchTraceDetailNrql(traceId: string): Promise<SpanRow[]> {
-  type NrqlSpan = Record<string, unknown> & {
-    "trace.id"?: string;
-    id?: string;
-    "parent.id"?: string;
-    name?: string;
-    "span.kind"?: string;
-    "service.name"?: string;
-    timestamp?: number;
-    "duration.ms"?: number;
-    "otel.status_code"?: string;
-    "otel.status_description"?: string;
-    "instrumentation.name"?: string;
-  };
-
-  const rows = await nrqlQueryRows<NrqlSpan>(
+  const rows = await nrqlQueryRows<Record<string, unknown>>(
     `SELECT * FROM Span WHERE trace.id = {tid:String} LIMIT 2000`,
     { tid: traceId },
   );
+  return mapNrqlSpans(rows);
+}
 
-  const FRAME_KEYS = new Set([
-    "trace.id",
-    "id",
-    "parent.id",
-    "name",
-    "span.kind",
-    "service.name",
-    "timestamp",
-    "duration.ms",
-    "otel.status_code",
-    "otel.status_description",
-    "instrumentation.name",
-  ]);
+const NRQL_FRAME_KEYS = new Set([
+  "trace.id",
+  "id",
+  "parent.id",
+  "name",
+  "span.kind",
+  "service.name",
+  "timestamp",
+  "duration.ms",
+  "otel.status_code",
+  "otel.status_description",
+  "instrumentation.name",
+]);
 
+/**
+ * NRQL `SELECT * FROM Span` returns attributes flattened onto the event. Re-
+ * bundle them into the `SpanAttributes` / `ResourceAttributes` maps the UI
+ * expects (the ClickHouse shape), and time-sort. Shared by the trace-detail
+ * and conversation-detail paths.
+ */
+function mapNrqlSpans(rows: Array<Record<string, unknown>>): SpanRow[] {
   return rows
     .map((row): SpanRow => {
       const spanAttributes: Record<string, string> = {};
       const resourceAttributes: Record<string, string> = {};
       for (const [k, v] of Object.entries(row)) {
-        if (FRAME_KEYS.has(k)) continue;
+        if (NRQL_FRAME_KEYS.has(k)) continue;
         const sv = v == null ? "" : String(v);
         // Heuristic: `service.*`, `host.*`, `cloud.*`, `k8s.*` are resource-level.
         if (/^(service|host|cloud|k8s|container|process|telemetry)\./.test(k)) {
@@ -178,7 +173,7 @@ async function fetchTraceDetailNrql(traceId: string): Promise<SpanRow[]> {
         }
       }
       return {
-        TraceId: String(row["trace.id"] ?? traceId),
+        TraceId: String(row["trace.id"] ?? ""),
         SpanId: String(row["id"] ?? ""),
         ParentSpanId: String(row["parent.id"] ?? ""),
         SpanName: String(row["name"] ?? ""),

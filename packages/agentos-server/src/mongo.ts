@@ -1,13 +1,22 @@
 // Single Mongo connection shared across all routes + the scheduler.
 // Collections used by this server:
-//   - slack_threads   (Slack bots write rows; we also write a synthetic
-//                       channel="web" row per dashboard chat session)
+//   - chat_sessions   (this server owns it: one row per dashboard web chat
+//                       session — { _id: sessionId, agent, createdAt,
+//                       lastMessageAt }. Warmth is NOT stored here; it's
+//                       queried live from the harness sandbox registry.)
 //   - sessions        (read-only here — harness owns the writes via its
 //                       sessionStore plugin)
 //   - agent_registry  (CRUD'd by dashboard + by library-mode SDK telemetry)
 //   - chat_pins       (agent → current dashboard chat sessionId)
 //   - agent_logs      (via AgentLogStore — request/reply audit)
 //   - agent_schedules (via ScheduleStore — cron-style runs)
+//   - agent_messages  (written only by the Python SDK's MongoMessageSink;
+//                       read-free here, but the cascade delete sweeps it)
+//
+// NOTE: `slack_threads` is intentionally NOT touched here. It belongs to the
+// optional Slack bot (examples/slack-bot.ts, gated behind SLACK_BOTS_ENABLED).
+// The dashboard's web chat used to piggyback on it; that coupling was removed
+// in favour of the dedicated `chat_sessions` collection above.
 
 import { MongoClient, type Collection, type Db } from "mongodb";
 
@@ -53,14 +62,9 @@ export async function pingMongo(): Promise<boolean> {
 
 // ── Collection typings ──────────────────────────────────────────────────
 
-export interface ThreadDoc {
-  _id: string;
-  bot: string;
-  channel: string;
-  threadTs: string;
-  sessionId: string;
-  sandboxId: string | null;
-  snapshotId: string | null;
+export interface ChatSessionDoc {
+  _id: string;             // sessionId
+  agent: string;           // owning agent name
   createdAt?: Date;
   lastMessageAt?: Date;
 }
@@ -70,6 +74,20 @@ export interface SessionDoc {
   projectKey?: string;
   entries?: Array<{ type?: string; text?: string; uuid?: string }>;
   updatedAt?: Date;
+  // Fields stamped by the Python ingest projection (library-mode sessions).
+  // The harness's own sessionStore writes the projectKey/SDK-entry shape; the
+  // reader normalizes both, and these extra fields are simply ignored there.
+  createdAt?: Date;
+  agentName?: string;
+  source?: string;
+  model?: string | null;
+  // `meta.prompt` persists the opening prompt so session_ended can recover it
+  // for the agent_logs `query` (replaces the Python in-process cache).
+  meta?: { prompt?: string; model?: string | null; startedAt?: Date };
+  endedAt?: Date;
+  ok?: boolean;
+  durationMs?: number;
+  costUsd?: number | null;
 }
 
 export interface RegistryDoc {
@@ -90,10 +108,23 @@ export interface ChatPinDoc {
   updatedAt: Date;
 }
 
+export interface MessageDoc {
+  _id: string;
+  sessionId: string | null;
+  agentName: string | null;
+  // Written by the ingest projection (one doc per non-rollup event).
+  ts?: Date;
+  source?: string;
+  host?: string | null;
+  kind?: string;
+  payload?: unknown;
+  latencyMs?: number;
+}
+
 // ── Accessors ───────────────────────────────────────────────────────────
 
-export async function threadsColl(): Promise<Collection<ThreadDoc>> {
-  return (await getDb()).collection<ThreadDoc>("slack_threads");
+export async function chatSessionsColl(): Promise<Collection<ChatSessionDoc>> {
+  return (await getDb()).collection<ChatSessionDoc>("chat_sessions");
 }
 
 export async function sessionsColl(): Promise<Collection<SessionDoc>> {
@@ -106,4 +137,43 @@ export async function registryColl(): Promise<Collection<RegistryDoc>> {
 
 export async function chatPinsColl(): Promise<Collection<ChatPinDoc>> {
   return (await getDb()).collection<ChatPinDoc>("chat_pins");
+}
+
+export async function messagesColl(): Promise<Collection<MessageDoc>> {
+  return (await getDb()).collection<MessageDoc>("agent_messages");
+}
+
+// ── One-time migration ──────────────────────────────────────────────────
+
+/**
+ * Backfill `chat_sessions` from the legacy `slack_threads` rows the dashboard
+ * used to write for web chats (`channel:"web"`). Idempotent — re-running only
+ * inserts rows that aren't already present. Leaves genuine Slack rows
+ * (`channel:"slack"`) untouched; those still belong to the Slack bot.
+ * Returns the number of rows backfilled (0 when nothing legacy remains).
+ */
+export async function migrateLegacyWebSessions(): Promise<number> {
+  const db = await getDb();
+  const legacy = db.collection<{ sessionId?: string; bot?: string; createdAt?: Date; lastMessageAt?: Date }>("slack_threads");
+  const chat = await chatSessionsColl();
+  const webRows = await legacy.find({ channel: "web" }).toArray();
+  let backfilled = 0;
+  for (const row of webRows) {
+    const sessionId = row.sessionId;
+    if (!sessionId || !row.bot) continue;
+    const r = await chat.updateOne(
+      { _id: sessionId },
+      {
+        $setOnInsert: {
+          _id: sessionId,
+          agent: row.bot,
+          createdAt: row.createdAt ?? new Date(),
+          lastMessageAt: row.lastMessageAt ?? row.createdAt ?? new Date(),
+        },
+      },
+      { upsert: true },
+    );
+    if (r.upsertedCount > 0) backfilled++;
+  }
+  return backfilled;
 }

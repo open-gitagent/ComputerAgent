@@ -21,6 +21,14 @@ export type Query = {
   limit?: number;
   orderBy?: "timestamp" | "duration_ms" | "cost_usd" | "input_tokens" | "output_tokens";
   orderDir?: "asc" | "desc";
+  /**
+   * Cursor for time-descending pagination (ms since epoch). Returns only
+   * spans/traces strictly older than this. The SPA sets it to the oldest
+   * `started_at_ms` already shown to fetch the next page (NRQL has no OFFSET,
+   * so pagination is a time cursor). Short-lived per-turn traces don't straddle
+   * the ms boundary in practice; the client dedupes by TraceId regardless.
+   */
+  before?: number;
 };
 
 const ORDER_BY_MAP: Record<NonNullable<Query["orderBy"]>, string> = {
@@ -51,6 +59,10 @@ export function buildWhere(query: Query): Built {
   if (query.to) {
     params["t_to"] = toClickHouseDateTime(parseTime(query.to));
     clauses.push(`Timestamp < parseDateTime64BestEffort({t_to:String}, 9)`);
+  }
+  if (query.before !== undefined) {
+    params["before_ms"] = query.before;
+    clauses.push(`Timestamp < fromUnixTimestamp64Milli({before_ms:Int64})`);
   }
 
   let i = 0;
@@ -192,6 +204,12 @@ const NRQL_ORDER_BY_MAP: Record<NonNullable<Query["orderBy"]>, string> = {
   output_tokens: "gen_ai.usage.output_tokens",
 };
 
+// Order faceted trace rows by the bare SELECT alias — NOT a raw aggregate
+// function (NRQL rejects `ORDER BY min(timestamp) DESC` → "unexpected DESC")
+// and NOT a backticked name (backticks mean an *attribute*; NR then can't find
+// the alias and silently falls back to default facet order — the original
+// jumble bug). A bare alias like `started_at_ms` references the computed column
+// and sorts correctly. Each value here MUST be aliased in the SELECT below.
 const NRQL_TRACE_ORDER_BY_MAP: Record<NonNullable<Query["orderBy"]>, string> = {
   timestamp: "started_at_ms",
   duration_ms: "duration_ms",
@@ -225,6 +243,14 @@ export type NrqlBuilt = { where: string; params: Record<string, unknown> };
 export function buildNrqlWhere(query: Query): NrqlBuilt {
   const params: Record<string, unknown> = {};
   const clauses: string[] = [];
+
+  if (query.before !== undefined) {
+    // Time-cursor pagination: only spans older than the cursor (ms epoch).
+    // NRQL `timestamp` is a numeric ms-epoch field; compare numerically
+    // (Float64 renders the raw number — Timestamp would emit a quoted ISO).
+    params["before_ms"] = query.before;
+    clauses.push(`timestamp < {before_ms:Float64}`);
+  }
 
   let i = 0;
   for (const f of query.filters ?? []) {
@@ -333,28 +359,36 @@ export function buildNrqlTraceListQuery(query: Query): { nrql: string; params: R
   const orderCol = NRQL_TRACE_ORDER_BY_MAP[query.orderBy ?? "timestamp"];
   const orderDir = (query.orderDir ?? "desc").toUpperCase() === "ASC" ? "ASC" : "DESC";
 
+  // root_span_name / root_operation / duration MUST come from the trace's ROOT
+  // span (the one with no parent — the per-turn `invoke_agent`), NOT `latest()`.
+  // `latest(name)` returns the most-recent span (typically a tool like
+  // `execute_tool Read`), so the trace row would mislabel as "Read" instead of
+  // "invoke_agent <agent>". `filter(latest(x), WHERE parent.id IS NULL)` pins
+  // these to the root. agent/model/provider/conversation use plain latest()
+  // because they only appear on the root anyway and latest() skips nulls.
   const nrql = `
     SELECT
-      latest(name)                           AS root_span_name,
-      latest(service.name)                   AS service_name,
-      latest(\`gen_ai.agent.name\`)          AS agent,
-      latest(\`gen_ai.request.model\`)       AS model,
-      latest(\`gen_ai.operation.name\`)      AS root_operation,
-      latest(\`gen_ai.provider.name\`)       AS provider,
-      latest(\`gen_ai.conversation.id\`)     AS conversation_id,
-      latest(duration.ms)                    AS duration_ms,
-      min(timestamp)                         AS started_at_ms,
-      count(*)                               AS span_count,
-      sum(\`gen_ai.usage.input_tokens\`)     AS input_tokens,
-      sum(\`gen_ai.usage.output_tokens\`)    AS output_tokens,
-      sum(\`computeragent.usage.cost_usd\`)  AS cost_usd,
+      filter(latest(name), WHERE parent.id IS NULL)                 AS root_span_name,
+      latest(service.name)                                          AS service_name,
+      latest(\`gen_ai.agent.name\`)                                 AS agent,
+      latest(\`gen_ai.request.model\`)                              AS model,
+      filter(latest(\`gen_ai.operation.name\`), WHERE parent.id IS NULL) AS root_operation,
+      latest(\`gen_ai.provider.name\`)                              AS provider,
+      latest(\`gen_ai.conversation.id\`)                            AS conversation_id,
+      filter(latest(duration.ms), WHERE parent.id IS NULL)          AS duration_ms,
+      min(timestamp)                                                AS started_at_ms,
+      count(*)                                                      AS span_count,
+      sum(\`gen_ai.usage.input_tokens\`)                            AS input_tokens,
+      sum(\`gen_ai.usage.output_tokens\`)                           AS output_tokens,
+      sum(\`computeragent.usage.cost_usd\`)                         AS cost_usd,
       filter(count(*), WHERE otel.status_code IN ('Error', 'STATUS_CODE_ERROR')) AS error_count
     FROM Span
     ${where}
     ${time}
     FACET trace.id
-    ORDER BY \`${orderCol}\` ${orderDir}
+    ORDER BY ${orderCol} ${orderDir}
     LIMIT ${limit}
   `;
   return { nrql, params };
 }
+
