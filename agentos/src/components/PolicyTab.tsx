@@ -7,11 +7,11 @@ import { api, type PolicyDoc, type AgentPolicyBinding } from "../api.ts";
  * every chat sandbox the agent boots (see runtime SrsPolicyDecider).
  */
 export function PolicyTab({
-  agent,
+  agentId,
   agentLabel,
   onManagePolicies,
 }: {
-  agent: string;
+  agentId: string;
   agentLabel: string;
   onManagePolicies: () => void;
 }) {
@@ -25,7 +25,7 @@ export function PolicyTab({
     setLoading(true);
     setErr(null);
     try {
-      const [pols, b] = await Promise.all([api.policies(), api.getAgentPolicy(agent)]);
+      const [pols, b] = await Promise.all([api.policies(), api.getAgentPolicy(agentId)]);
       setPolicies(pols);
       setBinding(b);
     } catch (e) {
@@ -36,12 +36,12 @@ export function PolicyTab({
   };
   useEffect(() => {
     void load();
-  }, [agent]);
+  }, [agentId]);
 
   const attach = async (policyId: string | null) => {
     setSaving(true);
     try {
-      const b = await api.setAgentPolicy(agent, policyId);
+      const b = await api.setAgentPolicy(agentId, policyId);
       setBinding(b);
     } catch (e) {
       setErr(String(e));

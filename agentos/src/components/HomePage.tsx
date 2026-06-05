@@ -98,6 +98,7 @@ export function HomePage({
   // mode agents (Python harness) have a non-resolvable source and so cannot
   // start a live chat, even though their harness is sandboxable.
   const resolveTarget = (): {
+    id: string | null;
     name: string;
     sandboxCapable: boolean;
     liveChatCapable: boolean;
@@ -106,7 +107,7 @@ export function HomePage({
     const found = agents.find((a) => a.name === name);
     const sandboxCap = found ? found.sandboxCapable : selected.id !== "deep-agent";
     const liveCap = found ? found.liveChatCapable !== false : sandboxCap;
-    return { name, sandboxCapable: sandboxCap, liveChatCapable: liveCap };
+    return { id: found?.id ?? null, name, sandboxCapable: sandboxCap, liveChatCapable: liveCap };
   };
 
   const submit = async () => {
@@ -167,10 +168,15 @@ export function HomePage({
         setBusy(false);
         return;
       }
+      if (!target.id) {
+        setAssistant(`⚠️ "${target.name}" isn't a registered agent yet — register it first.`);
+        setBusy(false);
+        return;
+      }
       if (target.sandboxCapable) {
         let sb = sandboxId;
         if (!sb) {
-          const created = await api.chatSandbox(target.name);
+          const created = await api.chatSandbox(target.id);
           sb = created.sandboxId;
           turnSession = created.sessionId;
           setSandboxId(created.sandboxId);
@@ -179,7 +185,7 @@ export function HomePage({
         streamUrl = api.chatStreamUrl(sb);
       } else {
         // One-shot agents (deepagents): no warm sandbox, no cross-turn memory.
-        streamUrl = api.runStreamUrl(target.name);
+        streamUrl = api.runStreamUrl(target.id);
       }
 
       await streamChat(streamUrl, msg, {

@@ -4,14 +4,13 @@
 import { Router, type Router as IRouter } from "express";
 import { caAuthHeader } from "../auth.js";
 import { caBase, pipeUpstream } from "../upstream.js";
-import { resolveAgent, runBodyFor, srsPolicyForAgent } from "../agent-defs.js";
+import { resolveAgentById, runBodyFor, srsPolicyForAgent } from "../agent-defs.js";
 
 export const runRouter: IRouter = Router();
 
-runRouter.post("/agents/:name/run", async (req, res, next) => {
+runRouter.post("/agents/:id/run", async (req, res, next) => {
   try {
-    const name = req.params["name"]!;
-    const agent = await resolveAgent(name);
+    const agent = await resolveAgentById(req.params["id"]!);
     if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
     const message = String((req.body as Record<string, unknown> | undefined)?.["message"] ?? "");
 

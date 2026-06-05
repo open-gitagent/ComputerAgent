@@ -14,7 +14,8 @@
 // the UI's empty states still render.
 
 import { Router, type Router as IRouter, type Response } from "express";
-import { getDb } from "../mongo.js";
+import { agentPoliciesColl } from "../mongo.js";
+import { resolveAgentById } from "../agent-defs.js";
 
 export const policiesRouter: IRouter = Router();
 
@@ -109,37 +110,34 @@ policiesRouter.delete("/opa-policies/:id", (req, res) =>
 );
 
 // ── Per-agent policy binding (agentos-local, Mongo) ───────────────────────
-interface PolicyBindingDoc {
-  _id: string; // agent name
-  policyId: string;
-  updatedAt: Date;
-}
+// Addressed by the registry ObjectId; stored keyed on the agent NAME
+// (`agentName`) so srsPolicyForAgent — called name-side at sandbox/run create —
+// resolves the same row.
 
-async function bindingsColl() {
-  return (await getDb()).collection<PolicyBindingDoc>("agent_policies");
-}
-
-policiesRouter.get("/agents/:name/policy", async (req, res, next) => {
+policiesRouter.get("/agents/:id/policy", async (req, res, next) => {
   try {
-    const doc = await (await bindingsColl()).findOne({ _id: req.params["name"]! });
+    const agent = await resolveAgentById(req.params["id"]!);
+    if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
+    const doc = await (await agentPoliciesColl()).findOne({ agentName: agent.name });
     res.json({ binding: doc ? { policyId: doc.policyId } : null });
   } catch (err) {
     next(err);
   }
 });
 
-policiesRouter.put("/agents/:name/policy", async (req, res, next) => {
+policiesRouter.put("/agents/:id/policy", async (req, res, next) => {
   try {
-    const name = req.params["name"]!;
+    const agent = await resolveAgentById(req.params["id"]!);
+    if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const policyId = typeof body["policy_id"] === "string" ? (body["policy_id"] as string) : null;
-    const coll = await bindingsColl();
+    const coll = await agentPoliciesColl();
     if (!policyId) {
-      await coll.deleteOne({ _id: name });
+      await coll.deleteOne({ agentName: agent.name });
       res.json({ binding: null });
       return;
     }
-    await coll.updateOne({ _id: name }, { $set: { policyId, updatedAt: new Date() } }, { upsert: true });
+    await coll.updateOne({ agentName: agent.name }, { $set: { policyId, updatedAt: new Date() } }, { upsert: true });
     res.json({ binding: { policyId } });
   } catch (err) {
     next(err);

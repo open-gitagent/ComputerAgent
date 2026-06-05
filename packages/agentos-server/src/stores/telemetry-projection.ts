@@ -138,11 +138,13 @@ async function onSessionStarted(ev: IngestEvent): Promise<void> {
     ? librarySourceFor(name, payload, description)
     : inlineSourceFor(name, payload, description);
 
-  // agent_registry upsert (idempotent on agent name).
+  // agent_registry upsert (idempotent on agent name). Mongo mints the
+  // surrogate ObjectId `_id` on first insert; `name` is the unique key the
+  // Python/library ingest addresses agents by.
   await (await registryColl()).updateOne(
-    { _id: name },
+    { name },
     {
-      $setOnInsert: { _id: name, registeredAt: now },
+      $setOnInsert: { name, registeredAt: now },
       $set: {
         harness: "claude-agent-sdk",
         source,

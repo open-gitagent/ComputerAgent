@@ -18,7 +18,7 @@
 // The dashboard's web chat used to piggyback on it; that coupling was removed
 // in favour of the dedicated `chat_sessions` collection above.
 
-import { MongoClient, type Collection, type Db } from "mongodb";
+import { MongoClient, ObjectId, type Collection, type Db } from "mongodb";
 
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
@@ -91,7 +91,8 @@ export interface SessionDoc {
 }
 
 export interface RegistryDoc {
-  _id: string;             // agent name
+  _id: ObjectId;           // surrogate key (Mongo-minted)
+  name: string;            // the agent's human identifier (unique index)
   label?: string;
   harness?: string;
   source?: unknown;        // string OR IdentitySource shape
@@ -103,8 +104,16 @@ export interface RegistryDoc {
 }
 
 export interface ChatPinDoc {
-  _id: string;             // agent name
+  _id: ObjectId;
+  agentName: string;       // owning agent name (unique index)
   sessionId: string;
+  updatedAt: Date;
+}
+
+export interface PolicyBindingDoc {
+  _id: ObjectId;
+  agentName: string;       // owning agent name (unique index)
+  policyId: string;
   updatedAt: Date;
 }
 
@@ -137,6 +146,10 @@ export async function registryColl(): Promise<Collection<RegistryDoc>> {
 
 export async function chatPinsColl(): Promise<Collection<ChatPinDoc>> {
   return (await getDb()).collection<ChatPinDoc>("chat_pins");
+}
+
+export async function agentPoliciesColl(): Promise<Collection<PolicyBindingDoc>> {
+  return (await getDb()).collection<PolicyBindingDoc>("agent_policies");
 }
 
 export async function messagesColl(): Promise<Collection<MessageDoc>> {
@@ -176,4 +189,56 @@ export async function migrateLegacyWebSessions(): Promise<number> {
     if (r.upsertedCount > 0) backfilled++;
   }
   return backfilled;
+}
+
+/**
+ * Convert legacy `_id == name` rows to surrogate ObjectId `_id` + a name field,
+ * for the three collections that used the agent name as their primary key:
+ *   agent_registry → name, chat_pins → agentName, agent_policies → agentName.
+ *
+ * Idempotent: only rows whose `_id` is still a string (the old name) are
+ * touched. Each gets a fresh ObjectId `_id`, the old name copied into the name
+ * field, all other fields preserved; the old row is deleted. If a migrated row
+ * for that name already exists (partial prior run), the legacy row is just
+ * dropped. Cross-collection FKs are by name, so nothing else needs rewriting.
+ * MUST run before `ensureRegistryIndexes()` so the unique name index isn't
+ * created while duplicate legacy rows still exist.
+ */
+export async function migrateRegistryObjectIds(): Promise<{ registry: number; pins: number; policies: number }> {
+  const db = await getDb();
+  const convert = async (collName: string, nameField: string): Promise<number> => {
+    const coll = db.collection(collName);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const legacy = await coll.find({ _id: { $type: "string" } } as any).toArray();
+    let converted = 0;
+    for (const doc of legacy) {
+      const oldId = doc["_id"] as unknown as string;
+      const { _id: _drop, ...rest } = doc;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const already = await coll.findOne({ [nameField]: oldId } as any);
+      if (!already) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await coll.insertOne({ ...rest, _id: new ObjectId(), [nameField]: oldId } as any);
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await coll.deleteOne({ _id: oldId } as any);
+      converted++;
+    }
+    return converted;
+  };
+  const registry = await convert("agent_registry", "name");
+  const pins = await convert("chat_pins", "agentName");
+  const policies = await convert("agent_policies", "agentName");
+  return { registry, pins, policies };
+}
+
+/**
+ * Ensure the unique name indexes that back id-based addressing. Idempotent —
+ * `createIndex` is a no-op when the index already exists.
+ */
+export async function ensureRegistryIndexes(): Promise<void> {
+  const db = await getDb();
+  await db.collection("agent_registry").createIndex({ name: 1 }, { unique: true });
+  await db.collection("chat_pins").createIndex({ agentName: 1 }, { unique: true });
+  await db.collection("agent_policies").createIndex({ agentName: 1 }, { unique: true });
 }

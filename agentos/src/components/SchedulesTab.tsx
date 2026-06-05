@@ -35,7 +35,7 @@ import { EmptyState } from "./composite/EmptyState.tsx";
 const INTERVAL_OPTIONS = [5, 10, 15, 30, 60, 180, 360, 720, 1440];
 const fmtInterval = (m: number) => (m % 60 === 0 ? `${m / 60}h` : `${m}m`);
 
-export function SchedulesTab({ agent, agentLabel }: { agent: string; agentLabel: string }) {
+export function SchedulesTab({ agentId, agentLabel }: { agentId: string; agentLabel: string }) {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -49,16 +49,16 @@ export function SchedulesTab({ agent, agentLabel }: { agent: string; agentLabel:
 
   const load = () => {
     setLoading(true);
-    api.schedules(agent).then(setSchedules).catch((e) => setErr(String(e))).finally(() => setLoading(false));
+    api.schedules(agentId).then(setSchedules).catch((e) => setErr(String(e))).finally(() => setLoading(false));
   };
-  useEffect(load, [agent]);
+  useEffect(load, [agentId]);
 
   const create = async () => {
     if (!prompt.trim() || creating) return;
     setCreating(true);
     try {
       await api.createSchedule({
-        agentName: agent,
+        agentId,
         prompt: prompt.trim(),
         kind,
         ...(kind === "interval" ? { intervalMinutes } : { hourUtc, minuteUtc }),

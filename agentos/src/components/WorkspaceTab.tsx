@@ -20,13 +20,15 @@ import {
 import { cn } from "../lib/cn.ts";
 
 export function WorkspaceTab({
-  agent,
+  agentId,
+  agentName,
   sandboxCapable,
   liveChatCapable = true,
   initialMessage,
   onConsumedInitial,
 }: {
-  agent: string;
+  agentId: string;
+  agentName: string;
   sandboxCapable: boolean;
   // True when the agent can spin up a live chat sandbox. False for
   // library-mode agents (Python harness etc.) whose ``source`` doesn't
@@ -49,17 +51,17 @@ export function WorkspaceTab({
 
   const loadSessions = () => {
     setLoading(true);
-    api.sessions(agent, 100)
+    api.sessions(agentId, 100)
       .then(setSessions)
       .catch(() => setSessions([]))
       .finally(() => setLoading(false));
   };
-  useEffect(loadSessions, [agent]);
+  useEffect(loadSessions, [agentId]);
 
   useEffect(() => {
     setResumeId(null);
-    setChatKey(`new-${agent}-${Date.now()}`);
-  }, [agent]);
+    setChatKey(`new-${agentId}-${Date.now()}`);
+  }, [agentId]);
 
   const openSession = (sid: string) => {
     setResumeId(sid);
@@ -83,7 +85,7 @@ export function WorkspaceTab({
     const sid = pendingDelete.sessionId;
     setDeleting(true);
     try {
-      const res = await api.deleteSession(sid, pendingDelete.bot || agent);
+      const res = await api.deleteSession(sid, agentId);
       const d = res.deleted;
       toast.success("Session deleted", {
         description: `${d.sandboxes} sandbox(es), ${d.snapshots} snapshot(s) removed.`,
@@ -127,7 +129,8 @@ export function WorkspaceTab({
         <div className="flex-1 min-w-0">
           <ChatTab
             key={chatKey}
-            agent={agent}
+            agentId={agentId}
+            agentName={agentName}
             sandboxCapable={sandboxCapable}
             resumeSessionId={resumeId}
             onConsumedResume={() => {}}
@@ -231,7 +234,8 @@ export function WorkspaceTab({
       <div className="flex-1 min-w-0">
         <ChatTab
           key={chatKey}
-          agent={agent}
+          agentId={agentId}
+          agentName={agentName}
           sandboxCapable={sandboxCapable}
           resumeSessionId={resumeId}
           onConsumedResume={() => {}}

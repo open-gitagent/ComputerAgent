@@ -25,7 +25,8 @@ const CONTINUE_PROMPT =
   "Continue from where you left off — keep building until the project is complete, then summarize what you built and give me the deploy URL.";
 
 export function ChatTab({
-  agent,
+  agentId,
+  agentName,
   sandboxCapable,
   resumeSessionId,
   onConsumedResume,
@@ -33,7 +34,10 @@ export function ChatTab({
   onConsumedInitial,
   onSessionStarted,
 }: {
-  agent: string;
+  /** Registry ObjectId — used to address the agent in API calls. */
+  agentId: string;
+  /** Human name — used for display + the `bot` field on logged turns. */
+  agentName: string;
   sandboxCapable: boolean;
   resumeSessionId: string | null;
   onConsumedResume: () => void;
@@ -61,7 +65,7 @@ export function ChatTab({
     setSessionId(null);
     setMsgs([]);
     setErr(null);
-  }, [agent]);
+  }, [agentId]);
 
   useEffect(() => {
     if (!resumeSessionId) return;
@@ -97,12 +101,14 @@ export function ChatTab({
     try {
       // No `resume` → this is a fresh "New chat": force a brand-new session so
       // the server doesn't silently resume the agent's pinned (last) session.
-      const r = await api.chatSandbox(agent, resume ? { sessionId: resume } : { forceNew: true });
+      const r = await api.chatSandbox(agentId, resume ? { sessionId: resume } : { forceNew: true });
       setSandboxId(r.sandboxId);
       setSessionId(r.sessionId);
-      // Tell the parent a session now exists so the sidebar can show/highlight
-      // it — a freshly-created chat has no row in the list until this fires.
-      onSessionStarted?.(r.sessionId);
+      // Only notify the parent for a genuinely NEW session — it adds the row to
+      // the sidebar. Resuming an existing session must NOT fire this: the row
+      // already exists and re-fetching the list on every click is the bug that
+      // refetched sessions repeatedly.
+      if (!resume) onSessionStarted?.(r.sessionId);
       return r.sandboxId;
     } catch (e) {
       setErr(String(e));
@@ -125,7 +131,7 @@ export function ChatTab({
       }
       streamUrl = api.chatStreamUrl(curSandbox);
     } else {
-      streamUrl = api.runStreamUrl(agent);
+      streamUrl = api.runStreamUrl(agentId);
     }
 
     if (textArg === undefined) setInput("");
@@ -173,8 +179,8 @@ export function ChatTab({
 
     setBusy(false);
     api.logWebTurn({
-      bot: agent,
-      sessionId: sessionId ?? `oneshot-${agent}`,
+      bot: agentName,
+      sessionId: sessionId ?? `oneshot-${agentName}`,
       query: text,
       reply: finalText,
       ok: true,
@@ -219,7 +225,7 @@ export function ChatTab({
         )}
         {msgs.length === 0 && !err && (
           <div className="h-full grid place-items-center text-muted-foreground text-sm">
-            Talk to {agent}. It runs with its configured identity and tools.
+            Talk to {agentName}. It runs with its configured identity and tools.
           </div>
         )}
         {msgs.map((m, i) => {
@@ -248,7 +254,7 @@ export function ChatTab({
                 send();
               }
             }}
-            placeholder={`Message ${agent}…  (Enter to send, Shift+Enter for newline)`}
+            placeholder={`Message ${agentName}…  (Enter to send, Shift+Enter for newline)`}
             rows={2}
             className="flex-1 resize-none rounded-xl bg-card px-3.5 py-2.5"
           />

@@ -40,7 +40,7 @@ function TypeBadge({ agent, className = "" }: { agent: Agent; className?: string
 }
 
 export function AgentDashboard() {
-  const { name } = useParams<{ name: string }>();
+  const { id } = useParams<{ id: string }>();
   const { agents, loaded } = useAgents();
   const navigate = useNavigate();
   const location = useLocation();
@@ -51,7 +51,7 @@ export function AgentDashboard() {
     (location.state as { message?: string } | null)?.message ?? null,
   );
 
-  const agent = agents.find((a) => a.name === name) ?? null;
+  const agent = agents.find((a) => a.id === id) ?? null;
 
   if (!loaded) {
     return <div className="flex-1 grid place-items-center text-muted-foreground">Loading…</div>;
@@ -60,7 +60,7 @@ export function AgentDashboard() {
     return (
       <div className="flex-1 grid place-items-center text-muted-foreground">
         <div className="text-center space-y-2">
-          <div>Unknown agent <span className="font-mono">{name}</span>.</div>
+          <div>Unknown agent <span className="font-mono">{id}</span>.</div>
           <Link to="/registry" className="text-primary hover:underline">Back to registry</Link>
         </div>
       </div>
@@ -98,24 +98,25 @@ export function AgentDashboard() {
       <section className="flex-1 min-h-0">
         {tab === "chat" && (
           <WorkspaceTab
-            key={agent.name}
-            agent={agent.name}
+            key={agent.id}
+            agentId={agent.id}
+            agentName={agent.name}
             sandboxCapable={agent.sandboxCapable}
             liveChatCapable={agent.liveChatCapable !== false}
             initialMessage={launchMessage}
             onConsumedInitial={() => setLaunchMessage(null)}
           />
         )}
-        {tab === "schedules" && <SchedulesTab key={agent.name} agent={agent.name} agentLabel={agent.label} />}
+        {tab === "schedules" && <SchedulesTab key={agent.id} agentId={agent.id} agentLabel={agent.label} />}
         {tab === "policy" && (
           <PolicyTab
-            key={agent.name}
-            agent={agent.name}
+            key={agent.id}
+            agentId={agent.id}
             agentLabel={agent.label}
             onManagePolicies={() => navigate("/policies")}
           />
         )}
-        {tab === "logs" && <LogsTab key={agent.name} agent={agent.name} />}
+        {tab === "logs" && <LogsTab key={agent.id} agentId={agent.id} />}
       </section>
     </>
   );

@@ -45,7 +45,7 @@ import { obsFieldsRouter } from "./routes/obs-fields.js";
 
 import { pingClickHouse } from "./clickhouse.js";
 import { pingNewRelic } from "./new-relic.js";
-import { pingMongo, migrateLegacyWebSessions } from "./mongo.js";
+import { pingMongo, migrateLegacyWebSessions, migrateRegistryObjectIds, ensureRegistryIndexes } from "./mongo.js";
 import { ensureFieldValueMVs } from "./migrations.js";
 import { startScheduler } from "./scheduler.js";
 import { seedDefaultAgentIfRequested } from "./agent-defs.js";
@@ -156,6 +156,19 @@ app.listen(PORT, async () => {
 
   // Mongo-side bootstrap — seed default agent and start the scheduler tick.
   if (mongoOk) {
+    // One-time, idempotent: convert legacy `_id == name` rows in agent_registry
+    // / chat_pins / agent_policies to surrogate ObjectId `_id` + name field,
+    // then ensure the unique name indexes. Runs before everything else so new
+    // writes (seed, ingest) land in the ObjectId world.
+    try {
+      const m = await migrateRegistryObjectIds();
+      if (m.registry || m.pins || m.policies) {
+        console.log(`[agentos-server] migrated registry ids — registry:${m.registry} pins:${m.pins} policies:${m.policies}`);
+      }
+      await ensureRegistryIndexes();
+    } catch (err) {
+      console.warn("[agentos-server] registry id migration/index failed:", (err as Error).message);
+    }
     try {
       await seedDefaultAgentIfRequested();
     } catch (err) {

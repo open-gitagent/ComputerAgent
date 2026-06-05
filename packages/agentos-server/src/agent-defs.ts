@@ -9,10 +9,14 @@
 // are stitched in at sandbox-create time by `defaultEnvsFor()`. This means
 // the registry can be world-readable without leaking provider keys.
 
+import { ObjectId } from "mongodb";
 import { IdentitySource, type IdentitySource as IdentitySourceT } from "@open-gitagent/protocol";
-import { getDb, registryColl, type RegistryDoc } from "./mongo.js";
+import { agentPoliciesColl, registryColl, type RegistryDoc } from "./mongo.js";
 
 export interface AgentDef {
+  /** Surrogate key — the registry doc's ObjectId, stringified. The public
+   *  API + frontend address agents by this. */
+  id: string;
   name: string;
   label: string;
   harness: string;
@@ -61,13 +65,29 @@ export function defaultEnvsFor(harness: string): Record<string, string> {
 }
 
 /**
- * Lookup an agent by name in the Mongo registry. The dashboard creates rows
- * via POST /agents/register; library-mode SDKs write directly via the
- * MongoTelemetry hook. Either way the row schema is the same.
+ * Lookup an agent by NAME in the Mongo registry. Used by the internal
+ * name-based callers (the Python/library telemetry ingest, the boot seed).
+ * The public API resolves by id via `resolveAgentById`.
  */
 export async function resolveAgent(name: string): Promise<AgentDef | undefined> {
   try {
-    const doc = await (await registryColl()).findOne({ _id: name });
+    const doc = await (await registryColl()).findOne({ name });
+    if (!doc) return undefined;
+    return registryDocToAgentDef(doc);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Lookup an agent by its registry ObjectId (the public identifier carried in
+ * `/agents/:id` routes and `agentId` params). Returns undefined for a
+ * malformed id or a missing row so callers can 404 cleanly.
+ */
+export async function resolveAgentById(id: string): Promise<AgentDef | undefined> {
+  if (!ObjectId.isValid(id)) return undefined;
+  try {
+    const doc = await (await registryColl()).findOne({ _id: new ObjectId(id) });
     if (!doc) return undefined;
     return registryDocToAgentDef(doc);
   } catch {
@@ -112,8 +132,9 @@ export function registryDocToAgentDef(doc: RegistryDoc): AgentDef {
   }
 
   return {
-    name: doc._id,
-    label: doc.label ?? doc._id,
+    id: doc._id.toString(),
+    name: doc.name,
+    label: doc.label ?? doc.name,
     harness: doc.harness ?? "claude-agent-sdk",
     source: resolvedSource,
     ...(doc.model ? { model: doc.model } : {}),
@@ -197,9 +218,7 @@ export function runBodyFor(agent: AgentDef, message: string): Record<string, unk
 export async function srsPolicyForAgent(agentName: string): Promise<Record<string, unknown> | null> {
   const endpoint = process.env["SRS_BASE_URL"];
   if (!endpoint) return null;
-  const doc = await (await getDb())
-    .collection<{ _id: string; policyId: string }>("agent_policies")
-    .findOne({ _id: agentName });
+  const doc = await (await agentPoliciesColl()).findOne({ agentName });
   if (!doc?.policyId) return null;
   return {
     kind: "srs",
@@ -226,10 +245,11 @@ export async function seedDefaultAgentIfRequested(): Promise<void> {
   if (count > 0) return;
   const now = new Date();
   await coll.updateOne(
-    { _id: "claude-code" },
+    { name: "claude-code" },
     {
+      // No `_id` here — Mongo mints the surrogate ObjectId on insert.
       $setOnInsert: {
-        _id: "claude-code",
+        name: "claude-code",
         label: "Claude Code",
         harness: "claude-agent-sdk",
         source: process.env["AGENTOS_DEFAULT_SOURCE"] ?? "github.com/shreyas-lyzr/general-agent",

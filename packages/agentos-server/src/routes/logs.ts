@@ -4,12 +4,20 @@
 
 import { Router, type Router as IRouter } from "express";
 import { agentLogStore } from "../stores/agent-log-store.js";
+import { resolveAgentById } from "../agent-defs.js";
 
 export const logsRouter: IRouter = Router();
 
 logsRouter.get("/logs", async (req, res, next) => {
   try {
-    const bot = typeof req.query["bot"] === "string" ? req.query["bot"] : undefined;
+    // Scope by agent id → name (agent_logs key the per-agent `bot` field on name).
+    const agentId = typeof req.query["agentId"] === "string" ? req.query["agentId"] : undefined;
+    let bot: string | undefined;
+    if (agentId) {
+      const agent = await resolveAgentById(agentId);
+      if (!agent) return res.json({ logs: [] });
+      bot = agent.name;
+    }
     const limit = req.query["limit"] ? parseInt(String(req.query["limit"]), 10) : 50;
     const beforeRaw = typeof req.query["before"] === "string" ? req.query["before"] : undefined;
     const before = beforeRaw ? new Date(beforeRaw) : undefined;
