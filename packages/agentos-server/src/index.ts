@@ -39,6 +39,7 @@ import { chatRouter } from "./routes/chat.js";
 import { runRouter } from "./routes/run.js";
 import { completionRouter } from "./routes/completion.js";
 import { policiesRouter } from "./routes/policies.js";
+import { evalsRouter } from "./routes/evals.js";
 import { obsTracesRouter } from "./routes/obs-traces.js";
 import { obsDashboardRouter } from "./routes/obs-dashboard.js";
 import { obsFieldsRouter } from "./routes/obs-fields.js";
@@ -92,6 +93,7 @@ app.use("/agentos/api", chatRouter);      // /agents/:name/chat-sandbox, sandbox
 app.use("/agentos/api", runRouter);       // /agents/:name/run (one-shot SSE)
 app.use("/agentos/api", completionRouter); // /completion (agent-less Claude chat SSE)
 app.use("/agentos/api", policiesRouter);  // /policies, /opa-policies (stubs)
+app.use("/agentos/api", evalsRouter);     // /evals/suites, /evals/runs
 
 // Observability surface
 app.use("/v1", obsTracesRouter);          // /traces (search before list, list before :id)
