@@ -20,7 +20,7 @@ export default function App() {
         <Route path="observability" element={<ObservabilityTab />} />
         <Route path="policies" element={<PoliciesPage />} />
         <Route path="evals" element={<EvalsPage />} />
-        <Route path="agents/:name" element={<AgentDashboard />} />
+        <Route path="agents/:id" element={<AgentDashboard />} />
         <Route path="*" element={<Navigate to="/home" replace />} />
       </Route>
     </Routes>
@@ -77,8 +77,8 @@ function HomeRoute() {
   return (
     <HomePage
       agents={agents}
-      onLaunch={(name, message) => navigate(`/agents/${encodeURIComponent(name)}`, { state: { message } })}
-      onOpenDashboard={() => navigate(agents[0] ? `/agents/${encodeURIComponent(agents[0].name)}` : "/registry")}
+      onLaunch={(agentId, message) => navigate(`/agents/${encodeURIComponent(agentId)}`, { state: { message } })}
+      onOpenDashboard={() => navigate(agents[0] ? `/agents/${encodeURIComponent(agents[0].id)}` : "/registry")}
     />
   );
 }
@@ -92,7 +92,7 @@ function RegistryRoute() {
       loaded={loaded}
       err={err}
       selected={null}
-      onOpenAgent={(name) => navigate(`/agents/${encodeURIComponent(name)}`)}
+      onOpenAgent={(agentId) => navigate(`/agents/${encodeURIComponent(agentId)}`)}
       onReload={reload}
     />
   );

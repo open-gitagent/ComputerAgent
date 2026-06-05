@@ -17,7 +17,7 @@ import { listLiveSandboxes } from "../upstream.js";
 import { agentLogStore } from "../stores/agent-log-store.js";
 import { scheduleStore } from "../stores/schedule-store.js";
 import { deleteAgentSnapshots, disposeLiveSandboxes } from "../cleanup.js";
-import { hasResolvableSource, normalizeSource, registryDocToAgentDef, sandboxCapable } from "../agent-defs.js";
+import { hasResolvableSource, normalizeSource, registryDocToAgentDef, resolveAgentById, sandboxCapable } from "../agent-defs.js";
 
 export const agentsRouter: IRouter = Router();
 
@@ -52,6 +52,7 @@ agentsRouter.get("/agents", async (_req, res, next) => {
       const { source, sourceUrl } = normalizeSource(r.source);
       const sCap = sandboxCapable(agent.harness);
       out.push({
+        id: agent.id,
         name: agent.name,
         label: agent.label,
         harness: agent.harness,
@@ -85,7 +86,7 @@ agentsRouter.get("/agents/by-source", async (req, res, next) => {
     if (!url) return res.status(400).json({ error: { code: "BAD_REQUEST", message: "`url` required" } });
     const rows = await (await registryColl()).find({}).toArray();
     const matches = rows
-      .map((r) => ({ name: r._id, ...normalizeSource(r.source) }))
+      .map((r) => ({ id: r._id.toString(), name: r.name, ...normalizeSource(r.source) }))
       .filter((m) => m.sourceUrl === url);
     res.json({ url, matches });
   } catch (err) { next(err); }
@@ -113,26 +114,30 @@ agentsRouter.post("/agents/register", async (req, res, next) => {
     if (body["source"] !== undefined) set.source = body["source"];
     if (typeof body["model"] === "string") set.model = body["model"];
     if (typeof body["registeredBy"] === "string") set.registeredBy = body["registeredBy"];
-    await (await registryColl()).updateOne(
-      { _id: name },
-      { $set: set, $setOnInsert: { _id: name, registeredAt: now } },
+    // Upsert by the unique `name`; Mongo mints the ObjectId `_id` on insert.
+    const coll = await registryColl();
+    await coll.updateOne(
+      { name },
+      { $set: set, $setOnInsert: { name, registeredAt: now } },
       { upsert: true },
     );
-    res.json({ ok: true, name });
+    const doc = await coll.findOne({ name });
+    res.json({ ok: true, id: doc?._id.toString() ?? null, name });
   } catch (err) { next(err); }
 });
 
-agentsRouter.patch("/agents/:name", async (req, res, next) => {
+agentsRouter.patch("/agents/:id", async (req, res, next) => {
   try {
-    const name = req.params["name"]!;
+    const agent = await resolveAgentById(req.params["id"]!);
+    if (!agent) return res.status(404).json({ error: { code: "NOT_FOUND" } });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const set: Partial<RegistryDoc> = { updatedAt: new Date() };
     if (typeof body["label"] === "string") set.label = body["label"];
     if (typeof body["harness"] === "string") set.harness = body["harness"];
     if (body["source"] !== undefined) set.source = body["source"];
     if (typeof body["model"] === "string") set.model = body["model"];
-    const r = await (await registryColl()).updateOne({ _id: name }, { $set: set });
-    if (r.matchedCount === 0) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    // Update by surrogate id (name stays the immutable FK across collections).
+    await (await registryColl()).updateOne({ name: agent.name }, { $set: set });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -142,12 +147,12 @@ agentsRouter.patch("/agents/:name", async (req, res, next) => {
 // (sessions, chat_sessions, chat pin, logs, messages, schedules). The registry doc
 // is removed last so a mid-cascade crash leaves the agent listed (and thus
 // re-deletable) rather than orphaning state under a vanished name.
-agentsRouter.delete("/agents/:name", async (req, res, next) => {
+agentsRouter.delete("/agents/:id", async (req, res, next) => {
   try {
-    const name = req.params["name"]!;
+    const agent = await resolveAgentById(req.params["id"]!);
+    if (!agent) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    const name = agent.name;
     const registry = await registryColl();
-    const existing = await registry.findOne({ _id: name });
-    if (!existing) return res.status(404).json({ error: { code: "NOT_FOUND" } });
 
     const chatSessions = await chatSessionsColl();
     const chatDocs = await chatSessions.find({ agent: name }).toArray();
@@ -175,12 +180,12 @@ agentsRouter.delete("/agents/:name", async (req, res, next) => {
     const sessionsDeleted = (await sessions.deleteMany({ $or: sessionOr })).deletedCount ?? 0;
 
     await chatSessions.deleteMany({ agent: name });
-    await (await chatPinsColl()).deleteOne({ _id: name });
+    await (await chatPinsColl()).deleteOne({ agentName: name });
     const logsDeleted = await agentLogStore.deleteByBot(name);
     const messagesDeleted = (await (await messagesColl()).deleteMany({ agentName: name })).deletedCount ?? 0;
     await scheduleStore.deleteByAgent(name);
 
-    await registry.deleteOne({ _id: name });
+    await registry.deleteOne({ name });
 
     res.json({
       ok: true,

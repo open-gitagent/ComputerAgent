@@ -10,6 +10,10 @@ export type IdentitySource =
   | { type: "inline"; manifest: Record<string, unknown>; files?: Record<string, string> };
 
 export interface Agent {
+  /** Registry surrogate key (Mongo ObjectId, stringified). The public/API
+   *  identifier — routes are `/agents/:id` and all agent-scoped calls pass it.
+   *  `name` is the human label/FK; never use it as the addressing key. */
+  id: string;
   name: string;
   label: string;
   harness: string;
@@ -207,7 +211,7 @@ export interface Schedule {
   lastResult?: string | null;
 }
 export interface NewSchedule {
-  agentName: string;
+  agentId: string;
   prompt: string;
   kind: "interval" | "daily";
   intervalMinutes?: number;
@@ -336,24 +340,24 @@ export interface EvalRun {
 export const api = {
   agents: () => getJSON<{ agents: Agent[] }>("/agents").then((d) => d.agents),
   registerAgent: (input: RegisterAgentInput) =>
-    postJSON<{ ok: boolean; name: string }>("/agents/register", input),
-  unregisterAgent: (name: string) =>
-    reqJSON<DeleteResult>("DELETE", `/agents/${encodeURIComponent(name)}`),
-  patchAgent: (name: string, fields: Partial<Omit<RegisterAgentInput, "name">>) =>
-    reqJSON<{ ok: boolean }>("PATCH", `/agents/${encodeURIComponent(name)}`, fields),
-  logs: (bot?: string, limit = 100) =>
-    getJSON<{ logs: LogEntry[] }>(`/logs?limit=${limit}${bot ? `&bot=${encodeURIComponent(bot)}` : ""}`).then((d) => d.logs),
-  sessions: (bot?: string, limit = 100) =>
-    getJSON<{ sessions: SessionSummary[] }>(`/sessions?limit=${limit}${bot ? `&bot=${encodeURIComponent(bot)}` : ""}`).then((d) => d.sessions),
+    postJSON<{ ok: boolean; id: string; name: string }>("/agents/register", input),
+  unregisterAgent: (agentId: string) =>
+    reqJSON<DeleteResult>("DELETE", `/agents/${encodeURIComponent(agentId)}`),
+  patchAgent: (agentId: string, fields: Partial<Omit<RegisterAgentInput, "name">>) =>
+    reqJSON<{ ok: boolean }>("PATCH", `/agents/${encodeURIComponent(agentId)}`, fields),
+  logs: (agentId?: string, limit = 100) =>
+    getJSON<{ logs: LogEntry[] }>(`/logs?limit=${limit}${agentId ? `&agentId=${encodeURIComponent(agentId)}` : ""}`).then((d) => d.logs),
+  sessions: (agentId?: string, limit = 100) =>
+    getJSON<{ sessions: SessionSummary[] }>(`/sessions?limit=${limit}${agentId ? `&agentId=${encodeURIComponent(agentId)}` : ""}`).then((d) => d.sessions),
   session: (id: string) => getJSON<SessionDetail>(`/sessions/${encodeURIComponent(id)}`),
-  deleteSession: (id: string, bot?: string) =>
+  deleteSession: (id: string, agentId?: string) =>
     reqJSON<DeleteResult>(
       "DELETE",
-      `/sessions/${encodeURIComponent(id)}${bot ? `?bot=${encodeURIComponent(bot)}` : ""}`,
+      `/sessions/${encodeURIComponent(id)}${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`,
     ),
-  chatSandbox: (agent: string, opts?: { sessionId?: string; forceNew?: boolean }) =>
+  chatSandbox: (agentId: string, opts?: { sessionId?: string; forceNew?: boolean }) =>
     postJSON<{ sandboxId: string; sessionId: string; bot: string }>(
-      `/agents/${encodeURIComponent(agent)}/chat-sandbox`,
+      `/agents/${encodeURIComponent(agentId)}/chat-sandbox`,
       opts?.sessionId ? { sessionId: opts.sessionId } : opts?.forceNew ? { forceNew: true } : {},
     ),
   logWebTurn: (entry: { bot: string; sessionId: string; query: string; reply: string; ok: boolean }) =>
@@ -361,10 +365,10 @@ export const api = {
   // SSE chat — caller reads the stream. Path goes through the same /api proxy.
   chatStreamUrl: (sandboxId: string) => `/api/sandboxes/${encodeURIComponent(sandboxId)}/chat`,
   // SSE one-shot run (deepagents). Server builds the /run body from {message}.
-  runStreamUrl: (agent: string) => `/api/agents/${encodeURIComponent(agent)}/run`,
+  runStreamUrl: (agentId: string) => `/api/agents/${encodeURIComponent(agentId)}/run`,
   // Schedules
-  schedules: (agent?: string) =>
-    getJSON<{ schedules: Schedule[] }>(`/schedules${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`).then((d) => d.schedules),
+  schedules: (agentId?: string) =>
+    getJSON<{ schedules: Schedule[] }>(`/schedules${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`).then((d) => d.schedules),
   createSchedule: (s: NewSchedule) => postJSON<{ schedule: Schedule }>("/schedules", s).then((d) => d.schedule),
   updateSchedule: (id: string, fields: Partial<NewSchedule> & { enabled?: boolean }) =>
     reqJSON<{ schedule: Schedule }>("PATCH", `/schedules/${encodeURIComponent(id)}`, fields).then((d) => d.schedule),
@@ -379,10 +383,10 @@ export const api = {
   deletePolicy: (id: string) =>
     reqJSON<{ success?: boolean }>("DELETE", `/policies/${encodeURIComponent(id)}`),
   // Per-agent policy binding (Mongo, ours).
-  getAgentPolicy: (agent: string) =>
-    getJSON<{ binding: AgentPolicyBinding | null }>(`/agents/${encodeURIComponent(agent)}/policy`).then((d) => d.binding),
-  setAgentPolicy: (agent: string, policyId: string | null) =>
-    reqJSON<{ binding: AgentPolicyBinding | null }>("PUT", `/agents/${encodeURIComponent(agent)}/policy`, { policy_id: policyId }).then((d) => d.binding),
+  getAgentPolicy: (agentId: string) =>
+    getJSON<{ binding: AgentPolicyBinding | null }>(`/agents/${encodeURIComponent(agentId)}/policy`).then((d) => d.binding),
+  setAgentPolicy: (agentId: string, policyId: string | null) =>
+    reqJSON<{ binding: AgentPolicyBinding | null }>("PUT", `/agents/${encodeURIComponent(agentId)}/policy`, { policy_id: policyId }).then((d) => d.binding),
   // OPA rego policies (managed by SRS, referenced from RAI policies' opa_guardrail).
   opaPolicies: () => getJSON<{ policies: OPAPolicyDoc[] } | OPAPolicyDoc[]>("/opa-policies").then((d) => (Array.isArray(d) ? d : d.policies)),
   opaPolicy: (id: string) => getJSON<OPAPolicyDoc>(`/opa-policies/${encodeURIComponent(id)}`),

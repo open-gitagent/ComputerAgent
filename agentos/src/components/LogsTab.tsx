@@ -13,7 +13,7 @@ const SOURCE_VARIANT: Record<LogEntry["source"], "default" | "secondary" | "warn
   schedule: "warning",
 };
 
-export function LogsTab({ agent }: { agent: string }) {
+export function LogsTab({ agentId }: { agentId: string }) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -25,7 +25,7 @@ export function LogsTab({ agent }: { agent: string }) {
     if (!quiet) setLoading(true);
     else setRefreshing(true);
     api
-      .logs(agent, 200)
+      .logs(agentId, 200)
       .then((l) => {
         setLogs(l);
         setErr(null);
@@ -40,13 +40,13 @@ export function LogsTab({ agent }: { agent: string }) {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent]);
+  }, [agentId]);
 
   useEffect(() => {
     const t = setInterval(() => load(true), 15_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent]);
+  }, [agentId]);
 
   const shown = filter === "schedule" ? logs.filter((l) => l.source === "schedule") : logs;
   const scheduleCount = logs.filter((l) => l.source === "schedule").length;

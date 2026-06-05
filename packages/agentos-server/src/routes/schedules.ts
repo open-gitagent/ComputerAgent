@@ -9,7 +9,7 @@ import {
   type ScheduleKind,
 } from "../stores/schedule-store.js";
 import { agentLogStore } from "../stores/agent-log-store.js";
-import { resolveAgent } from "../agent-defs.js";
+import { resolveAgent, resolveAgentById } from "../agent-defs.js";
 import { runAgentOnce } from "../scheduler.js";
 
 export const schedulesRouter: IRouter = Router();
@@ -20,8 +20,15 @@ const withDesc = <T extends { kind: ScheduleKind; intervalMinutes?: number; hour
 
 schedulesRouter.get("/schedules", async (req, res, next) => {
   try {
-    const agent = typeof req.query["agent"] === "string" ? req.query["agent"] : undefined;
-    const list = await scheduleStore.list(agent);
+    // Scope by agent id → name (schedules key on agentName).
+    const agentId = typeof req.query["agentId"] === "string" ? req.query["agentId"] : undefined;
+    let agentName: string | undefined;
+    if (agentId) {
+      const agent = await resolveAgentById(agentId);
+      if (!agent) return res.json({ schedules: [] });
+      agentName = agent.name;
+    }
+    const list = await scheduleStore.list(agentName);
     res.json({ schedules: list.map(withDesc) });
   } catch (err) { next(err); }
 });
@@ -29,10 +36,12 @@ schedulesRouter.get("/schedules", async (req, res, next) => {
 schedulesRouter.post("/schedules", async (req, res, next) => {
   try {
     const b = (req.body ?? {}) as Record<string, any>;
-    const agentName = String(b.agentName ?? "");
-    if (!agentName || !(await resolveAgent(agentName))) {
+    // Body carries the agent id; resolve to the name the schedule store stores.
+    const agent = b.agentId ? await resolveAgentById(String(b.agentId)) : undefined;
+    if (!agent) {
       return res.status(400).json({ error: { code: "UNKNOWN_AGENT" } });
     }
+    const agentName = agent.name;
     if (!b.prompt || !String(b.prompt).trim()) {
       return res.status(400).json({ error: { code: "MISSING_PROMPT" } });
     }

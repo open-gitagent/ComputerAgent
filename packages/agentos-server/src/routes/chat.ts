@@ -2,8 +2,8 @@
 // deletion. The harness owns sandbox lifecycle; we just orchestrate session
 // pinning and pipe its SSE back to the browser.
 //
-//   POST   /agentos/api/agents/:name/chat-sandbox
-//   DELETE /agentos/api/agents/:name/chat-pin
+//   POST   /agentos/api/agents/:id/chat-sandbox
+//   DELETE /agentos/api/agents/:id/chat-pin
 //   POST   /agentos/api/sandboxes/:id/chat       (SSE)
 //   GET    /agentos/api/sandboxes/:id/artifact   (binary)
 
@@ -12,14 +12,13 @@ import { randomUUID } from "node:crypto";
 import { caAuthHeader } from "../auth.js";
 import { caBase, pipeUpstream } from "../upstream.js";
 import { chatPinsColl, chatSessionsColl } from "../mongo.js";
-import { hasResolvableSource, resolveAgent, sandboxBodyFor, sandboxCapable, srsPolicyForAgent } from "../agent-defs.js";
+import { hasResolvableSource, resolveAgentById, sandboxBodyFor, sandboxCapable, srsPolicyForAgent } from "../agent-defs.js";
 
 export const chatRouter: IRouter = Router();
 
-chatRouter.post("/agents/:name/chat-sandbox", async (req, res, next) => {
+chatRouter.post("/agents/:id/chat-sandbox", async (req, res, next) => {
   try {
-    const name = req.params["name"]!;
-    const agent = await resolveAgent(name);
+    const agent = await resolveAgentById(req.params["id"]!);
     if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
     if (!sandboxCapable(agent.harness)) {
       return res.status(400).json({
@@ -51,7 +50,7 @@ chatRouter.post("/agents/:name/chat-sandbox", async (req, res, next) => {
     let sessionId = body.sessionId;
     if (!sessionId && !body.forceNew) {
       try {
-        const pin = await (await chatPinsColl()).findOne({ _id: agent.name });
+        const pin = await (await chatPinsColl()).findOne({ agentName: agent.name });
         if (pin?.sessionId) sessionId = pin.sessionId;
       } catch { /* fall through */ }
     }
@@ -96,7 +95,7 @@ chatRouter.post("/agents/:name/chat-sandbox", async (req, res, next) => {
       result.code === "SANDBOX_CREATE_FAILED" &&
       /already exists and is not an empty directory|destination path .* already exists/i.test(result.detail ?? "")
     ) {
-      try { await (await chatPinsColl()).deleteOne({ _id: agent.name }); } catch { /* best-effort */ }
+      try { await (await chatPinsColl()).deleteOne({ agentName: agent.name }); } catch { /* best-effort */ }
       sessionId = `agentos-${agent.name}-${randomUUID().slice(0, 12)}`;
       result = await tryCreate(sessionId);
     }
@@ -110,7 +109,7 @@ chatRouter.post("/agents/:name/chat-sandbox", async (req, res, next) => {
 
     try {
       await (await chatPinsColl()).updateOne(
-        { _id: agent.name },
+        { agentName: agent.name },
         { $set: { sessionId, updatedAt: new Date() } },
         { upsert: true },
       );
@@ -135,9 +134,11 @@ chatRouter.post("/agents/:name/chat-sandbox", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-chatRouter.delete("/agents/:name/chat-pin", async (req, res, next) => {
+chatRouter.delete("/agents/:id/chat-pin", async (req, res, next) => {
   try {
-    await (await chatPinsColl()).deleteOne({ _id: req.params["name"]! });
+    const agent = await resolveAgentById(req.params["id"]!);
+    if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
+    await (await chatPinsColl()).deleteOne({ agentName: agent.name });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

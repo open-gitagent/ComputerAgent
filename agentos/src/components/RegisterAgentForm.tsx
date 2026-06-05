@@ -10,6 +10,7 @@
  */
 import { useState } from "react";
 import { Plus } from "lucide-react";
+import { toast } from "sonner";
 import { api, type RegisterAgentInput } from "../api.ts";
 import { Button } from "./ui/button.tsx";
 import {
@@ -61,12 +62,15 @@ export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: stri
       if (label.trim()) body.label = label.trim();
       if (model.trim()) body.model = model.trim();
       const res = await api.registerAgent(body);
-      setOk(`Registered "${res.name}".`);
+      // Action done → close the modal and confirm via toast. Reset the fields
+      // so the next open starts clean.
+      toast.success(`Registered "${res.name}"`);
       setName("");
       setLabel("");
-      // Keep source/model pre-filled so registering multiple agents in a row
-      // doesn't make you re-type the same values.
+      setErr(null);
+      setOk(null);
       onRegistered?.(res.name);
+      setOpen(false);
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -96,8 +100,7 @@ export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: stri
         <DialogHeader>
           <DialogTitle>Register an agent</DialogTitle>
           <DialogDescription>
-            Only a name is required. Defaults: <code>{DEFAULTS.harness}</code> on{" "}
-            <code className="break-all">{DEFAULTS.source}</code>. Open Advanced to override.
+            Only a name is required
           </DialogDescription>
         </DialogHeader>
 

@@ -46,7 +46,7 @@ export function RegistryPage({
   loaded: boolean;
   err: string | null;
   selected: string | null;
-  onOpenAgent: (name: string) => void;
+  onOpenAgent: (agentId: string) => void;
   onReload: () => void;
 }) {
   const [search, setSearch] = useState("");
@@ -57,7 +57,7 @@ export function RegistryPage({
     if (!pendingDelete) return;
     setDeleting(true);
     try {
-      const res = await api.unregisterAgent(pendingDelete.name);
+      const res = await api.unregisterAgent(pendingDelete.id);
       const d = res.deleted;
       toast.success(`Deleted "${pendingDelete.name}"`, {
         description: `${d.sessions} session(s), ${d.sandboxes} sandbox(es), ${d.snapshots} snapshot(s) removed.`,
@@ -157,10 +157,10 @@ export function RegistryPage({
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {grouped.hosted.map((a) => (
                   <AgentCard
-                    key={a.name}
+                    key={a.id}
                     agent={a}
-                    selected={selected === a.name}
-                    onClick={() => onOpenAgent(a.name)}
+                    selected={selected === a.id}
+                    onClick={() => onOpenAgent(a.id)}
                     onDelete={() => setPendingDelete(a)}
                   />
                 ))}
@@ -174,10 +174,10 @@ export function RegistryPage({
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {grouped.library.map((a) => (
                   <AgentCard
-                    key={a.name}
+                    key={a.id}
                     agent={a}
-                    selected={selected === a.name}
-                    onClick={() => onOpenAgent(a.name)}
+                    selected={selected === a.id}
+                    onClick={() => onOpenAgent(a.id)}
                     onDelete={() => setPendingDelete(a)}
                   />
                 ))}
