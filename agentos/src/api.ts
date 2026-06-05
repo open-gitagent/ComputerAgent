@@ -248,6 +248,95 @@ async function reqJSON<T>(method: string, path: string, body?: unknown): Promise
   return r.json() as Promise<T>;
 }
 
+// ── Evals ──────────────────────────────────────────────────────────────────
+export interface GoldenExpectation {
+  mode: "exact" | "contains" | "regex";
+  value: string;
+}
+export interface EvalCase {
+  id: string;
+  prompt: string;
+  criteria?: string;
+  golden?: GoldenExpectation;
+  expectedTools?: string[];
+  forbiddenTools?: string[];
+  maxCostUsd?: number;
+  maxLatencyMs?: number;
+}
+export interface ScorerConfig {
+  taskSuccess: boolean;
+  toolCompliance: boolean;
+  golden: boolean;
+  nfr: boolean;
+}
+export interface EvalSuite {
+  _id: string;
+  name: string;
+  description?: string;
+  agentName: string;
+  cases: EvalCase[];
+  scorers: ScorerConfig;
+  judges?: JudgeDef[];
+  // legacy single-judge fields (read-only back-compat)
+  judgeModel?: string;
+  judgePrompt?: string;
+  judgePassThreshold?: number;
+  passThreshold?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+export interface JudgeDef {
+  id: string;
+  name: string;
+  rubric?: string;
+  model?: string;
+  passThreshold?: number;
+}
+export type EvalSuiteInput = Omit<EvalSuite, "_id" | "createdAt" | "updatedAt">;
+export interface ScoreResult {
+  scorer: "taskSuccess" | "toolCompliance" | "golden" | "nfr";
+  label?: string;
+  passed: boolean;
+  score?: number;
+  detail?: string;
+}
+export interface PolicyDenial {
+  tool: string;
+  reason: string;
+}
+export interface EvalTraceEntry {
+  type: "thinking" | "text" | "tool_use" | "tool_result";
+  text?: string;
+  tool?: string;
+  input?: unknown;
+  isError?: boolean;
+}
+export interface CaseResult {
+  caseId: string;
+  prompt: string;
+  output: string;
+  toolCalls: string[];
+  policyDenials: PolicyDenial[];
+  transcript: EvalTraceEntry[];
+  costUsd: number;
+  latencyMs: number;
+  scores: ScoreResult[];
+  passed: boolean;
+  error?: string;
+}
+export interface EvalRun {
+  _id: string;
+  suiteId: string;
+  suiteName: string;
+  agentName: string;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  completedAt?: string;
+  results: CaseResult[];
+  summary: { total: number; passed: number; passRate: number; gatePassed?: boolean };
+  error?: string;
+}
+
 export const api = {
   agents: () => getJSON<{ agents: Agent[] }>("/agents").then((d) => d.agents),
   registerAgent: (input: RegisterAgentInput) =>
@@ -307,4 +396,20 @@ export const api = {
     reqJSON<OPAPolicyDoc | { success?: boolean }>("PUT", `/opa-policies/${encodeURIComponent(id)}`, body),
   deleteOpaPolicy: (id: string) =>
     reqJSON<{ success?: boolean }>("DELETE", `/opa-policies/${encodeURIComponent(id)}`),
+
+  // Evals — suite CRUD + run trigger + run readback.
+  evals: {
+    listSuites: () => getJSON<{ suites: EvalSuite[] }>("/evals/suites").then((d) => d.suites),
+    getSuite: (id: string) => getJSON<EvalSuite>(`/evals/suites/${encodeURIComponent(id)}`),
+    createSuite: (body: EvalSuiteInput) => postJSON<EvalSuite>("/evals/suites", body),
+    updateSuite: (id: string, body: EvalSuiteInput) =>
+      reqJSON<EvalSuite>("PUT", `/evals/suites/${encodeURIComponent(id)}`, body),
+    deleteSuite: (id: string) => reqJSON<{ ok: boolean }>("DELETE", `/evals/suites/${encodeURIComponent(id)}`),
+    runSuite: (id: string) => postJSON<{ runId: string }>(`/evals/suites/${encodeURIComponent(id)}/run`, {}),
+    generateCases: (agentName: string, count: number, focus?: string) =>
+      postJSON<{ cases: EvalCase[] }>("/evals/generate", { agentName, count, focus }).then((d) => d.cases),
+    listRuns: (suiteId?: string) =>
+      getJSON<{ runs: EvalRun[] }>(`/evals/runs${suiteId ? `?suite=${encodeURIComponent(suiteId)}` : ""}`).then((d) => d.runs),
+    getRun: (id: string) => getJSON<EvalRun>(`/evals/runs/${encodeURIComponent(id)}`),
+  },
 };

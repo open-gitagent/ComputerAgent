@@ -1,7 +1,8 @@
-import { Home as HomeIcon, Activity, Shield, Boxes } from "lucide-react";
+import { Home as HomeIcon, Activity, Shield, Boxes, FlaskConical } from "lucide-react";
 import { NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { HomePage } from "./components/HomePage.tsx";
 import { PoliciesPage } from "./components/PoliciesPage.tsx";
+import { EvalsPage } from "./components/EvalsPage.tsx";
 import { ObservabilityTab } from "./components/observability/ObservabilityTab.tsx";
 import { RegistryPage } from "./components/RegistryPage.tsx";
 import { AgentDashboard } from "./components/AgentDashboard.tsx";
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="registry" element={<RegistryRoute />} />
         <Route path="observability" element={<ObservabilityTab />} />
         <Route path="policies" element={<PoliciesPage />} />
+        <Route path="evals" element={<EvalsPage />} />
         <Route path="agents/:id" element={<AgentDashboard />} />
         <Route path="*" element={<Navigate to="/home" replace />} />
       </Route>
@@ -49,6 +51,7 @@ function Layout() {
           <RailLink to="/registry" icon={Boxes} label="Agent Registry" active={registryActive} />
           <RailLink to="/observability" icon={Activity} label="Observability" />
           <RailLink to="/policies" icon={Shield} label="Policies" />
+          <RailLink to="/evals" icon={FlaskConical} label="Agent Simulation Engine" />
         </nav>
 
         <div className="flex-1" />

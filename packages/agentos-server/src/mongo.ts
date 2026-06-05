@@ -19,6 +19,7 @@
 // in favour of the dedicated `chat_sessions` collection above.
 
 import { MongoClient, ObjectId, type Collection, type Db } from "mongodb";
+import type { EvalRunDoc, EvalSuiteDoc } from "./eval-types.js";
 
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
@@ -154,6 +155,14 @@ export async function agentPoliciesColl(): Promise<Collection<PolicyBindingDoc>>
 
 export async function messagesColl(): Promise<Collection<MessageDoc>> {
   return (await getDb()).collection<MessageDoc>("agent_messages");
+}
+
+export async function evalSuitesColl(): Promise<Collection<EvalSuiteDoc>> {
+  return (await getDb()).collection<EvalSuiteDoc>("eval_suites");
+}
+
+export async function evalRunsColl(): Promise<Collection<EvalRunDoc>> {
+  return (await getDb()).collection<EvalRunDoc>("eval_runs");
 }
 
 // ── One-time migration ──────────────────────────────────────────────────
