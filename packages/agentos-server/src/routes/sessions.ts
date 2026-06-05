@@ -10,8 +10,10 @@ import { Router, type Router as IRouter } from "express";
 import { chatPinsColl, chatSessionsColl, messagesColl, sessionsColl } from "../mongo.js";
 import { agentLogStore } from "../stores/agent-log-store.js";
 import { deleteAgentSnapshots, disposeLiveSandboxes } from "../cleanup.js";
-import { resolveAgentById } from "../agent-defs.js";
+import { resolveAgent, resolveAgentById, listReadableAgentNames } from "../agent-defs.js";
 import { warmSessions } from "../upstream.js";
+import { authorize } from "../auth/authorize.js";
+import { canRead } from "../auth/ownership.js";
 
 export const sessionsRouter: IRouter = Router();
 
@@ -33,7 +35,7 @@ function looseProjectKeySuffix(id: string): string {
   return `${tokens.join("[^a-zA-Z0-9]+")}$`;
 }
 
-sessionsRouter.get("/sessions", async (req, res, next) => {
+sessionsRouter.get("/sessions", authorize("sessions:read"), async (req, res, next) => {
   try {
     const agentId = typeof req.query["agentId"] === "string" ? req.query["agentId"] : undefined;
     const limit = Math.min(
@@ -45,8 +47,13 @@ sessionsRouter.get("/sessions", async (req, res, next) => {
     let q: Record<string, unknown> = {};
     if (agentId) {
       const agent = await resolveAgentById(agentId);
-      if (!agent) return res.json({ sessions: [] });
+      // Unknown id OR not in the caller's groups → no sessions (no leak).
+      if (!agent || !canRead(res.locals.principal, agent)) return res.json({ sessions: [] });
       q = { agent: agent.name };
+    } else {
+      // Hard isolation — only sessions for agents the caller's groups own.
+      const { all, names } = await listReadableAgentNames(res.locals.principal);
+      if (!all) q = { agent: { $in: [...names] } };
     }
     const [docs, warm] = await Promise.all([
       (await chatSessionsColl()).find(q).sort({ lastMessageAt: -1 }).limit(limit).toArray(),
@@ -64,7 +71,7 @@ sessionsRouter.get("/sessions", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-sessionsRouter.get("/sessions/:id", async (req, res, next) => {
+sessionsRouter.get("/sessions/:id", authorize("sessions:read"), async (req, res, next) => {
   try {
     const id = req.params["id"]!;
     const sessions = await sessionsColl();
@@ -75,6 +82,14 @@ sessionsRouter.get("/sessions/:id", async (req, res, next) => {
       (await chatSessionsColl()).findOne({ _id: id }),
       warmSessions(),
     ]);
+
+    // Hard isolation — a session belongs to its agent's group.
+    if (chat?.agent) {
+      const owner = await resolveAgent(chat.agent);
+      if (owner && !canRead(res.locals.principal, owner)) {
+        return res.status(403).json({ error: { code: "NOT_OWNER" } });
+      }
+    }
 
     res.json({
       sessionId: id,
@@ -110,7 +125,7 @@ sessionsRouter.get("/sessions/:id", async (req, res, next) => {
 // logs + messages. The S3 prefix is per-agent, so the owning agent is resolved
 // from the chat_sessions row's `agent`; pass `?agentId=<id>` for sessions that
 // never got one. The chat pin is only cleared when it points at this session.
-sessionsRouter.delete("/sessions/:id", async (req, res, next) => {
+sessionsRouter.delete("/sessions/:id", authorize("sessions:delete"), async (req, res, next) => {
   try {
     const id = req.params["id"]!;
     const chatSessions = await chatSessionsColl();

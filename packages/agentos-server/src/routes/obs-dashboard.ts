@@ -8,6 +8,7 @@ import { queryOne as chQueryOne, queryRows as chQueryRows } from "../clickhouse.
 import { queryOne as nrqlQueryOne, queryRows as nrqlQueryRows } from "../new-relic.js";
 import { parseTime, toClickHouseDateTime } from "../time.js";
 import { traceBackend } from "../trace-backend.js";
+import { ownerScopeFor, clickhouseScopeClause, nrqlScopeClause, type OwnerScope } from "../query.js";
 
 export const obsDashboardRouter: IRouter = Router();
 
@@ -58,9 +59,12 @@ obsDashboardRouter.get("/dashboard", async (req, res, next) => {
     const minIntervalForCap = Math.ceil(deltaSec / NR_BUCKET_CAP);
     const intervalSec = Math.max(60, minIntervalForCap, Math.round(deltaSec / 60));
 
+    // RBAC: scope every aggregate to the caller's readable group/owner.
+    const scope = ownerScopeFor(res.locals.principal);
+
     const payload = traceBackend() === "newrelic"
-      ? await dashboardFromNrql({ fromDate, toDate, intervalSec, agent })
-      : await dashboardFromClickhouse({ fromDate, toDate, intervalSec, agent });
+      ? await dashboardFromNrql({ fromDate, toDate, intervalSec, agent, scope })
+      : await dashboardFromClickhouse({ fromDate, toDate, intervalSec, agent, scope });
 
     res.json({ intervalSec, window: { from, to }, ...payload });
   } catch (err) {
@@ -75,6 +79,7 @@ async function dashboardFromClickhouse(opts: {
   toDate: Date;
   intervalSec: number;
   agent?: string;
+  scope?: OwnerScope;
 }): Promise<Omit<DashboardResponse, "intervalSec" | "window">> {
   const params: Record<string, unknown> = {
     t_from: toClickHouseDateTime(opts.fromDate),
@@ -85,9 +90,12 @@ async function dashboardFromClickhouse(opts: {
     params["agent"] = opts.agent;
     agentClause = "AND SpanAttributes['gen_ai.agent.name'] = {agent:String}";
   }
+  const scope = clickhouseScopeClause(opts.scope, params);
+  const scopeClause = scope ? `AND ${scope}` : "";
   const whereBase = `Timestamp >= parseDateTime64BestEffort({t_from:String}, 9)
     AND Timestamp < parseDateTime64BestEffort({t_to:String}, 9)
-    ${agentClause}`;
+    ${agentClause}
+    ${scopeClause}`;
 
   const [
     costTotal,
@@ -265,6 +273,7 @@ async function dashboardFromNrql(opts: {
   toDate: Date;
   intervalSec: number;
   agent?: string;
+  scope?: OwnerScope;
 }): Promise<Omit<DashboardResponse, "intervalSec" | "window">> {
   const params: Record<string, unknown> = {
     t_from: opts.fromDate,
@@ -275,7 +284,9 @@ async function dashboardFromNrql(opts: {
     params["agent"] = opts.agent;
     agentClause = " AND `gen_ai.agent.name` = {agent:String}";
   }
-  const baseWhere = `WHERE 1=1${agentClause}`;
+  const scope = nrqlScopeClause(opts.scope, params);
+  const scopeClause = scope ? ` AND ${scope}` : "";
+  const baseWhere = `WHERE 1=1${agentClause}${scopeClause}`;
   const sinceUntil = `SINCE {t_from:Timestamp} UNTIL {t_to:Timestamp}`;
 
   const [

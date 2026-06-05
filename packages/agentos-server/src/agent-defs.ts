@@ -12,6 +12,8 @@
 import { ObjectId } from "mongodb";
 import { IdentitySource, type IdentitySource as IdentitySourceT } from "@open-gitagent/protocol";
 import { agentPoliciesColl, registryColl, type RegistryDoc } from "./mongo.js";
+import { canRead, isSuperuser } from "./auth/ownership.js";
+import type { Principal } from "./auth/principal.js";
 
 export interface AgentDef {
   /** Surrogate key — the registry doc's ObjectId, stringified. The public
@@ -27,6 +29,33 @@ export interface AgentDef {
   model?: string;
   envs?: Record<string, string>;
   gitToken?: string;
+  /** When true the agent is archived and must not be executed. The resolve
+   *  helpers still return the agent (read/management/unarchive need it); the
+   *  execution routes check this flag explicitly via `archivedError`. */
+  archived?: boolean;
+  /** Owning group (visibility) + owning user (mutate/delete). Legacy agents
+   *  have neither — treated as unowned. See src/auth/ownership.ts. */
+  ownerGroup?: string | null;
+  ownerUser?: string | null;
+}
+
+/**
+ * Execution gate for archived agents. Returns a ready-to-send `{status, body}`
+ * when the agent is archived, or null when it's runnable. Callers do:
+ *   const blocked = archivedError(agent);
+ *   if (blocked) return res.status(blocked.status).json(blocked.body);
+ */
+export function archivedError(agent: AgentDef): { status: number; body: unknown } | null {
+  if (!agent.archived) return null;
+  return {
+    status: 403,
+    body: {
+      error: {
+        code: "AGENT_ARCHIVED",
+        message: `${agent.label} is archived and cannot be executed. Unarchive it first.`,
+      },
+    },
+  };
 }
 
 /** True when the source can actually be cloned/loaded by the harness — used
@@ -95,6 +124,21 @@ export async function resolveAgentById(id: string): Promise<AgentDef | undefined
   }
 }
 
+/**
+ * The set of agent NAMES a principal may read (hard isolation). `all:true` for
+ * admins (no filter needed). Used to scope derived resources (sessions, logs,
+ * schedules, evals) that key on the agent name rather than an owner field.
+ */
+export async function listReadableAgentNames(
+  principal: Principal | undefined,
+): Promise<{ all: boolean; names: Set<string> }> {
+  if (isSuperuser(principal)) return { all: true, names: new Set<string>() };
+  const rows = await (await registryColl()).find({}).toArray();
+  const names = new Set<string>();
+  for (const r of rows) if (canRead(principal, r)) names.add(r.name);
+  return { all: false, names };
+}
+
 export function registryDocToAgentDef(doc: RegistryDoc): AgentDef {
   // The registry's `source` field can be:
   //   1. A plain string (legacy git URL / local path), or
@@ -138,6 +182,9 @@ export function registryDocToAgentDef(doc: RegistryDoc): AgentDef {
     harness: doc.harness ?? "claude-agent-sdk",
     source: resolvedSource,
     ...(doc.model ? { model: doc.model } : {}),
+    ...(doc.archived ? { archived: true } : {}),
+    ownerGroup: doc.ownerGroup ?? null,
+    ownerUser: doc.ownerUser ?? null,
   };
 }
 
@@ -163,7 +210,7 @@ export function normalizeSource(raw: unknown): { source: IdentitySourceT | strin
 /** Build the POST /sandboxes body the harness expects. Mirrors the contract
  *  from examples/slack-bot.ts:sandboxBodyForBot so Slack and the dashboard
  *  create identically-configured sandboxes. */
-export function sandboxBodyFor(agent: AgentDef, sessionId: string): Record<string, unknown> {
+export function sandboxBodyFor(agent: AgentDef, sessionId: string, actor?: Principal): Record<string, unknown> {
   const envs = { ...defaultEnvsFor(agent.harness), ...(agent.envs ?? {}) };
   const body: Record<string, unknown> = {
     source: agent.source,
@@ -181,6 +228,7 @@ export function sandboxBodyFor(agent: AgentDef, sessionId: string): Record<strin
     envs,
     idleTtlMs: 30 * 60_000,
     ttlMs: 4 * 60 * 60_000,
+    identity: invocationIdentity(agent, actor),
   };
   if (agent.model) body.model = agent.model;
   if (agent.gitToken) body.gitToken = agent.gitToken;
@@ -188,7 +236,7 @@ export function sandboxBodyFor(agent: AgentDef, sessionId: string): Record<strin
 }
 
 /** Build the POST /run body for one-shot runs. */
-export function runBodyFor(agent: AgentDef, message: string): Record<string, unknown> {
+export function runBodyFor(agent: AgentDef, message: string, actor?: Principal): Record<string, unknown> {
   const envs = { ...defaultEnvsFor(agent.harness), ...(agent.envs ?? {}) };
   const body: Record<string, unknown> = {
     source: agent.source,
@@ -200,10 +248,28 @@ export function runBodyFor(agent: AgentDef, message: string): Record<string, unk
     options: { permissionMode: "bypassPermissions", settingSources: ["project"] },
     envs,
     message,
+    identity: invocationIdentity(agent, actor),
   };
   if (agent.model) body.model = agent.model;
   if (agent.gitToken) body.gitToken = agent.gitToken;
   return body;
+}
+
+/**
+ * RBAC / multi-tenancy identity forwarded to the harness for observability.
+ * The computeragent-server reads `body.identity` and threads it into the
+ * OtelAuditSink so every span carries `computeragent.{agent,group,owner,actor}.id`
+ * — letting traces be aggregated and access-controlled by the AgentOS groups
+ * model. `agentId/groupId/ownerId` come from the registry doc; `actorId` is the
+ * principal who triggered the run.
+ */
+function invocationIdentity(agent: AgentDef, actor?: Principal): Record<string, unknown> {
+  return {
+    agentId: agent.id,
+    groupId: agent.ownerGroup ?? null,
+    ownerId: agent.ownerUser ?? null,
+    actorId: actor?.id ?? null,
+  };
 }
 
 /**

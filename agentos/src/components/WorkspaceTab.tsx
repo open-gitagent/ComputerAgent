@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Plus, PanelLeftClose, MessageSquare, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type SessionSummary } from "../api.ts";
+import { useAuth } from "../context/AuthContext.tsx";
 import { ChatTab } from "./ChatTab.tsx";
 import { Button } from "./ui/button.tsx";
 import { Badge } from "./ui/badge.tsx";
@@ -24,6 +25,7 @@ export function WorkspaceTab({
   agentName,
   sandboxCapable,
   liveChatCapable = true,
+  archived = false,
   initialMessage,
   onConsumedInitial,
 }: {
@@ -35,9 +37,17 @@ export function WorkspaceTab({
   // resolve into something the server can clone. Defaults to true so
   // existing callers and registry docs without the field keep working.
   liveChatCapable?: boolean;
+  // True when the agent is archived: new chats are hidden and the composer
+  // is locked (server refuses execution regardless). History stays browsable.
+  archived?: boolean;
   initialMessage?: string | null;
   onConsumedInitial?: () => void;
 }) {
+  const { can } = useAuth();
+  // RBAC (UX gating; server authorize() is the real boundary): starting a chat
+  // spins up a sandbox (agents:run); the trash affordance deletes a session.
+  const canRun = can("agents:run");
+  const canDeleteSession = can("sessions:delete");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
@@ -117,7 +127,7 @@ export function WorkspaceTab({
           >
             <PanelLeftClose className="h-4 w-4 rotate-180" />
           </Button>
-          {liveChatCapable && (
+          {liveChatCapable && !archived && canRun && (
             <Button onClick={newChat} size="icon" title="New chat" className="h-8 w-8">
               <Plus className="h-4 w-4" />
             </Button>
@@ -140,6 +150,7 @@ export function WorkspaceTab({
               loadSessions();
             }}
             onSessionStarted={onSessionStarted}
+            disabled={archived}
           />
         </div>
       </div>
@@ -164,7 +175,7 @@ export function WorkspaceTab({
           <span className="text-xs text-muted-foreground truncate min-w-0">
             {sessions.length} session{sessions.length !== 1 ? "s" : ""}
           </span>
-          {liveChatCapable && (
+          {liveChatCapable && !archived && canRun && (
             <Button variant="default" size="sm" onClick={newChat} className="ml-auto shrink-0 gap-1">
               <Plus className="h-3 w-3" />
               New
@@ -212,19 +223,21 @@ export function WorkspaceTab({
                     <span className="ml-auto truncate min-w-0">{tsShort}</span>
                   </div>
                 </button>
-                <span
-                  role="button"
-                  tabIndex={0}
-                  title="Delete session"
-                  aria-label={`Delete session ${label}`}
-                  onClick={(e) => { e.stopPropagation(); setPendingDelete(s); }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); setPendingDelete(s); }
-                  }}
-                  className="absolute right-1.5 top-2 z-10 h-6 w-6 grid place-items-center rounded-md text-muted-foreground/70 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-opacity cursor-pointer"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </span>
+                {canDeleteSession && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title="Delete session"
+                    aria-label={`Delete session ${label}`}
+                    onClick={(e) => { e.stopPropagation(); setPendingDelete(s); }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); setPendingDelete(s); }
+                    }}
+                    className="absolute right-1.5 top-2 z-10 h-6 w-6 grid place-items-center rounded-md text-muted-foreground/70 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-opacity cursor-pointer"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </span>
+                )}
               </div>
             );
           })}
@@ -245,6 +258,7 @@ export function WorkspaceTab({
             loadSessions();
           }}
           onSessionStarted={onSessionStarted}
+          disabled={archived}
         />
       </div>
 

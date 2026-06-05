@@ -220,6 +220,9 @@ describe("OtelAuditSink — phase 2 happy path", () => {
     expect(chat.attributes[GEN_AI_RESPONSE_MODEL]).toBe("claude-haiku-4-5-20251001");
     expect(chat.attributes[GEN_AI_RESPONSE_FINISH_REASONS]).toEqual(["end_turn"]);
     expect(chat.attributes[GEN_AI_CONVERSATION_ID]).toBe(SESSION_ID);
+    // Agent identity is propagated onto child spans (not just the root) so a flat
+    // `WHERE gen_ai.agent.name = X` filter selects the whole trace.
+    expect(chat.attributes[GEN_AI_AGENT_NAME]).toBe("haiku-bot");
     expect(chat.parentSpanId).toBe(agent.spanContext().spanId);
 
     // execute_tool — child of chat, required attrs
@@ -229,6 +232,7 @@ describe("OtelAuditSink — phase 2 happy path", () => {
     expect(tool.attributes[GEN_AI_TOOL_NAME]).toBe("Write");
     expect(tool.attributes[GEN_AI_TOOL_CALL_ID]).toBe("call-1");
     expect(tool.attributes[GEN_AI_CONVERSATION_ID]).toBe(SESSION_ID);
+    expect(tool.attributes[GEN_AI_AGENT_NAME]).toBe("haiku-bot");
     expect(tool.parentSpanId).toBe(chat.spanContext().spanId);
 
     // All three spans share the SAME trace id (invoke_agent is the root).

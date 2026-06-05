@@ -8,10 +8,12 @@
  * Override via the Advanced toggle, or set VITE_AGENTOS_DEFAULT_* in
  * agentos/.env to ship different defaults.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import { api, type RegisterAgentInput } from "../api.ts";
+import { useAssignableGroups } from "../hooks/useAssignableGroups.ts";
+import { useAuth } from "../context/AuthContext.tsx";
 import { Button } from "./ui/button.tsx";
 import {
   Dialog,
@@ -35,9 +37,17 @@ const DEFAULTS = {
 };
 
 export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: string) => void }) {
+  const { can } = useAuth();
+  const groups = useAssignableGroups();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
+  const [ownerGroup, setOwnerGroup] = useState("");
   const [label, setLabel] = useState("");
+
+  // Default the owner group to the first available once groups load.
+  useEffect(() => {
+    if (!ownerGroup && groups.length) setOwnerGroup(groups[0]!);
+  }, [groups, ownerGroup]);
   const [harness, setHarness] = useState<string>(DEFAULTS.harness);
   const [source, setSource] = useState(DEFAULTS.source);
   const [model, setModel] = useState(DEFAULTS.model);
@@ -48,6 +58,10 @@ export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: stri
 
   // Only `name` is strictly required client-side; defaults fill in the rest.
   const valid = name.trim().length > 0;
+
+  // RBAC: hide the trigger entirely for users who can't create agents. The
+  // server's authorize("agents:write") is the real boundary; this is UX only.
+  if (!can("agents:write")) return null;
 
   const submit = async () => {
     setBusy(true);
@@ -61,6 +75,7 @@ export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: stri
       };
       if (label.trim()) body.label = label.trim();
       if (model.trim()) body.model = model.trim();
+      if (ownerGroup) body.ownerGroup = ownerGroup;
       const res = await api.registerAgent(body);
       // Action done → close the modal and confirm via toast. Reset the fields
       // so the next open starts clean.
@@ -107,6 +122,28 @@ export function RegisterAgentForm({ onRegistered }: { onRegistered?: (name: stri
         <div className="space-y-3">
           <Field label="Name" required value={name} onChange={setName} placeholder="my-claude" autoFocus />
           <Field label="Label" value={label} onChange={setLabel} placeholder={name || "Display name (optional)"} />
+
+          {groups.length > 0 && (
+            <div>
+              <label className="block text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+                Owner group
+              </label>
+              <select
+                value={ownerGroup}
+                onChange={(e) => setOwnerGroup(e.target.value)}
+                className="w-full bg-background border border-border rounded px-2 py-1.5 text-foreground text-sm"
+              >
+                {groups.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[10px] text-muted-foreground/70">
+                The agent is visible to this group; only you (or an admin) can edit or delete it.
+              </p>
+            </div>
+          )}
 
           <button
             type="button"

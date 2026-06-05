@@ -14,6 +14,7 @@
 // The Anthropic key never leaves the server; only the streamed text does.
 
 import { Router, type Router as IRouter } from "express";
+import { authorize } from "../auth/authorize.js";
 
 export const completionRouter: IRouter = Router();
 
@@ -41,7 +42,7 @@ function normalizeMessages(body: Record<string, unknown>): ChatMsg[] {
   return one ? [{ role: "user", content: one }] : [];
 }
 
-completionRouter.post("/completion", async (req, res, next) => {
+completionRouter.post("/completion", authorize("completion:run"), async (req, res, next) => {
   try {
     const key = process.env["ANTHROPIC_API_KEY"];
     if (!key) {

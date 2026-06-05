@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type PolicyDoc, type CedarPolicyEntry, type OPAPolicyDoc } from "../api.ts";
+import { useAuth } from "../context/AuthContext.tsx";
 
 /**
  * Global Policies page. List on the left, editor on the right. Focuses on
@@ -9,6 +10,10 @@ import { api, type PolicyDoc, type CedarPolicyEntry, type OPAPolicyDoc } from ".
  * the tool-call gate, so they're hidden here; manage them in SRS directly.
  */
 export function PoliciesPage() {
+  const { can } = useAuth();
+  // RBAC (UX gating; server authorize() is the boundary). Policies have a
+  // single write permission covering create / edit / delete.
+  const canWrite = can("policies:write");
   const [policies, setPolicies] = useState<PolicyDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -45,18 +50,22 @@ export function PoliciesPage() {
             <div className="text-base font-semibold">Policies</div>
             <div className="text-[11px] text-gray-500">SRS-managed · Cedar + OPA</div>
           </div>
-          <button
-            onClick={() => setEditing("new")}
-            className="text-xs px-2.5 py-1 rounded bg-accent text-white hover:bg-accent/80"
-          >
-            + New
-          </button>
+          {canWrite && (
+            <button
+              onClick={() => setEditing("new")}
+              className="text-xs px-2.5 py-1 rounded bg-accent text-white hover:bg-accent/80"
+            >
+              + New
+            </button>
+          )}
         </div>
         {err && <div className="m-3 text-sm text-red-400">{err}</div>}
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {loading && <div className="text-sm text-gray-500 p-2">Loading…</div>}
           {!loading && policies.length === 0 && (
-            <div className="text-sm text-gray-500 p-2">No policies yet. Click <span className="text-accent">+ New</span>.</div>
+            <div className="text-sm text-gray-500 p-2">
+              No policies yet.{canWrite && <> Click <span className="text-accent">+ New</span>.</>}
+            </div>
           )}
           {policies.map((p) => {
             const isActive = editing && editing !== "new" && editing._id === p._id;
@@ -87,14 +96,17 @@ export function PoliciesPage() {
       <div className="flex-1 min-w-0 overflow-y-auto">
         {editing === null ? (
           <div className="h-full grid place-items-center text-gray-600 text-sm">
-            Select a policy or <button onClick={() => setEditing("new")} className="text-accent hover:underline ml-1">create one</button>.
+            Select a policy{canWrite && (
+              <> or <button onClick={() => setEditing("new")} className="text-accent hover:underline ml-1">create one</button></>
+            )}.
           </div>
         ) : (
           <PolicyEditor
             initial={editing === "new" ? null : editing}
+            canWrite={canWrite}
             onSaved={onSaved}
             onCancel={() => setEditing(null)}
-            onDelete={editing === "new" ? undefined : () => remove(editing._id)}
+            onDelete={editing === "new" || !canWrite ? undefined : () => remove(editing._id)}
           />
         )}
       </div>
@@ -127,11 +139,13 @@ const FRESH_CEDAR_RULE = (): CedarPolicyEntry => ({
 
 function PolicyEditor({
   initial,
+  canWrite,
   onSaved,
   onCancel,
   onDelete,
 }: {
   initial: PolicyDoc | null;
+  canWrite: boolean;
   onSaved: () => void;
   onCancel: () => void;
   onDelete?: () => void;
@@ -248,7 +262,9 @@ function PolicyEditor({
                   className="bg-ink-800 border border-ink-600 rounded px-2 py-1 text-xs flex-1"
                 />
                 <Toggle small checked={r.enabled !== false} onChange={(v) => updRule(idx, { enabled: v })} />
-                <button onClick={() => delRule(idx)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                {canWrite && (
+                  <button onClick={() => delRule(idx)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                )}
               </div>
               <textarea
                 value={r.policy_text}
@@ -259,12 +275,14 @@ function PolicyEditor({
               />
             </div>
           ))}
-          <button
-            onClick={addRule}
-            className="text-xs px-2.5 py-1 rounded border border-ink-600 hover:bg-ink-700"
-          >
-            + Add rule
-          </button>
+          {canWrite && (
+            <button
+              onClick={addRule}
+              className="text-xs px-2.5 py-1 rounded border border-ink-600 hover:bg-ink-700"
+            >
+              + Add rule
+            </button>
+          )}
         </div>
         <Field label="Fail-open on engine error" inline>
           <Toggle small checked={s.cedarFailOpen} onChange={(v) => upd("cedarFailOpen", v)} />
@@ -290,6 +308,7 @@ function PolicyEditor({
             <ManagedPolicyPicker
               value={s.opaManagedPolicyIds}
               onChange={(v) => upd("opaManagedPolicyIds", v)}
+              canWrite={canWrite}
             />
           </Field>
         ) : (
@@ -337,18 +356,20 @@ function PolicyEditor({
       </Section>
 
       <div className="mt-6 flex items-center gap-2">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="px-4 py-1.5 rounded bg-accent text-white text-sm hover:bg-accent/80 disabled:opacity-50"
-        >
-          {saving ? "Saving…" : initial ? "Save changes" : "Create policy"}
-        </button>
+        {canWrite && (
+          <button
+            onClick={save}
+            disabled={saving}
+            className="px-4 py-1.5 rounded bg-accent text-white text-sm hover:bg-accent/80 disabled:opacity-50"
+          >
+            {saving ? "Saving…" : initial ? "Save changes" : "Create policy"}
+          </button>
+        )}
         <button
           onClick={onCancel}
           className="px-4 py-1.5 rounded border border-ink-600 text-sm hover:bg-ink-700"
         >
-          Cancel
+          {canWrite ? "Cancel" : "Close"}
         </button>
         {onDelete && (
           <button
@@ -368,7 +389,7 @@ function PolicyEditor({
  * with chip-style display, a "Browse / create" button to open the modal,
  * and a free-text input fallback for direct ID entry.
  */
-function ManagedPolicyPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function ManagedPolicyPicker({ value, onChange, canWrite }: { value: string; onChange: (v: string) => void; canWrite: boolean }) {
   const [opaPolicies, setOpaPolicies] = useState<OPAPolicyDoc[] | null>(null);
   const [showModal, setShowModal] = useState(false);
 
@@ -410,7 +431,7 @@ function ManagedPolicyPicker({ value, onChange }: { value: string; onChange: (v:
           onClick={() => setShowModal(true)}
           className="text-xs px-2.5 py-1 rounded border border-ink-600 hover:bg-ink-700"
         >
-          Browse / create Rego policies
+          {canWrite ? "Browse / create Rego policies" : "Browse Rego policies"}
         </button>
         <span className="text-[11px] text-gray-500">
           {(opaPolicies?.length ?? 0)} available
@@ -420,6 +441,7 @@ function ManagedPolicyPicker({ value, onChange }: { value: string; onChange: (v:
         <RegoPoliciesModal
           selectedIds={selectedIds}
           onToggle={toggle}
+          canWrite={canWrite}
           onClose={() => { setShowModal(false); refresh(); }}
         />
       )}
@@ -436,10 +458,12 @@ function ManagedPolicyPicker({ value, onChange }: { value: string; onChange: (v:
 function RegoPoliciesModal({
   selectedIds,
   onToggle,
+  canWrite,
   onClose,
 }: {
   selectedIds: string[];
   onToggle: (id: string) => void;
+  canWrite: boolean;
   onClose: () => void;
 }) {
   const [policies, setPolicies] = useState<OPAPolicyDoc[]>([]);
@@ -499,7 +523,9 @@ function RegoPoliciesModal({
                         <input type="checkbox" checked={selected} onChange={() => onToggle(p._id)} />
                         <span className="text-sm font-medium">{p.name}</span>
                         <span className="text-[10px] text-gray-500 font-mono ml-auto">{p._id}</span>
-                        <button onClick={() => remove(p._id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                        {canWrite && (
+                          <button onClick={() => remove(p._id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                        )}
                       </div>
                       {p.description && <div className="text-[11px] text-gray-500 mt-0.5">{p.description}</div>}
                       <pre className="mt-2 text-[10px] font-mono bg-ink-800 border border-ink-600 rounded p-2 overflow-x-auto max-h-32">{p.rego_content}</pre>
@@ -510,17 +536,19 @@ function RegoPoliciesModal({
             )}
           </div>
 
-          <div className="border-t border-ink-600 pt-4">
-            <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Create new</div>
-            <div className="space-y-2">
-              <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name (e.g. block-write)" className="w-full bg-ink-700 border border-ink-600 rounded px-3 py-1.5 text-sm" />
-              <input value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="Description (optional)" className="w-full bg-ink-700 border border-ink-600 rounded px-3 py-1.5 text-sm" />
-              <textarea value={newRego} onChange={(e) => setNewRego(e.target.value)} rows={10} className="w-full bg-ink-700 border border-ink-600 rounded px-3 py-1.5 text-xs font-mono" />
-              <button onClick={create} disabled={creating} className="px-4 py-1.5 rounded bg-accent text-white text-sm hover:bg-accent/80 disabled:opacity-50">
-                {creating ? "Creating…" : "Create"}
-              </button>
+          {canWrite && (
+            <div className="border-t border-ink-600 pt-4">
+              <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Create new</div>
+              <div className="space-y-2">
+                <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name (e.g. block-write)" className="w-full bg-ink-700 border border-ink-600 rounded px-3 py-1.5 text-sm" />
+                <input value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="Description (optional)" className="w-full bg-ink-700 border border-ink-600 rounded px-3 py-1.5 text-sm" />
+                <textarea value={newRego} onChange={(e) => setNewRego(e.target.value)} rows={10} className="w-full bg-ink-700 border border-ink-600 rounded px-3 py-1.5 text-xs font-mono" />
+                <button onClick={create} disabled={creating} className="px-4 py-1.5 rounded bg-accent text-white text-sm hover:bg-accent/80 disabled:opacity-50">
+                  {creating ? "Creating…" : "Create"}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         <div className="px-5 py-3 border-t border-ink-600 flex justify-end">

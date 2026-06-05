@@ -12,14 +12,19 @@ import { randomUUID } from "node:crypto";
 import { caAuthHeader } from "../auth.js";
 import { caBase, pipeUpstream } from "../upstream.js";
 import { chatPinsColl, chatSessionsColl } from "../mongo.js";
-import { hasResolvableSource, resolveAgentById, sandboxBodyFor, sandboxCapable, srsPolicyForAgent } from "../agent-defs.js";
+import { archivedError, hasResolvableSource, resolveAgentById, sandboxBodyFor, sandboxCapable, srsPolicyForAgent } from "../agent-defs.js";
+import { authorize } from "../auth/authorize.js";
+import { canRead } from "../auth/ownership.js";
 
 export const chatRouter: IRouter = Router();
 
-chatRouter.post("/agents/:id/chat-sandbox", async (req, res, next) => {
+chatRouter.post("/agents/:id/chat-sandbox", authorize("agents:run"), async (req, res, next) => {
   try {
     const agent = await resolveAgentById(req.params["id"]!);
     if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
+    if (!canRead(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER" } });
+    const blocked = archivedError(agent);
+    if (blocked) return res.status(blocked.status).json(blocked.body);
     if (!sandboxCapable(agent.harness)) {
       return res.status(400).json({
         error: { code: "NO_SANDBOX", message: `${agent.label} runs one-shot — use /run` },
@@ -59,7 +64,7 @@ chatRouter.post("/agents/:id/chat-sandbox", async (req, res, next) => {
     const tryCreate = async (sid: string) => {
       let body: Record<string, unknown>;
       try {
-        body = sandboxBodyFor(agent, sid);
+        body = sandboxBodyFor(agent, sid, res.locals.principal);
       } catch (err) {
         // defaultEnvsFor throws if ANTHROPIC_API_KEY missing for Claude.
         const status = (err as any)?.status ?? 503;
@@ -134,17 +139,18 @@ chatRouter.post("/agents/:id/chat-sandbox", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-chatRouter.delete("/agents/:id/chat-pin", async (req, res, next) => {
+chatRouter.delete("/agents/:id/chat-pin", authorize("agents:write"), async (req, res, next) => {
   try {
     const agent = await resolveAgentById(req.params["id"]!);
     if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
+    if (!canRead(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     await (await chatPinsColl()).deleteOne({ agentName: agent.name });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
 
 // SSE proxy — pipe the upstream /sandboxes/:id/chat stream to the browser.
-chatRouter.post("/sandboxes/:id/chat", async (req, res, next) => {
+chatRouter.post("/sandboxes/:id/chat", authorize("agents:run"), async (req, res, next) => {
   try {
     const id = req.params["id"]!;
     const upstream = await fetch(`${caBase()}/sandboxes/${encodeURIComponent(id)}/chat`, {
@@ -157,7 +163,7 @@ chatRouter.post("/sandboxes/:id/chat", async (req, res, next) => {
 });
 
 // Binary artifact pass-through.
-chatRouter.get("/sandboxes/:id/artifact", async (req, res, next) => {
+chatRouter.get("/sandboxes/:id/artifact", authorize("agents:read"), async (req, res, next) => {
   try {
     const id = req.params["id"]!;
     const path = typeof req.query["path"] === "string" ? req.query["path"] : "";

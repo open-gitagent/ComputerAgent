@@ -1,4 +1,4 @@
-import { Home as HomeIcon, Activity, Shield, Boxes, FlaskConical } from "lucide-react";
+import { Home as HomeIcon, Activity, Shield, Boxes, FlaskConical, Settings as SettingsIcon } from "lucide-react";
 import { NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { HomePage } from "./components/HomePage.tsx";
 import { PoliciesPage } from "./components/PoliciesPage.tsx";
@@ -6,6 +6,7 @@ import { EvalsPage } from "./components/EvalsPage.tsx";
 import { ObservabilityTab } from "./components/observability/ObservabilityTab.tsx";
 import { RegistryPage } from "./components/RegistryPage.tsx";
 import { AgentDashboard } from "./components/AgentDashboard.tsx";
+import { SettingsPage } from "./components/SettingsPage.tsx";
 import { Separator } from "./components/ui/separator.tsx";
 import { useAgents } from "./context/AgentsContext.tsx";
 import { cn } from "./lib/cn.ts";
@@ -20,6 +21,7 @@ export default function App() {
         <Route path="observability" element={<ObservabilityTab />} />
         <Route path="policies" element={<PoliciesPage />} />
         <Route path="evals" element={<EvalsPage />} />
+        <Route path="settings" element={<SettingsPage />} />
         <Route path="agents/:id" element={<AgentDashboard />} />
         <Route path="*" element={<Navigate to="/home" replace />} />
       </Route>
@@ -56,6 +58,10 @@ function Layout() {
 
         <div className="flex-1" />
 
+        {/* System-level config lives at the bottom of the rail. */}
+        <nav className="px-2 pb-2 space-y-1">
+          <RailLink to="/settings" icon={SettingsIcon} label="Settings" />
+        </nav>
         <Separator />
         <div className="px-4 py-3 text-[10px] text-muted-foreground/70">agentos.clawagent.sh</div>
       </aside>
@@ -72,15 +78,8 @@ function Layout() {
 //    keep their existing prop contracts and need no router awareness. ──
 
 function HomeRoute() {
-  const { agents } = useAgents();
-  const navigate = useNavigate();
-  return (
-    <HomePage
-      agents={agents}
-      onLaunch={(agentId, message) => navigate(`/agents/${encodeURIComponent(agentId)}`, { state: { message } })}
-      onOpenDashboard={() => navigate(agents[0] ? `/agents/${encodeURIComponent(agents[0].id)}` : "/registry")}
-    />
-  );
+  // HomePage is self-sufficient (reads agents/auth from context, navigates itself).
+  return <HomePage />;
 }
 
 function RegistryRoute() {

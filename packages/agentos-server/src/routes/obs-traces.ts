@@ -4,10 +4,11 @@
 // Both backends return the same JSON shape so the UI doesn't care.
 
 import { Router, type Router as IRouter } from "express";
-import { buildTraceListSql, buildNrqlTraceListQuery, type Filter, type Query } from "../query.js";
+import { buildTraceListSql, buildNrqlTraceListQuery, ownerScopeFor, type Filter, type Query } from "../query.js";
 import { queryRows as chQueryRows } from "../clickhouse.js";
 import { queryRows as nrqlQueryRows } from "../new-relic.js";
 import { traceBackend } from "../trace-backend.js";
+import { canRead, isSuperuser, type Owned } from "../auth/ownership.js";
 
 export const obsTracesRouter: IRouter = Router();
 
@@ -24,6 +25,8 @@ obsTracesRouter.get("/traces", async (req, res, next) => {
     const q: Query = { filters, limit };
     if (from) q.from = from;
     if (to) q.to = to;
+    // RBAC: scope to the caller's readable group/owner (no-op for superusers).
+    q.scope = ownerScopeFor(res.locals.principal);
 
     const traces = await fetchTraceList(q);
     res.json({ traces });
@@ -35,6 +38,9 @@ obsTracesRouter.get("/traces", async (req, res, next) => {
 obsTracesRouter.post("/traces/search", async (req, res, next) => {
   try {
     const q = (req.body ?? {}) as Query;
+    // RBAC: always overwrite any client-supplied scope with the caller's own —
+    // the scope is server-authoritative, never trusted from the request body.
+    q.scope = ownerScopeFor(res.locals.principal);
     const traces = await fetchTraceList(q);
     res.json({ traces });
   } catch (err) {
@@ -72,6 +78,15 @@ obsTracesRouter.get("/traces/:traceId", async (req, res, next) => {
     if (spans.length === 0) {
       return res.status(404).json({ error: "trace not found" });
     }
+    // RBAC (IDOR guard): a non-superuser may only fetch a trace whose owner/group
+    // they can read. Derive owner/group from the trace's spans and 404 (not 403,
+    // to avoid confirming existence) when not allowed. Untagged/legacy traces
+    // have no owner/group → admin-only, matching the list-filter's deny default.
+    if (!isSuperuser(res.locals.principal)) {
+      if (!canRead(res.locals.principal, ownedFromSpans(spans))) {
+        return res.status(404).json({ error: "trace not found" });
+      }
+    }
     const ids = new Set(spans.map((s) => s.SpanId));
     const root = spans.find((s) => !s.ParentSpanId || !ids.has(s.ParentSpanId)) ?? spans[0]!;
     res.json({ traceId, root, spans });
@@ -79,6 +94,21 @@ obsTracesRouter.get("/traces/:traceId", async (req, res, next) => {
     next(err);
   }
 });
+
+/**
+ * Derive the owner/group of a trace from its spans for the RBAC visibility
+ * check. Identity is stamped on every span, so we take the first span carrying
+ * a non-empty owner or group. A trace with neither (legacy/untagged) yields an
+ * unowned resource → visible to admins only (canRead denies non-superusers).
+ */
+function ownedFromSpans(spans: SpanRow[]): Owned {
+  for (const s of spans) {
+    const ownerUser = s.SpanAttributes?.["computeragent.owner.id"] || null;
+    const ownerGroup = s.SpanAttributes?.["computeragent.group.id"] || null;
+    if (ownerUser || ownerGroup) return { ownerUser, ownerGroup };
+  }
+  return { ownerUser: null, ownerGroup: null };
+}
 
 // ─── Backend dispatch ─────────────────────────────────────────────────────
 
@@ -122,17 +152,36 @@ async function fetchTraceDetailClickhouse(traceId: string): Promise<SpanRow[]> {
 }
 
 /**
+ * Lookback window (ms) for the trace-detail query. NRQL defaults to a 1-hour
+ * window when no SINCE is given, which made any trace older than ~1h 404 even
+ * though the trace list (which honors the UI's selected range, up to 72h) still
+ * showed it. A `trace.id` lookup is globally unique, so a wide SINCE is safe —
+ * it can only ever match this one trace. Default 8 days = NR raw-span retention
+ * ceiling; override with NEW_RELIC_TRACE_LOOKBACK_DAYS for longer-retention plans.
+ */
+function traceDetailLookbackMs(): number {
+  const raw = process.env["NEW_RELIC_TRACE_LOOKBACK_DAYS"];
+  const days = raw ? parseInt(raw, 10) : NaN;
+  const safe = Number.isFinite(days) && days > 0 ? days : 8;
+  return safe * 24 * 60 * 60 * 1000;
+}
+
+/**
  * NRQL doesn't surface span attributes as a single `SpanAttributes` map — they
  * are flattened onto the Span event. We `SELECT *` for the trace ID, then
  * re-bundle attributes client-side to match the ClickHouse shape the UI expects.
  *
  * NRQL has a hard limit (default 2000) on rows per query. Traces with more than
  * 2000 spans get truncated; this matches ClickHouse's pragmatic behavior.
+ *
+ * The explicit SINCE is required: without it NRQL only scans the last hour, so
+ * older traces returned zero spans and the route 404'd. See traceDetailLookbackMs.
  */
 async function fetchTraceDetailNrql(traceId: string): Promise<SpanRow[]> {
+  const since = new Date(Date.now() - traceDetailLookbackMs());
   const rows = await nrqlQueryRows<Record<string, unknown>>(
-    `SELECT * FROM Span WHERE trace.id = {tid:String} LIMIT 2000`,
-    { tid: traceId },
+    `SELECT * FROM Span WHERE trace.id = {tid:String} SINCE {since:Timestamp} LIMIT 2000`,
+    { tid: traceId, since },
   );
   return mapNrqlSpans(rows);
 }

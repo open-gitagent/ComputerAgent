@@ -9,8 +9,19 @@ import { evalRunsColl, evalSuitesColl } from "../mongo.js";
 import { startRun } from "../eval-runner.js";
 import { generateCases } from "../eval-generate.js";
 import type { EvalCase, EvalSuiteDoc, JudgeDef, ScorerConfig } from "../eval-types.js";
+import { authorize } from "../auth/authorize.js";
+import { canRead } from "../auth/ownership.js";
+import { resolveAgent, listReadableAgentNames } from "../agent-defs.js";
+import type { Principal } from "../auth/principal.js";
 
 export const evalsRouter: IRouter = Router();
+
+// Eval suites/runs key on agentName; visibility follows the target agent's
+// group (hard isolation). Unknown agent (orphan suite) → allowed.
+async function agentReadable(principal: Principal | undefined, agentName: string): Promise<boolean> {
+  const a = await resolveAgent(agentName);
+  return !a || canRead(principal, a);
+}
 
 const DEFAULT_SCORERS: ScorerConfig = { taskSuccess: true, toolCompliance: false, golden: false, nfr: false };
 
@@ -72,30 +83,33 @@ function coerceJudges(raw: unknown): JudgeDef[] {
 }
 
 // ── Suites ────────────────────────────────────────────────────────────────
-evalsRouter.get("/evals/suites", async (_req, res, next) => {
+evalsRouter.get("/evals/suites", authorize("evals:read"), async (_req, res, next) => {
   try {
     const suites = await (await evalSuitesColl()).find({}).sort({ updatedAt: -1 }).toArray();
-    res.json({ suites });
+    const { all, names } = await listReadableAgentNames(res.locals.principal);
+    res.json({ suites: all ? suites : suites.filter((s) => names.has(s.agentName)) });
   } catch (err) {
     next(err);
   }
 });
 
-evalsRouter.get("/evals/suites/:id", async (req, res, next) => {
+evalsRouter.get("/evals/suites/:id", authorize("evals:read"), async (req, res, next) => {
   try {
     const suite = await (await evalSuitesColl()).findOne({ _id: req.params["id"]! });
     if (!suite) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!(await agentReadable(res.locals.principal, suite.agentName))) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     res.json(suite);
   } catch (err) {
     next(err);
   }
 });
 
-evalsRouter.post("/evals/suites", async (req, res, next) => {
+evalsRouter.post("/evals/suites", authorize("evals:write"), async (req, res, next) => {
   try {
     const fields = coerceSuiteBody((req.body ?? {}) as Record<string, unknown>);
     if (!fields.name) return res.status(400).json({ error: { code: "BAD_REQUEST", message: "`name` required" } });
     if (!fields.agentName) return res.status(400).json({ error: { code: "BAD_REQUEST", message: "`agentName` required" } });
+    if (!(await agentReadable(res.locals.principal, fields.agentName))) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     const now = new Date();
     const suite: EvalSuiteDoc = { _id: randomUUID(), ...fields, createdAt: now, updatedAt: now };
     await (await evalSuitesColl()).insertOne(suite);
@@ -105,11 +119,14 @@ evalsRouter.post("/evals/suites", async (req, res, next) => {
   }
 });
 
-evalsRouter.put("/evals/suites/:id", async (req, res, next) => {
+evalsRouter.put("/evals/suites/:id", authorize("evals:write"), async (req, res, next) => {
   try {
     const id = req.params["id"]!;
     const fields = coerceSuiteBody((req.body ?? {}) as Record<string, unknown>);
     if (!fields.name) return res.status(400).json({ error: { code: "BAD_REQUEST", message: "`name` required" } });
+    const existing = await (await evalSuitesColl()).findOne({ _id: id });
+    if (!existing) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!(await agentReadable(res.locals.principal, existing.agentName))) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     const r = await (await evalSuitesColl()).updateOne(
       { _id: id },
       { $set: { ...fields, updatedAt: new Date() } },
@@ -122,11 +139,13 @@ evalsRouter.put("/evals/suites/:id", async (req, res, next) => {
   }
 });
 
-evalsRouter.delete("/evals/suites/:id", async (req, res, next) => {
+evalsRouter.delete("/evals/suites/:id", authorize("evals:write"), async (req, res, next) => {
   try {
     const id = req.params["id"]!;
-    const r = await (await evalSuitesColl()).deleteOne({ _id: id });
-    if (r.deletedCount === 0) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    const existing = await (await evalSuitesColl()).findOne({ _id: id });
+    if (!existing) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!(await agentReadable(res.locals.principal, existing.agentName))) return res.status(403).json({ error: { code: "NOT_OWNER" } });
+    await (await evalSuitesColl()).deleteOne({ _id: id });
     await (await evalRunsColl()).deleteMany({ suiteId: id }); // cascade
     res.json({ ok: true });
   } catch (err) {
@@ -135,11 +154,12 @@ evalsRouter.delete("/evals/suites/:id", async (req, res, next) => {
 });
 
 // ── Case generation (probe the agent + LLM-synthesize cases) ───────────────
-evalsRouter.post("/evals/generate", async (req, res, next) => {
+evalsRouter.post("/evals/generate", authorize("evals:write"), async (req, res, next) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const agentName = String(body["agentName"] ?? "").trim();
     if (!agentName) return res.status(400).json({ error: { code: "BAD_REQUEST", message: "`agentName` required" } });
+    if (!(await agentReadable(res.locals.principal, agentName))) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     const count = typeof body["count"] === "number" ? (body["count"] as number) : 5;
     const focus = typeof body["focus"] === "string" ? (body["focus"] as string) : undefined;
     const cases = await generateCases(agentName, count, focus);
@@ -150,10 +170,11 @@ evalsRouter.post("/evals/generate", async (req, res, next) => {
 });
 
 // ── Runs ──────────────────────────────────────────────────────────────────
-evalsRouter.post("/evals/suites/:id/run", async (req, res, next) => {
+evalsRouter.post("/evals/suites/:id/run", authorize("evals:write"), async (req, res, next) => {
   try {
     const suite = await (await evalSuitesColl()).findOne({ _id: req.params["id"]! });
     if (!suite) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!(await agentReadable(res.locals.principal, suite.agentName))) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     if (!suite.cases.length) {
       return res.status(400).json({ error: { code: "EMPTY_SUITE", message: "suite has no cases" } });
     }
@@ -164,21 +185,23 @@ evalsRouter.post("/evals/suites/:id/run", async (req, res, next) => {
   }
 });
 
-evalsRouter.get("/evals/runs", async (req, res, next) => {
+evalsRouter.get("/evals/runs", authorize("evals:read"), async (req, res, next) => {
   try {
     const suite = typeof req.query["suite"] === "string" ? (req.query["suite"] as string) : undefined;
     const filter = suite ? { suiteId: suite } : {};
     const runs = await (await evalRunsColl()).find(filter).sort({ startedAt: -1 }).limit(50).toArray();
-    res.json({ runs });
+    const { all, names } = await listReadableAgentNames(res.locals.principal);
+    res.json({ runs: all ? runs : runs.filter((r) => names.has(r.agentName)) });
   } catch (err) {
     next(err);
   }
 });
 
-evalsRouter.get("/evals/runs/:id", async (req, res, next) => {
+evalsRouter.get("/evals/runs/:id", authorize("evals:read"), async (req, res, next) => {
   try {
     const run = await (await evalRunsColl()).findOne({ _id: req.params["id"]! });
     if (!run) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!(await agentReadable(res.locals.principal, run.agentName))) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     res.json(run);
   } catch (err) {
     next(err);

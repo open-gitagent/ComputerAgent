@@ -1,4 +1,4 @@
-import { GitBranch, FolderTree, Code2, MessageSquare, Activity, Clock, ExternalLink, Trash2 } from "lucide-react";
+import { GitBranch, FolderTree, Code2, MessageSquare, Activity, Clock, ExternalLink, Trash2, Archive, ArchiveRestore } from "lucide-react";
 import { type Agent, displaySource } from "../api.ts";
 import { Badge } from "./ui/badge.tsx";
 import { cn } from "../lib/cn.ts";
@@ -36,12 +36,18 @@ export function AgentCard({
   selected,
   onClick,
   onDelete,
+  onArchive,
+  onUnarchive,
 }: {
   agent: Agent;
   selected: boolean;
   onClick: () => void;
   /** When provided, a trash affordance shows on hover (used by the registry). */
   onDelete?: () => void;
+  /** When provided (active agents), an archive affordance shows on hover. */
+  onArchive?: () => void;
+  /** When provided (archived agents), an unarchive affordance shows on hover. */
+  onUnarchive?: () => void;
 }) {
   // Show the registered name exactly as typed — never derive it from the
   // source URL. The source/repo still renders on its own line below.
@@ -58,24 +64,59 @@ export function AgentCard({
       className={cn(
         "group relative w-full text-left rounded-xl border bg-background transition overflow-hidden shadow-sm",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        a.archived && "opacity-60 saturate-50",
         selected
           ? "border-primary/50 ring-1 ring-primary/30 shadow-md shadow-primary/10"
           : "border-border/60 hover:border-border hover:bg-muted/30 hover:shadow-md",
       )}
     >
-      {onDelete && (
-        <span
-          role="button"
-          tabIndex={0}
-          title="Delete agent"
-          aria-label={`Delete ${a.name}`}
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onDelete(); }
-          }}
-          className="absolute right-2 top-2 z-10 h-6 w-6 grid place-items-center rounded-md text-muted-foreground/70 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-opacity cursor-pointer"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
+      {(onDelete || onArchive || onUnarchive) && (
+        <span className="absolute right-2 top-2 z-10 flex items-center gap-1">
+          {onArchive && (
+            <span
+              role="button"
+              tabIndex={0}
+              title="Archive agent"
+              aria-label={`Archive ${a.name}`}
+              onClick={(e) => { e.stopPropagation(); onArchive(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onArchive(); }
+              }}
+              className="h-6 w-6 grid place-items-center rounded-md text-muted-foreground/70 opacity-0 group-hover:opacity-100 hover:bg-amber-500/10 hover:text-amber-500 transition-opacity cursor-pointer"
+            >
+              <Archive className="h-3.5 w-3.5" />
+            </span>
+          )}
+          {onUnarchive && (
+            <span
+              role="button"
+              tabIndex={0}
+              title="Unarchive agent"
+              aria-label={`Unarchive ${a.name}`}
+              onClick={(e) => { e.stopPropagation(); onUnarchive(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onUnarchive(); }
+              }}
+              className="h-6 w-6 grid place-items-center rounded-md text-muted-foreground/70 opacity-0 group-hover:opacity-100 hover:bg-emerald-500/10 hover:text-emerald-500 transition-opacity cursor-pointer"
+            >
+              <ArchiveRestore className="h-3.5 w-3.5" />
+            </span>
+          )}
+          {onDelete && (
+            <span
+              role="button"
+              tabIndex={0}
+              title="Delete agent"
+              aria-label={`Delete ${a.name}`}
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onDelete(); }
+              }}
+              className="h-6 w-6 grid place-items-center rounded-md text-muted-foreground/70 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-opacity cursor-pointer"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </span>
+          )}
         </span>
       )}
 
@@ -116,6 +157,11 @@ export function AgentCard({
               {!a.sandboxCapable && (
                 <Badge variant="outline" className="shrink-0 h-4 text-[9px] uppercase tracking-wider px-1.5 border-amber-500/40 text-amber-500" title="one-shot — no memory across turns">
                   1-shot
+                </Badge>
+              )}
+              {a.archived && (
+                <Badge variant="outline" className="shrink-0 h-4 text-[9px] uppercase tracking-wider px-1.5 border-muted-foreground/40 text-muted-foreground" title="archived — cannot run until unarchived">
+                  archived
                 </Badge>
               )}
             </div>

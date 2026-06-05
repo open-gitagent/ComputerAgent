@@ -1,112 +1,37 @@
 // Combined server: AgentOS dashboard API + observability read API.
 //
-// Surface:
-//   /agentos/api/login, /logout, /me   — PUBLIC (auth.ts)
-//   /agentos/api/health                — PUBLIC
-//   /v1/health                         — PUBLIC
-//   /agentos/api/*                     — GATED (cookie OR Basic)
-//   /v1/*                              — GATED (cookie OR Basic)
+// Surface (see app.ts for the full tree):
+//   /agentos/api/v1/login, /logout, /me   — PUBLIC
+//   /agentos/api/v1/health, /v1/health     — PUBLIC
+//   /agentos/api/v1/*                      — GATED (dashboard)
+//   /v1/*                                  — GATED (observability)
+//   /agentos/api/ingest/*, /agentos/api/keys/*  — service bearer guards
 //
 // Talks to:
 //   - ComputerAgent harness (CA_BASE) for sandbox/run/artifact
 //   - MongoDB / DocumentDB (MONGO_URL) for registry, threads, sessions, logs,
 //     schedules
-//   - Trace store, selected by TRACE_BACKEND env var:
-//       - "clickhouse" (default) → CLICKHOUSE_URL
-//       - "newrelic"             → NerdGraph (NEW_RELIC_USER_API_KEY +
-//                                  NEW_RELIC_ACCOUNT_ID + NEW_RELIC_REGION)
+//   - Trace store, selected by TRACE_BACKEND env var (clickhouse | newrelic)
 //
-// Hostable as one Docker container; harness stays on the host (substrate
-// isolation needs root-ish privileges).
+// This file owns only env + listen + one-time bootstrap; the Express wiring
+// lives in app.ts (buildApp).
 
 // MUST be the first import — loads .env files before anything reads process.env.
 import "./load-env.js";
 
-import express, { type ErrorRequestHandler } from "express";
-import cookieParser from "cookie-parser";
-import cors from "cors";
-
-import { requireAuth } from "./auth.js";
-import { requireIngestAuth } from "./ingest-auth.js";
-import { authRouter } from "./routes/auth.js";
-import { healthRouter } from "./routes/health.js";
-import { ingestRouter } from "./routes/ingest.js";
-import { agentsRouter } from "./routes/agents.js";
-import { logsRouter } from "./routes/logs.js";
-import { sessionsRouter } from "./routes/sessions.js";
-import { schedulesRouter } from "./routes/schedules.js";
-import { chatRouter } from "./routes/chat.js";
-import { runRouter } from "./routes/run.js";
-import { completionRouter } from "./routes/completion.js";
-import { policiesRouter } from "./routes/policies.js";
-import { evalsRouter } from "./routes/evals.js";
-import { obsTracesRouter } from "./routes/obs-traces.js";
-import { obsDashboardRouter } from "./routes/obs-dashboard.js";
-import { obsFieldsRouter } from "./routes/obs-fields.js";
+import { buildApp } from "./app.js";
 
 import { pingClickHouse } from "./clickhouse.js";
 import { pingNewRelic } from "./new-relic.js";
 import { pingMongo, migrateLegacyWebSessions, migrateRegistryObjectIds, ensureRegistryIndexes } from "./mongo.js";
+import { apiKeyStore } from "./stores/api-key-store.js";
+import { roleStore } from "./stores/role-store.js";
 import { ensureFieldValueMVs } from "./migrations.js";
 import { startScheduler } from "./scheduler.js";
 import { seedDefaultAgentIfRequested } from "./agent-defs.js";
 import { traceBackend } from "./trace-backend.js";
 
-const app = express();
-
-// CORS_ORIGIN unset → same-origin only (the SPA is proxied through the same
-// host in dev and prod). Set to a CSV to allow specific cross-origin clients.
-const corsOrigins = (process.env["CORS_ORIGIN"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-app.use(cors({
-  origin: corsOrigins.length ? corsOrigins : false,
-  credentials: true,
-}));
-// Telemetry ingest — mounted BEFORE the 1mb global JSON parser so it can take
-// a larger batch body, and before requireAuth so the headless SDK uses its own
-// bearer-token guard instead of the dashboard's cookie/Basic auth.
-app.use(
-  "/agentos/api/ingest",
-  express.json({ limit: "5mb" }),
-  requireIngestAuth,
-  ingestRouter,
-);
-
-app.use(express.json({ limit: "1mb" }));
-app.use(cookieParser());
-
-// PUBLIC — health + auth. Mounted at /agentos/api/* AND /v1/health for
-// drop-in compatibility with anything that used to hit obs-api directly.
-app.use("/agentos/api", authRouter);
-app.use("/agentos/api", healthRouter);
-app.use("/v1", healthRouter);
-
-// EVERYTHING ELSE — gate behind requireAuth.
-app.use("/agentos/api", requireAuth);
-app.use("/v1", requireAuth);
-
-// Dashboard surface
-app.use("/agentos/api", agentsRouter);    // /agents, /agents/by-source, /agents/register, PATCH/DELETE
-app.use("/agentos/api", logsRouter);      // /logs (GET/POST)
-app.use("/agentos/api", sessionsRouter);  // /sessions, /sessions/:id
-app.use("/agentos/api", schedulesRouter); // /schedules CRUD + /:id/run-now
-app.use("/agentos/api", chatRouter);      // /agents/:name/chat-sandbox, sandbox SSE proxy, artifact
-app.use("/agentos/api", runRouter);       // /agents/:name/run (one-shot SSE)
-app.use("/agentos/api", completionRouter); // /completion (agent-less Claude chat SSE)
-app.use("/agentos/api", policiesRouter);  // /policies, /opa-policies (stubs)
-app.use("/agentos/api", evalsRouter);     // /evals/suites, /evals/runs
-
-// Observability surface
-app.use("/v1", obsTracesRouter);          // /traces (search before list, list before :id)
-app.use("/v1", obsDashboardRouter);       // /dashboard
-app.use("/v1", obsFieldsRouter);          // /fields, /fields/:name/values
-
-const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
-  const status = typeof err?.status === "number" ? err.status : 500;
-  const message = typeof err?.message === "string" ? err.message : "internal error";
-  if (status >= 500) console.error("[agentos-server]", err);
-  res.status(status).json({ error: typeof err?.code === "string" ? { code: err.code, message } : message });
-};
-app.use(errorHandler);
+const app = buildApp();
 
 // Use AGENTOS_PORT (not PORT) so the harness and this server can coexist in
 // one .env file — the harness uses PORT for its own listener.
@@ -115,15 +40,26 @@ app.listen(PORT, async () => {
   console.log(`[agentos-server] listening on http://localhost:${PORT}`);
   console.log(`[agentos-server] CA_BASE=${process.env["CA_BASE"] ?? "http://127.0.0.1:8787"}`);
 
-  // The telemetry ingest route bypasses the dashboard's cookie/Basic auth and
-  // mutates dashboard-visible data (registry/logs/sessions). When its token is
-  // unset it is fully open — fine behind a network policy / on loopback, but a
-  // sharp edge on an exposed pod. Warn loudly so it's a deliberate choice.
+  // The telemetry ingest route bypasses the dashboard's auth and mutates
+  // dashboard-visible data (registry/logs/sessions). When its token is unset it
+  // is fully open — fine behind a network policy / on loopback, but a sharp edge
+  // on an exposed pod. Warn loudly so it's a deliberate choice.
   if (!process.env["AGENTOS_INGEST_TOKEN"]) {
     console.warn(
       "[agentos-server] WARNING: AGENTOS_INGEST_TOKEN unset — POST /agentos/api/ingest/events is OPEN " +
         "(anonymous writes to agent_registry/agent_logs/sessions/agent_messages). " +
         "Set AGENTOS_INGEST_TOKEN on any network-exposed deployment.",
+    );
+  }
+
+  // API-key introspection fails CLOSED: when the secret is unset the endpoint
+  // returns 503, so the ComputerAgent server cannot validate keys and API-key
+  // auth is effectively unavailable. Flag it so it's a deliberate choice.
+  if (!process.env["AGENTOS_INTROSPECTION_SECRET"]) {
+    console.warn(
+      "[agentos-server] WARNING: AGENTOS_INTROSPECTION_SECRET unset — POST /agentos/api/keys/introspect " +
+        "returns 503, so the ComputerAgent server cannot validate API keys. " +
+        "Set it (and the same value on the ComputerAgent server) to enable API-key auth.",
     );
   }
 
@@ -168,6 +104,8 @@ app.listen(PORT, async () => {
         console.log(`[agentos-server] migrated registry ids — registry:${m.registry} pins:${m.pins} policies:${m.policies}`);
       }
       await ensureRegistryIndexes();
+      await apiKeyStore.ensureIndexes();
+      await roleStore.seedDefaults(); // idempotent: agentos-admin/editor/viewer
     } catch (err) {
       console.warn("[agentos-server] registry id migration/index failed:", (err as Error).message);
     }

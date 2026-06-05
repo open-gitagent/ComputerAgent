@@ -35,6 +35,8 @@ export type NewAgentLog = Omit<AgentLogEntry, "_id" | "ts"> & { _id?: string; ts
 
 export interface AgentLogFilter {
   bot?: string;
+  /** Restrict to this set of bots (group-scoped reads). Ignored if empty. */
+  bots?: string[];
   source?: "slack" | "web" | "schedule";
   limit?: number;
   before?: Date;
@@ -85,6 +87,7 @@ export const agentLogStore = {
     const limit = Math.min(Math.max(filter.limit ?? 50, 1), 500);
     const q: Record<string, unknown> = {};
     if (filter.bot) q["bot"] = filter.bot;
+    else if (filter.bots) q["bot"] = { $in: filter.bots };
     if (filter.source) q["source"] = filter.source;
     if (filter.before) q["ts"] = { $lt: filter.before };
     return (await coll())

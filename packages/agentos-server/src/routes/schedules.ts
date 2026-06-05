@@ -9,8 +9,10 @@ import {
   type ScheduleKind,
 } from "../stores/schedule-store.js";
 import { agentLogStore } from "../stores/agent-log-store.js";
-import { resolveAgent, resolveAgentById } from "../agent-defs.js";
+import { resolveAgent, resolveAgentById, listReadableAgentNames } from "../agent-defs.js";
 import { runAgentOnce } from "../scheduler.js";
+import { authorize } from "../auth/authorize.js";
+import { canRead } from "../auth/ownership.js";
 
 export const schedulesRouter: IRouter = Router();
 
@@ -18,22 +20,27 @@ const withDesc = <T extends { kind: ScheduleKind; intervalMinutes?: number; hour
   s: T,
 ): T & { description: string } => ({ ...s, description: describeSchedule(s as any) });
 
-schedulesRouter.get("/schedules", async (req, res, next) => {
+schedulesRouter.get("/schedules", authorize("schedules:read"), async (req, res, next) => {
   try {
     // Scope by agent id → name (schedules key on agentName).
     const agentId = typeof req.query["agentId"] === "string" ? req.query["agentId"] : undefined;
     let agentName: string | undefined;
     if (agentId) {
       const agent = await resolveAgentById(agentId);
-      if (!agent) return res.json({ schedules: [] });
+      if (!agent || !canRead(res.locals.principal, agent)) return res.json({ schedules: [] });
       agentName = agent.name;
     }
-    const list = await scheduleStore.list(agentName);
+    let list = await scheduleStore.list(agentName);
+    if (!agentName) {
+      // Hard isolation — only schedules for agents the caller's groups own.
+      const { all, names } = await listReadableAgentNames(res.locals.principal);
+      if (!all) list = list.filter((s) => names.has(s.agentName));
+    }
     res.json({ schedules: list.map(withDesc) });
   } catch (err) { next(err); }
 });
 
-schedulesRouter.post("/schedules", async (req, res, next) => {
+schedulesRouter.post("/schedules", authorize("schedules:write"), async (req, res, next) => {
   try {
     const b = (req.body ?? {}) as Record<string, any>;
     // Body carries the agent id; resolve to the name the schedule store stores.
@@ -41,6 +48,7 @@ schedulesRouter.post("/schedules", async (req, res, next) => {
     if (!agent) {
       return res.status(400).json({ error: { code: "UNKNOWN_AGENT" } });
     }
+    if (!canRead(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     const agentName = agent.name;
     if (!b.prompt || !String(b.prompt).trim()) {
       return res.status(400).json({ error: { code: "MISSING_PROMPT" } });
@@ -59,11 +67,13 @@ schedulesRouter.post("/schedules", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-schedulesRouter.patch("/schedules/:id", async (req, res, next) => {
+schedulesRouter.patch("/schedules/:id", authorize("schedules:write"), async (req, res, next) => {
   try {
     const id = req.params["id"]!;
     const existing = await scheduleStore.get(id);
     if (!existing) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    const owner = await resolveAgent(existing.agentName);
+    if (owner && !canRead(res.locals.principal, owner)) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     const b = (req.body ?? {}) as Record<string, any>;
     const fields: Record<string, unknown> = {};
     if (typeof b.enabled === "boolean") fields["enabled"] = b.enabled;
@@ -90,20 +100,21 @@ schedulesRouter.patch("/schedules/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-schedulesRouter.delete("/schedules/:id", async (req, res, next) => {
+schedulesRouter.delete("/schedules/:id", authorize("schedules:delete"), async (req, res, next) => {
   try {
     await scheduleStore.delete(req.params["id"]!);
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
 
-schedulesRouter.post("/schedules/:id/run-now", async (req, res, next) => {
+schedulesRouter.post("/schedules/:id/run-now", authorize("schedules:write"), async (req, res, next) => {
   try {
     const id = req.params["id"]!;
     const s = await scheduleStore.get(id);
     if (!s) return res.status(404).json({ error: { code: "NOT_FOUND" } });
     const agent = await resolveAgent(s.agentName);
     if (!agent) return res.status(400).json({ error: { code: "UNKNOWN_AGENT" } });
+    if (!canRead(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     await scheduleStore.update(s._id, { lastRunAt: new Date(), lastStatus: "running" });
     void (async () => {
       const result = await runAgentOnce(agent, s.prompt).catch((e: unknown) => ({

@@ -42,6 +42,14 @@ export interface Agent {
   origin?: "in-memory" | "registry";
   registeredBy?: string | null;
   lastSeen?: string | null;
+  /** True when the agent is archived: kept (with all its history) but refused
+   *  by every execution path. The UI lists archived agents in a separate,
+   *  greyed section and disables chat/run for them. Unset/false ⇒ active. */
+  archived?: boolean;
+  archivedAt?: string | null;
+  /** Owning group (visibility) + owning user id (mutate/delete). */
+  ownerGroup?: string | null;
+  ownerUser?: string | null;
 }
 
 export interface RegisterAgentInput {
@@ -51,6 +59,8 @@ export interface RegisterAgentInput {
   source?: string;
   model?: string;
   registeredBy?: string;
+  /** The group the new agent belongs to (one of the creator's groups). */
+  ownerGroup?: string;
 }
 
 /** Result of `displaySource(agent.source)`. Drives `<SourceBadge>` rendering. */
@@ -219,29 +229,134 @@ export interface NewSchedule {
   minuteUtc?: number;
 }
 
+// API keys — minted + stored (hashed) by the server; the plaintext is returned
+// exactly once on create. List/responses are redacted (prefix + last4 only).
+export interface ApiKey {
+  _id: string;
+  prefix: string;
+  last4: string;
+  label: string;
+  /** Display label of the group/role the key acts as. */
+  group?: string | null;
+  /** Roles the key inherits → resolved to permissions via the role map. */
+  roleIds?: string[];
+  scopes?: string[]; // DEPRECATED
+  createdBy: string;
+  createdAt: string;
+  expiresAt?: string | null;
+  lastUsedAt?: string | null;
+  revoked: boolean;
+  revokedAt?: string | null;
+}
+
+// Current principal, from GET /me. Drives the SPA's permission gating.
+export interface Me {
+  id: string; // principal id (Keycloak sub) — compare to resource ownerUser
+  user: string;
+  displayName?: string | null;
+  source: "oidc" | "api-key" | "cookie" | "dev";
+  kind: "user" | "service";
+  roles: string[];
+  groups: string[];
+  permissions: string[];
+}
+
+// Editable role → permission map (Settings → Roles).
+export interface Role {
+  _id: string;
+  description: string;
+  permissions: string[];
+  builtin: boolean;
+  updatedAt?: string;
+}
+export interface PermissionDef {
+  key: string;
+  description: string;
+}
+
+// Groups — read-only, sourced from Keycloak (Okta/Keycloak own groups + membership).
+export interface Group {
+  id: string;
+  name: string;
+  path: string;
+}
+export interface GroupMember {
+  id: string;
+  username: string | null;
+  email: string | null;
+  name: string | null;
+  roles: string[];
+}
+
+// ── Auth: reactive token refresh ─────────────────────────────────────────────
+// The BFF session cookie is short-lived (it tracks the Keycloak access-token
+// expiry, ~5 min). When a dashboard request 401s we silently POST /auth/refresh
+// (which rotates the server-held refresh token and re-signs the cookie) and
+// replay the original request once. All concurrent 401s share ONE in-flight
+// refresh — refresh tokens rotate and can be spent only once, so a stampede
+// would invalidate itself. On a hard refresh failure the session is truly gone:
+// we notify AuthContext (→ SSO sign-in screen).
+
+let refreshInFlight: Promise<boolean> | null = null;
+let onAuthLost: (() => void) | null = null;
+
+/** AuthContext registers a callback here to flip to the anonymous/login state
+ *  when the refresh token is dead (idle timeout / revocation / logout). */
+export function setAuthLostHandler(fn: (() => void) | null): void {
+  onAuthLost = fn;
+}
+
+function tryRefresh(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = fetch(`/api/v1/auth/refresh`, {
+      method: "POST",
+      headers: { accept: "application/json" },
+      credentials: "include",
+    })
+      .then((r) => r.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
+}
+
+/** fetch against the dashboard API with credentials. On 401, refresh once and
+ *  replay; if refresh fails, signal auth-lost and return the 401 response. */
+async function authedFetch(path: string, init: RequestInit): Promise<Response> {
+  const url = `/api/v1${path}`;
+  const opts: RequestInit = { credentials: "include", ...init };
+  let r = await fetch(url, opts);
+  if (r.status === 401) {
+    const ok = await tryRefresh();
+    if (ok) {
+      r = await fetch(url, opts);
+    } else {
+      onAuthLost?.();
+    }
+  }
+  return r;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
-  const r = await fetch(`/api${path}`, {
-    headers: { accept: "application/json" },
-    credentials: "include",
-  });
+  const r = await authedFetch(path, { headers: { accept: "application/json" } });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
   return r.json() as Promise<T>;
 }
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(`/api${path}`, {
+  const r = await authedFetch(path, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
-    credentials: "include",
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
   return r.json() as Promise<T>;
 }
 async function reqJSON<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const r = await fetch(`/api${path}`, {
+  const r = await authedFetch(path, {
     method,
     headers: { "content-type": "application/json", accept: "application/json" },
-    credentials: "include",
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
@@ -345,6 +460,13 @@ export const api = {
     reqJSON<DeleteResult>("DELETE", `/agents/${encodeURIComponent(agentId)}`),
   patchAgent: (agentId: string, fields: Partial<Omit<RegisterAgentInput, "name">>) =>
     reqJSON<{ ok: boolean }>("PATCH", `/agents/${encodeURIComponent(agentId)}`, fields),
+  archiveAgent: (agentId: string) =>
+    reqJSON<{ ok: boolean; disposed: number; schedulesDisabled: number; warnings: string[] }>(
+      "POST",
+      `/agents/${encodeURIComponent(agentId)}/archive`,
+    ),
+  unarchiveAgent: (agentId: string) =>
+    reqJSON<{ ok: boolean }>("POST", `/agents/${encodeURIComponent(agentId)}/unarchive`),
   logs: (agentId?: string, limit = 100) =>
     getJSON<{ logs: LogEntry[] }>(`/logs?limit=${limit}${agentId ? `&agentId=${encodeURIComponent(agentId)}` : ""}`).then((d) => d.logs),
   sessions: (agentId?: string, limit = 100) =>
@@ -363,9 +485,9 @@ export const api = {
   logWebTurn: (entry: { bot: string; sessionId: string; query: string; reply: string; ok: boolean }) =>
     postJSON<{ ok: boolean }>("/logs", { ...entry, requester: "web" }),
   // SSE chat — caller reads the stream. Path goes through the same /api proxy.
-  chatStreamUrl: (sandboxId: string) => `/api/sandboxes/${encodeURIComponent(sandboxId)}/chat`,
+  chatStreamUrl: (sandboxId: string) => `/api/v1/sandboxes/${encodeURIComponent(sandboxId)}/chat`,
   // SSE one-shot run (deepagents). Server builds the /run body from {message}.
-  runStreamUrl: (agentId: string) => `/api/agents/${encodeURIComponent(agentId)}/run`,
+  runStreamUrl: (agentId: string) => `/api/v1/agents/${encodeURIComponent(agentId)}/run`,
   // Schedules
   schedules: (agentId?: string) =>
     getJSON<{ schedules: Schedule[] }>(`/schedules${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`).then((d) => d.schedules),
@@ -396,6 +518,45 @@ export const api = {
     reqJSON<OPAPolicyDoc | { success?: boolean }>("PUT", `/opa-policies/${encodeURIComponent(id)}`, body),
   deleteOpaPolicy: (id: string) =>
     reqJSON<{ success?: boolean }>("DELETE", `/opa-policies/${encodeURIComponent(id)}`),
+
+  // Current principal + session.
+  auth: {
+    me: () => getJSON<Me>("/me"),
+    logout: () => postJSON<{ ok: boolean; logoutUrl?: string }>("/logout", {}),
+    loginUrl: () => "/api/v1/auth/login",
+  },
+
+  // Roles — editable role→permission map + the permission catalog.
+  roles: {
+    list: () => getJSON<{ roles: Role[] }>("/roles").then((d) => d.roles),
+    permissions: () => getJSON<{ permissions: PermissionDef[] }>("/permissions").then((d) => d.permissions),
+    create: (body: { name: string; description?: string; permissions: string[] }) =>
+      postJSON<{ role: Role }>("/roles", body).then((d) => d.role),
+    update: (id: string, body: { description?: string; permissions?: string[] }) =>
+      reqJSON<{ role: Role }>("PUT", `/roles/${encodeURIComponent(id)}`, body).then((d) => d.role),
+    remove: (id: string) => reqJSON<{ ok: boolean }>("DELETE", `/roles/${encodeURIComponent(id)}`),
+  },
+
+  // Groups — read-only window into Keycloak (creation/membership live in Okta/KC).
+  groups: {
+    list: () => getJSON<{ groups: Group[] }>("/groups").then((d) => d.groups),
+    members: (id: string) =>
+      getJSON<{ members: GroupMember[]; truncated: boolean }>(`/groups/${encodeURIComponent(id)}/members`),
+  },
+
+  // API keys — mint (plaintext returned once), list (redacted), revoke. A key is
+  // minted bound to a group/role and inherits its permissions.
+  apiKeys: {
+    list: () => getJSON<{ apiKeys: ApiKey[] }>("/api-keys").then((d) => d.apiKeys),
+    create: (label: string, opts?: { expiresAt?: string | null; group?: string | null; roleIds?: string[] }) =>
+      postJSON<{ key: string; apiKey: ApiKey }>("/api-keys", {
+        label,
+        ...(opts?.expiresAt ? { expiresAt: opts.expiresAt } : {}),
+        ...(opts?.group ? { group: opts.group } : {}),
+        ...(opts?.roleIds?.length ? { roleIds: opts.roleIds } : {}),
+      }),
+    revoke: (id: string) => reqJSON<{ ok: boolean }>("DELETE", `/api-keys/${encodeURIComponent(id)}`),
+  },
 
   // Evals — suite CRUD + run trigger + run readback.
   evals: {

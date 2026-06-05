@@ -89,6 +89,12 @@ export function startScheduler(tickMs = 60_000): () => void {
       await scheduleStore.update(sch._id, { lastStatus: "error", lastResult: `unknown agent: ${sch.agentName}` });
       return;
     }
+    // Defense-in-depth: archiving disables an agent's schedules, but a schedule
+    // created/re-enabled out-of-band must still never fire an archived agent.
+    if (agent.archived) {
+      await scheduleStore.update(sch._id, { lastStatus: "error", lastResult: "agent archived" });
+      return;
+    }
     try {
       const res = await runAgentOnce(agent, sch.prompt);
       await scheduleStore.update(sch._id, {

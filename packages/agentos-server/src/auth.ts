@@ -13,6 +13,11 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 export const SESSION_COOKIE = "agentos_session";
 export const SESSION_MAX_AGE_SEC = 7 * 24 * 60 * 60; // 7 days
 
+// BFF refresh token, held server-side only (httpOnly, signed). The browser
+// never sees it; POST /auth/refresh trades it for a fresh access token and a
+// re-signed session snapshot. Sized to Keycloak's refresh_expires_in.
+export const REFRESH_COOKIE = "agentos_refresh";
+
 const SESSION_SECRET =
   process.env["AGENTOS_SESSION_SECRET"] || randomBytes(32).toString("hex");
 
@@ -33,6 +38,67 @@ export function verifySession(cookie: string): { user: string; exp: number } | n
   const exp = Number.parseInt(expStr, 10);
   if (!Number.isFinite(exp) || Date.now() > exp) return null;
   return { user, exp };
+}
+
+// ── Generic signed cookie (HMAC over base64url JSON) ─────────────────────────
+// Used for the BFF session snapshot and the short-lived OIDC transaction
+// cookie. Value shape: `<base64url(json)>.<base64url(hmac)>`.
+
+export function signJson(obj: unknown): string {
+  const json = Buffer.from(JSON.stringify(obj)).toString("base64url");
+  const sig = createHmac("sha256", SESSION_SECRET).update(json).digest("base64url");
+  return `${json}.${sig}`;
+}
+
+export function verifyJson<T = unknown>(cookie: string): T | null {
+  const parts = cookie.split(".");
+  if (parts.length !== 2) return null;
+  const [json, sig] = parts as [string, string];
+  const expected = createHmac("sha256", SESSION_SECRET).update(json).digest("base64url");
+  const a = Buffer.from(sig, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try {
+    return JSON.parse(Buffer.from(json, "base64url").toString("utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+/** The principal snapshot carried in the BFF `agentos_session` cookie. */
+export interface SessionSnapshot {
+  sub: string;
+  email?: string;
+  name?: string;
+  roles: string[];
+  groups: string[];
+}
+
+export function signSessionSnapshot(s: SessionSnapshot, expMs: number): string {
+  return signJson({ ...s, exp: expMs });
+}
+
+export function verifySessionSnapshot(cookie: string): (SessionSnapshot & { exp: number }) | null {
+  const v = verifyJson<SessionSnapshot & { exp: number }>(cookie);
+  if (!v || typeof v.exp !== "number" || Date.now() > v.exp) return null;
+  return v;
+}
+
+/** The refresh token + its absolute expiry, carried in the `agentos_refresh`
+ *  cookie. HMAC-signed over the same secret as the session snapshot. */
+export interface RefreshSnapshot {
+  rt: string;
+  exp: number;
+}
+
+export function signRefresh(rt: string, expMs: number): string {
+  return signJson({ rt, exp: expMs } satisfies RefreshSnapshot);
+}
+
+export function verifyRefresh(cookie: string): RefreshSnapshot | null {
+  const v = verifyJson<RefreshSnapshot>(cookie);
+  if (!v || typeof v.rt !== "string" || typeof v.exp !== "number" || Date.now() > v.exp) return null;
+  return v;
 }
 
 export function checkBasic(header: string | undefined): string | null {

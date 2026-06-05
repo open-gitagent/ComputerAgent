@@ -1,41 +1,14 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { LoginPage } from "./LoginPage.tsx";
+import { useAuth } from "../context/AuthContext.tsx";
 import { Loader2 } from "lucide-react";
 
-type State =
-  | { kind: "checking" }
-  | { kind: "anon" }
-  | { kind: "auth"; user: string };
-
 /**
- * Wraps the app. On mount, calls /api/me to determine whether the user is
- * already authenticated (cookie or backwards-compat Basic). If anonymous,
- * shows the LoginPage. The cookie is httpOnly so we ALWAYS round-trip to
- * the server for the truth — never trust localStorage for auth state.
+ * Gates the app on the auth state from AuthContext (GET /me). While checking,
+ * shows a spinner; anonymous → the SSO sign-in screen; authenticated → the app.
  */
 export function AuthGate({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<State>({ kind: "checking" });
-
-  useEffect(() => {
-    void check();
-  }, []);
-
-  async function check() {
-    setState({ kind: "checking" });
-    try {
-      const res = await fetch("/api/me", { credentials: "include" });
-      if (res.ok) {
-        const data = (await res.json()) as { user: string };
-        setState({ kind: "auth", user: data.user });
-      } else {
-        setState({ kind: "anon" });
-      }
-    } catch {
-      // Backend unreachable — treat as anon so the login form gives a clear
-      // error rather than spinning forever.
-      setState({ kind: "anon" });
-    }
-  }
+  const { state } = useAuth();
 
   if (state.kind === "checking") {
     return (
@@ -45,7 +18,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
   if (state.kind === "anon") {
-    return <LoginPage onSuccess={() => void check()} />;
+    return <LoginPage />;
   }
   return <>{children}</>;
 }
