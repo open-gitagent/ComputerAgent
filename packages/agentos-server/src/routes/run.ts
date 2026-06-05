@@ -4,7 +4,7 @@
 import { Router, type Router as IRouter } from "express";
 import { caAuthHeader } from "../auth.js";
 import { caBase, pipeUpstream } from "../upstream.js";
-import { resolveAgent, runBodyFor } from "../agent-defs.js";
+import { resolveAgent, runBodyFor, srsPolicyForAgent } from "../agent-defs.js";
 
 export const runRouter: IRouter = Router();
 
@@ -22,6 +22,10 @@ runRouter.post("/agents/:name/run", async (req, res, next) => {
       const status = (err as any)?.status ?? 503;
       return res.status(status).json({ error: { code: "AGENT_CONFIG", message: (err as Error).message } });
     }
+    // Attach the agent's bound SRS policy (if any). Enforced by the harness's
+    // always-on PreToolUse hook, so bypassPermissions autonomy is preserved.
+    const policy = await srsPolicyForAgent(agent.name);
+    if (policy) body.policy = policy;
 
     const upstream = await fetch(`${caBase()}/run`, {
       method: "POST",

@@ -57,6 +57,7 @@ export async function runSession(
         workdir: session.workdir,
         envs: session.envs,
         userMessageQueue: session.userMessages(),
+        policyActive: !!session.policyDecider,
         onPermissionRequest: async (req) => {
           logger.info("session.permission_request", {
             sessionId: session.sessionId,

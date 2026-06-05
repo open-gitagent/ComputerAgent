@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { caAuthHeader } from "../auth.js";
 import { caBase, pipeUpstream } from "../upstream.js";
 import { chatPinsColl, chatSessionsColl } from "../mongo.js";
-import { hasResolvableSource, resolveAgent, sandboxBodyFor, sandboxCapable } from "../agent-defs.js";
+import { hasResolvableSource, resolveAgent, sandboxBodyFor, sandboxCapable, srsPolicyForAgent } from "../agent-defs.js";
 
 export const chatRouter: IRouter = Router();
 
@@ -66,6 +66,11 @@ chatRouter.post("/agents/:name/chat-sandbox", async (req, res, next) => {
         const status = (err as any)?.status ?? 503;
         return { ok: false as const, status, code: "AGENT_CONFIG", detail: (err as Error).message };
       }
+      // Attach the agent's bound SRS policy (if any). The harness enforces it via
+      // an always-on PreToolUse hook, so the agent keeps running with its normal
+      // bypassPermissions autonomy — no permission-mode override needed.
+      const policy = await srsPolicyForAgent(agent.name);
+      if (policy) body.policy = policy;
       const r = await fetch(`${caBase()}/sandboxes`, {
         method: "POST",
         headers: { "content-type": "application/json", ...caAuthHeader() },

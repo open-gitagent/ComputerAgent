@@ -256,6 +256,8 @@ interface RunBody {
    * are written once into the workdir, every engine sees them natively.
    */
   attachments?: Array<{ path: string; content: string; encoding?: "utf8" | "base64" }>;
+  /** Per-tool-call policy enforcement (forwarded to the harness decider). */
+  policy?: { kind: "srs"; endpoint: string; apiKey: string; policyId: string; principalId: string };
 }
 
 interface ActiveRun {
@@ -861,6 +863,7 @@ export class ComputerAgentServer {
         ...(body.sessionId ? { sessionId: body.sessionId } : {}),
         ...(body.debug ? { debug: true } : {}),
         ...(body.sessionStore ? { sessionStore: body.sessionStore as never } : {}),
+        ...(body.policy ? { policy: body.policy as never } : {}),
         ...(body.attachments && body.attachments.length > 0
           ? { attachments: body.attachments }
           : {}),
