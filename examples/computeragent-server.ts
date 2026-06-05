@@ -40,6 +40,7 @@ import { streamSSE } from "hono/streaming";
 import { serve, type ServerType } from "@hono/node-server";
 import { ComputerAgent, LocalSubstrate } from "computeragent";
 import type { IdentitySource, Substrate } from "computeragent";
+import { makeApiKeyVerifier, type ApiKeyVerifier } from "./introspection-auth.ts";
 import type {
   HarnessEvent,
   PersistedEvent,
@@ -56,11 +57,12 @@ import type {
 } from "@open-gitagent/protocol";
 import { mongoTaskStoreBuilder } from "@computeragent/task-store-mongo";
 import { s3StateStoreBuilder } from "@computeragent/state-store-s3";
-import type { AuditSink } from "@computeragent/harness-server";
+import type { AuditSink, AuditRecord } from "@computeragent/harness-server";
 import {
   configure as configureOtel,
   shutdown as shutdownOtel,
   OtelAuditSink,
+  type InvocationIdentity,
 } from "@computeragent/observability";
 
 type TaskStoreBuilder = (options?: unknown) => TaskStore;
@@ -75,16 +77,22 @@ function emitToAuditSink(
   sink: AuditSink | undefined,
   state: { sessionId: string; counter: number },
   ev: HarnessEvent,
+  identity?: InvocationIdentity,
 ): void {
   if (!sink) return;
   if (ev.kind === "ca_session_started" && !state.sessionId) state.sessionId = ev.sessionId;
   try {
-    void sink.onEvent({
+    // Widen the record with the optional RBAC identity. The harness-server
+    // AuditRecord stays untouched; the OtelAuditSink reads `identity` off this
+    // widened shape (see @computeragent/observability OtelAuditRecord).
+    const rec: AuditRecord & { identity?: InvocationIdentity } = {
       sessionId: state.sessionId || (ev as { sessionId?: string }).sessionId || "pending",
       eventId: ++state.counter,
       event: ev,
       timestamp: Date.now(),
-    });
+      ...(identity ? { identity } : {}),
+    };
+    void sink.onEvent(rec);
   } catch {
     // OtelAuditSink already swallows its own errors; this is belt-and-braces.
   }
@@ -241,6 +249,14 @@ interface RunBody {
    * Pair with `sessionId` to resume an existing conversation across processes.
    */
   sessionStore?: { kind: string; options?: unknown };
+  /**
+   * Optional RBAC / multi-tenancy identity for observability. The AgentOS
+   * server stamps this from the resolved agent (agentId/groupId/ownerId) +
+   * the invoking principal (actorId); it's forwarded to the OtelAuditSink so
+   * every span carries `computeragent.{agent,group,owner,actor}.id`. Ignored
+   * by the agent run itself.
+   */
+  identity?: InvocationIdentity;
   /**
    * Files to land in the agent's workdir BEFORE the engine starts. Written
    * AFTER the GAP repo is materialized, so attachments overlay on top
@@ -449,6 +465,13 @@ interface LiveSandbox {
    * failures are logged but do NOT block tear-down.
    */
   autoSave?: { stateStoreKind: string; stateStoreOptions?: unknown };
+  /**
+   * RBAC / multi-tenancy identity captured at sandbox creation. One warm
+   * sandbox = one session, and the OtelAuditSink reads identity once at
+   * `ca_session_started`, so the booting principal's identity is reused for
+   * every turn of this sandbox.
+   */
+  identity?: InvocationIdentity;
 }
 
 interface SandboxSummary {
@@ -656,6 +679,8 @@ interface SandboxBody {
   debug?: boolean;
   sessionStore?: { kind: string; options?: unknown };
   policy?: { kind: "srs"; endpoint: string; apiKey: string; policyId: string; principalId: string };
+  /** RBAC / multi-tenancy identity for observability — see RunBody.identity. */
+  identity?: InvocationIdentity;
   attachments?: Array<{ path: string; content: string; encoding?: "utf8" | "base64" }>;
   idleTtlMs?: number;
   ttlMs?: number;
@@ -774,35 +799,82 @@ export class ComputerAgentServer {
       }),
     );
 
-    // Basic Auth — enabled when API_AUTH_USER + API_AUTH_PASS are set in env.
-    // Whitelisted paths skip auth:
+    // Auth — two complementary schemes, both optional, applied on every route:
+    //   • Basic Auth (API_AUTH_USER + API_AUTH_PASS) — a single shared
+    //     credential, the ops/curl escape hatch.
+    //   • API keys — per-issuer, revocable, expiring keys minted + stored by
+    //     AgentOS. A presented `Authorization: Bearer cak_…` is validated by
+    //     POSTing it to AgentOS's introspection endpoint (with a service secret).
+    //     Enabled when AGENTOS_INTROSPECTION_URL + AGENTOS_INTROSPECTION_SECRET
+    //     are set.
+    // A request passes if EITHER scheme accepts it. Whitelisted paths skip auth:
     //   - /health           uptime monitoring should not require credentials
     //   - /slack/*          Slack signature verification is its own auth layer
     //                       (HMAC over the request body — see slack-bot.ts)
     //
-    // When unset, the server logs a warning and accepts all requests, so this
-    // stays backward-compatible until creds are configured.
+    // Fail-secure default: when NEITHER scheme is configured the server REFUSES
+    // to start, so a misconfiguration can't silently leave it wide open. Set
+    // COMPUTERAGENT_ALLOW_ANON=1 to explicitly accept anonymous requests
+    // (loopback / dev only).
     const authUser = process.env.API_AUTH_USER;
     const authPass = process.env.API_AUTH_PASS;
-    if (authUser && authPass) {
-      const expected = "Basic " + Buffer.from(`${authUser}:${authPass}`).toString("base64");
+    const basicEnabled = Boolean(authUser && authPass);
+
+    const introspectUrl = process.env.AGENTOS_INTROSPECTION_URL;
+    const introspectSecret = process.env.AGENTOS_INTROSPECTION_SECRET;
+    const apiKeyEnabled = Boolean(introspectUrl && introspectSecret);
+    const verifier: ApiKeyVerifier | null = apiKeyEnabled
+      ? makeApiKeyVerifier({ url: introspectUrl!, serviceSecret: introspectSecret!, logger: console })
+      : null;
+
+    if (basicEnabled || apiKeyEnabled) {
+      const expected = basicEnabled
+        ? "Basic " + Buffer.from(`${authUser}:${authPass}`).toString("base64")
+        : "";
       const expectedBuf = Buffer.from(expected);
       this.app.use("*", async (c, next) => {
         const path = new URL(c.req.url).pathname;
         if (path === "/health" || path.startsWith("/slack/")) return next();
         const got = c.req.header("authorization") ?? "";
-        if (got.length === expected.length) {
+
+        // (a) Basic match — constant-time.
+        if (basicEnabled && got.length === expected.length) {
           const gotBuf = Buffer.from(got);
           try {
             if (timingSafeEqual(gotBuf, expectedBuf)) return next();
-          } catch { /* length mismatch — fall through to 401 */ }
+          } catch { /* length mismatch — fall through */ }
         }
-        c.header("WWW-Authenticate", 'Basic realm="ComputerAgent"');
+
+        // (b) API key — Authorization: Bearer cak_…  validated via introspection.
+        if (verifier) {
+          const m = /^Bearer\s+(.+)$/i.exec(got);
+          if (m) {
+            const principal = await verifier(m[1]!);
+            if (principal) return next();
+          }
+        }
+
+        if (basicEnabled) c.header("WWW-Authenticate", 'Basic realm="ComputerAgent"');
         return c.json({ error: { code: "UNAUTHORIZED" } }, 401);
       });
-      console.log("[auth] Basic Auth ENABLED (user=" + authUser + ")");
+      console.log(
+        `[auth] ENABLED — Basic:${basicEnabled ? "on" : "off"} API-key:${apiKeyEnabled ? "on" : "off"}` +
+          (basicEnabled ? ` (user=${authUser})` : ""),
+      );
+    } else if (process.env.COMPUTERAGENT_ALLOW_ANON === "1") {
+      // Explicit opt-out: accept all requests. Loud warning so it's deliberate.
+      console.warn(
+        "[auth] DISABLED — COMPUTERAGENT_ALLOW_ANON=1, all requests accepted (incl. /run, " +
+          "/sandboxes, /tasks). Do NOT use on a network-exposed deployment.",
+      );
     } else {
-      console.warn("[auth] Basic Auth DISABLED — set API_AUTH_USER + API_AUTH_PASS env vars to enable.");
+      // Fail-secure: no auth configured and no explicit anon opt-in → don't boot.
+      console.error(
+        "[auth] No authentication configured — refusing to start. Set API_AUTH_USER + " +
+          "API_AUTH_PASS (Basic) and/or AGENTOS_INTROSPECTION_URL + AGENTOS_INTROSPECTION_SECRET " +
+          "(API keys), or set COMPUTERAGENT_ALLOW_ANON=1 to explicitly allow anonymous access.",
+      );
+      process.exit(1);
     }
 
     this.app.get("/health", (c) =>
@@ -891,7 +963,7 @@ export class ComputerAgentServer {
               realSessionId = ev.sessionId;
               this.runs.set(realSessionId, { agent, startedAt: Date.now() });
             }
-            emitToAuditSink(this.opts.auditSink, otelTap, ev);
+            emitToAuditSink(this.opts.auditSink, otelTap, ev, body.identity);
             await stream.writeSSE({
               event: ev.kind,
               data: JSON.stringify(ev),
@@ -1271,6 +1343,7 @@ export class ComputerAgentServer {
         firstChatSeen: false,
         bootDeadlineAt: new Date(now.getTime() + (cfg.bootDeadlineMs ?? 60_000)),
         ...(body.autoSave ? { autoSave: { stateStoreKind: body.autoSave.stateStore.kind, stateStoreOptions: body.autoSave.stateStore.options } } : {}),
+        ...(body.identity ? { identity: body.identity } : {}),
       };
       this.sandboxes.insert(sandbox);
 
@@ -1433,7 +1506,7 @@ export class ComputerAgentServer {
           const otelTap = { sessionId: sb.sessionId, counter: 0 };
           for await (const ev of handle) {
             if (clientGone) break;
-            emitToAuditSink(this.opts.auditSink, otelTap, ev);
+            emitToAuditSink(this.opts.auditSink, otelTap, ev, sb.identity);
             await stream.writeSSE({ event: ev.kind, data: JSON.stringify(ev) }).catch(() => { clientGone = true; });
             if (ev.kind === "ca_usage_snapshot") {
               // The snapshot is incremental for the current turn; merge into

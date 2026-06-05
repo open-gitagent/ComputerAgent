@@ -82,6 +82,9 @@ export function AgentDashboard() {
             {!agent.sandboxCapable && (
               <span className="ml-2 text-warning">one-shot · no memory across turns</span>
             )}
+            {agent.archived && (
+              <span className="ml-2 text-muted-foreground">archived · cannot run until unarchived</span>
+            )}
           </>
         }
         actions={
@@ -103,7 +106,8 @@ export function AgentDashboard() {
             agentName={agent.name}
             sandboxCapable={agent.sandboxCapable}
             liveChatCapable={agent.liveChatCapable !== false}
-            initialMessage={launchMessage}
+            archived={agent.archived === true}
+            initialMessage={agent.archived ? null : launchMessage}
             onConsumedInitial={() => setLaunchMessage(null)}
           />
         )}

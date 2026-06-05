@@ -16,6 +16,8 @@
 import { Router, type Router as IRouter, type Response } from "express";
 import { agentPoliciesColl } from "../mongo.js";
 import { resolveAgentById } from "../agent-defs.js";
+import { authorize } from "../auth/authorize.js";
+import { canRead, canWrite } from "../auth/ownership.js";
 
 export const policiesRouter: IRouter = Router();
 
@@ -80,32 +82,32 @@ async function srs(
 }
 
 // ── RAI policies → SRS /v1/rai/policies ───────────────────────────────────
-policiesRouter.get("/policies", (_req, res) =>
+policiesRouter.get("/policies", authorize("policies:read"), (_req, res) =>
   srs(res, "GET", "/v1/rai/policies", { fallback: { policies: [] } }),
 );
-policiesRouter.get("/policies/:id", (req, res) =>
+policiesRouter.get("/policies/:id", authorize("policies:read"), (req, res) =>
   srs(res, "GET", `/v1/rai/policies/${encodeURIComponent(req.params["id"]!)}`),
 );
-policiesRouter.post("/policies", (req, res) => srs(res, "POST", "/v1/rai/policies", { body: req.body ?? {} }));
-policiesRouter.put("/policies/:id", (req, res) =>
+policiesRouter.post("/policies", authorize("policies:write"), (req, res) => srs(res, "POST", "/v1/rai/policies", { body: req.body ?? {} }));
+policiesRouter.put("/policies/:id", authorize("policies:write"), (req, res) =>
   srs(res, "PUT", `/v1/rai/policies/${encodeURIComponent(req.params["id"]!)}`, { body: req.body ?? {} }),
 );
-policiesRouter.delete("/policies/:id", (req, res) =>
+policiesRouter.delete("/policies/:id", authorize("policies:write"), (req, res) =>
   srs(res, "DELETE", `/v1/rai/policies/${encodeURIComponent(req.params["id"]!)}`),
 );
 
 // ── OPA rego policies → SRS /v1/opa-policies ──────────────────────────────
-policiesRouter.get("/opa-policies", (_req, res) =>
+policiesRouter.get("/opa-policies", authorize("policies:read"), (_req, res) =>
   srs(res, "GET", "/v1/opa-policies", { fallback: { policies: [] } }),
 );
-policiesRouter.get("/opa-policies/:id", (req, res) =>
+policiesRouter.get("/opa-policies/:id", authorize("policies:read"), (req, res) =>
   srs(res, "GET", `/v1/opa-policies/${encodeURIComponent(req.params["id"]!)}`),
 );
-policiesRouter.post("/opa-policies", (req, res) => srs(res, "POST", "/v1/opa-policies", { body: req.body ?? {} }));
-policiesRouter.put("/opa-policies/:id", (req, res) =>
+policiesRouter.post("/opa-policies", authorize("policies:write"), (req, res) => srs(res, "POST", "/v1/opa-policies", { body: req.body ?? {} }));
+policiesRouter.put("/opa-policies/:id", authorize("policies:write"), (req, res) =>
   srs(res, "PUT", `/v1/opa-policies/${encodeURIComponent(req.params["id"]!)}`, { body: req.body ?? {} }),
 );
-policiesRouter.delete("/opa-policies/:id", (req, res) =>
+policiesRouter.delete("/opa-policies/:id", authorize("policies:write"), (req, res) =>
   srs(res, "DELETE", `/v1/opa-policies/${encodeURIComponent(req.params["id"]!)}`),
 );
 
@@ -114,10 +116,11 @@ policiesRouter.delete("/opa-policies/:id", (req, res) =>
 // (`agentName`) so srsPolicyForAgent — called name-side at sandbox/run create —
 // resolves the same row.
 
-policiesRouter.get("/agents/:id/policy", async (req, res, next) => {
+policiesRouter.get("/agents/:id/policy", authorize("policies:read"), async (req, res, next) => {
   try {
     const agent = await resolveAgentById(req.params["id"]!);
     if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
+    if (!canRead(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     const doc = await (await agentPoliciesColl()).findOne({ agentName: agent.name });
     res.json({ binding: doc ? { policyId: doc.policyId } : null });
   } catch (err) {
@@ -125,10 +128,11 @@ policiesRouter.get("/agents/:id/policy", async (req, res, next) => {
   }
 });
 
-policiesRouter.put("/agents/:id/policy", async (req, res, next) => {
+policiesRouter.put("/agents/:id/policy", authorize("policies:write"), async (req, res, next) => {
   try {
     const agent = await resolveAgentById(req.params["id"]!);
     if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
+    if (!canWrite(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER" } });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const policyId = typeof body["policy_id"] === "string" ? (body["policy_id"] as string) : null;
     const coll = await agentPoliciesColl();

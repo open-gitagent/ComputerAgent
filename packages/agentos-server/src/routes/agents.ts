@@ -18,10 +18,12 @@ import { agentLogStore } from "../stores/agent-log-store.js";
 import { scheduleStore } from "../stores/schedule-store.js";
 import { deleteAgentSnapshots, disposeLiveSandboxes } from "../cleanup.js";
 import { hasResolvableSource, normalizeSource, registryDocToAgentDef, resolveAgentById, sandboxCapable } from "../agent-defs.js";
+import { authorize } from "../auth/authorize.js";
+import { canRead, canWrite, pickOwnerGroup } from "../auth/ownership.js";
 
 export const agentsRouter: IRouter = Router();
 
-agentsRouter.get("/agents", async (_req, res, next) => {
+agentsRouter.get("/agents", authorize("agents:read"), async (_req, res, next) => {
   try {
     // Live sandboxes — used to flag agents with warm sessions. Best-effort:
     // an unreachable harness yields an empty map ("no live info available").
@@ -37,6 +39,9 @@ agentsRouter.get("/agents", async (_req, res, next) => {
 
     const out = [];
     for (const r of rows) {
+      // Hard isolation — only surface agents the principal's groups own (admins
+      // see all; legacy/unowned rows stay visible during the transition).
+      if (!canRead(res.locals.principal, r)) continue;
       const agent = registryDocToAgentDef(r);
       const docs = await chatSessions.find({ agent: agent.name }).toArray();
       const sessionIds = new Set(docs.map((d) => d._id));
@@ -70,6 +75,13 @@ agentsRouter.get("/agents", async (_req, res, next) => {
         // neither git/local nor inline-with-files. UI uses this to
         // conditionally render the "New chat" button.
         liveChatCapable: sCap && hasResolvableSource(agent.source),
+        // Archive state — archived agents are still returned (the UI lists them
+        // in a separate, greyed "Archived" section) but every execution path
+        // refuses them. Unset/false ⇒ active.
+        archived: r.archived === true,
+        archivedAt: r.archivedAt ? r.archivedAt.toISOString() : null,
+        ownerGroup: r.ownerGroup ?? null,
+        ownerUser: r.ownerUser ?? null,
         sessionCount: sessionIds.size,
         activeSandboxes: active,
         lastActivity: lastActivity ? lastActivity.toISOString() : null,
@@ -80,19 +92,20 @@ agentsRouter.get("/agents", async (_req, res, next) => {
   } catch (err) { next(err); }
 });
 
-agentsRouter.get("/agents/by-source", async (req, res, next) => {
+agentsRouter.get("/agents/by-source", authorize("agents:read"), async (req, res, next) => {
   try {
     const url = typeof req.query["url"] === "string" ? req.query["url"] : "";
     if (!url) return res.status(400).json({ error: { code: "BAD_REQUEST", message: "`url` required" } });
     const rows = await (await registryColl()).find({}).toArray();
     const matches = rows
+      .filter((r) => canRead(res.locals.principal, r))
       .map((r) => ({ id: r._id.toString(), name: r.name, ...normalizeSource(r.source) }))
       .filter((m) => m.sourceUrl === url);
     res.json({ url, matches });
   } catch (err) { next(err); }
 });
 
-agentsRouter.post("/agents/register", async (req, res, next) => {
+agentsRouter.post("/agents/register", authorize("agents:write"), async (req, res, next) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const name = typeof body["name"] === "string" ? body["name"].trim() : "";
@@ -114,22 +127,40 @@ agentsRouter.post("/agents/register", async (req, res, next) => {
     if (body["source"] !== undefined) set.source = body["source"];
     if (typeof body["model"] === "string") set.model = body["model"];
     if (typeof body["registeredBy"] === "string") set.registeredBy = body["registeredBy"];
-    // Upsert by the unique `name`; Mongo mints the ObjectId `_id` on insert.
+
+    // Ownership. Register is an upsert: updating an existing agent requires
+    // write access (owner-user or admin); creating one stamps the owner —
+    // ownerUser = the creator, ownerGroup = a group the creator belongs to
+    // (chosen via `ownerGroup`, defaulting to their first group).
+    const principal = res.locals.principal;
     const coll = await registryColl();
-    await coll.updateOne(
-      { name },
-      { $set: set, $setOnInsert: { name, registeredAt: now } },
-      { upsert: true },
-    );
+    const existing = await coll.findOne({ name });
+    if (existing && !canWrite(principal, existing)) {
+      return res.status(403).json({ error: { code: "NOT_OWNER", message: "you do not own this agent" } });
+    }
+    const insert: Partial<RegistryDoc> = { name, registeredAt: now };
+    if (!existing) {
+      if (!principal) return res.status(401).json({ error: { code: "UNAUTHENTICATED" } });
+      const pick = pickOwnerGroup(principal, body["ownerGroup"]);
+      if (!pick.ok) {
+        return res.status(403).json({ error: { code: "OWNER_GROUP_NOT_ALLOWED", message: "not a member of the requested group" } });
+      }
+      insert.ownerGroup = pick.group;
+      insert.ownerUser = principal.id;
+      if (!set.registeredBy) set.registeredBy = principal.id;
+    }
+    // Upsert by the unique `name`; Mongo mints the ObjectId `_id` on insert.
+    await coll.updateOne({ name }, { $set: set, $setOnInsert: insert }, { upsert: true });
     const doc = await coll.findOne({ name });
     res.json({ ok: true, id: doc?._id.toString() ?? null, name });
   } catch (err) { next(err); }
 });
 
-agentsRouter.patch("/agents/:id", async (req, res, next) => {
+agentsRouter.patch("/agents/:id", authorize("agents:write"), async (req, res, next) => {
   try {
     const agent = await resolveAgentById(req.params["id"]!);
     if (!agent) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!canWrite(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER", message: "you do not own this agent" } });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const set: Partial<RegistryDoc> = { updatedAt: new Date() };
     if (typeof body["label"] === "string") set.label = body["label"];
@@ -142,15 +173,57 @@ agentsRouter.patch("/agents/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Archive — a reversible "off switch". Sets the archived flag, then makes the
+// agent immediately non-executable: dispose its live warm sandboxes (so an
+// in-flight chat can't keep running) and disable its bound schedules. History
+// (sessions, logs, messages, snapshots) is preserved — this is NOT a delete.
+agentsRouter.post("/agents/:id/archive", authorize("agents:write"), async (req, res, next) => {
+  try {
+    const agent = await resolveAgentById(req.params["id"]!);
+    if (!agent) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!canWrite(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER", message: "you do not own this agent" } });
+    const name = agent.name;
+    const set: Partial<RegistryDoc> = { archived: true, archivedAt: new Date(), updatedAt: new Date() };
+    const by = (req.body as Record<string, unknown> | undefined)?.["archivedBy"];
+    if (typeof by === "string" && by) set.archivedBy = by;
+    await (await registryColl()).updateOne({ name }, { $set: set });
+
+    // Tear down running sandboxes for this agent's sessions, then stop schedules.
+    const chatDocs = await (await chatSessionsColl()).find({ agent: name }).toArray();
+    const sessionIds = new Set(chatDocs.map((d) => d._id).filter(Boolean));
+    const disp = await disposeLiveSandboxes(sessionIds);
+    const schedulesDisabled = await scheduleStore.disableByAgent(name);
+
+    res.json({ ok: true, disposed: disp.disposed, schedulesDisabled, warnings: disp.warnings });
+  } catch (err) { next(err); }
+});
+
+// Unarchive — clear the flag so the agent is runnable again. Schedules are NOT
+// auto-re-enabled (the user re-enables intentionally); sandboxes re-boot lazily
+// on the next chat.
+agentsRouter.post("/agents/:id/unarchive", authorize("agents:write"), async (req, res, next) => {
+  try {
+    const agent = await resolveAgentById(req.params["id"]!);
+    if (!agent) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!canWrite(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER", message: "you do not own this agent" } });
+    await (await registryColl()).updateOne(
+      { name: agent.name },
+      { $set: { archived: false, updatedAt: new Date() }, $unset: { archivedAt: "", archivedBy: "" } },
+    );
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
 // Hard delete — cascades to every store the agent touched: its live sandboxes
 // (disposed without an auto-save), its S3 snapshots, and all Mongo rows
 // (sessions, chat_sessions, chat pin, logs, messages, schedules). The registry doc
 // is removed last so a mid-cascade crash leaves the agent listed (and thus
 // re-deletable) rather than orphaning state under a vanished name.
-agentsRouter.delete("/agents/:id", async (req, res, next) => {
+agentsRouter.delete("/agents/:id", authorize("agents:delete"), async (req, res, next) => {
   try {
     const agent = await resolveAgentById(req.params["id"]!);
     if (!agent) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!canWrite(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER", message: "you do not own this agent" } });
     const name = agent.name;
     const registry = await registryColl();
 

@@ -6,6 +6,7 @@ import { TraceList } from "./TraceList.tsx";
 import { TraceDetail } from "./TraceDetail.tsx";
 import { Dashboard } from "./Dashboard.tsx";
 import { DateRangePicker, type Range } from "./DateRangePicker.tsx";
+import { AgentFilter } from "./AgentFilter.tsx";
 import { PageHeader } from "../composite/PageHeader.tsx";
 import { StatusDot } from "../composite/StatusDot.tsx";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs.tsx";
@@ -20,6 +21,7 @@ const PAGE_SIZE = 15;
 export function ObservabilityTab() {
   const [sub, setSub] = useState<SubTab>("dashboard");
   const [range, setRange] = useState<Range>({ from: "now-15m", to: "now" });
+  const [agent, setAgent] = useState<string>("");
   const [filters, setFilters] = useState<Filter[]>([]);
   const [traces, setTraces] = useState<TraceSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -35,11 +37,16 @@ export function ObservabilityTab() {
       .catch(() => setChOk(false));
   }, []);
 
+  // Merge the agent selector into the explicit filter list — the agent acts as
+  // an implicit `agent eq <name>` AND-filter on top of whatever the QueryBuilder holds.
+  const effectiveFilters = (): Filter[] =>
+    agent ? [{ field: "agent", op: "eq", value: agent }, ...filters] : filters;
+
   // Fetch the first (newest) page, replacing any existing rows.
   const run = () => {
     setLoading(true);
     obsApi
-      .search({ filters, from: range.from, to: range.to, orderBy: "timestamp", orderDir: "desc", limit: PAGE_SIZE })
+      .search({ filters: effectiveFilters(), from: range.from, to: range.to, orderBy: "timestamp", orderDir: "desc", limit: PAGE_SIZE })
       .then((t) => {
         setTraces(t);
         setHasMore(t.length === PAGE_SIZE);
@@ -55,7 +62,7 @@ export function ObservabilityTab() {
     const before = Math.min(...traces.map((t) => Number(t.started_at_ms)));
     setLoadingMore(true);
     obsApi
-      .search({ filters, from: range.from, to: range.to, orderBy: "timestamp", orderDir: "desc", limit: PAGE_SIZE, before })
+      .search({ filters: effectiveFilters(), from: range.from, to: range.to, orderBy: "timestamp", orderDir: "desc", limit: PAGE_SIZE, before })
       .then((page) => {
         setTraces((prev) => {
           const seen = new Set(prev.map((t) => t.TraceId));
@@ -72,7 +79,7 @@ export function ObservabilityTab() {
   useEffect(() => {
     if (sub === "explorer") run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range.from, range.to, sub]);
+  }, [range.from, range.to, sub, agent]);
 
   const healthLabel = chOk == null ? "checking…" : chOk ? "ClickHouse up" : "ClickHouse down";
   const healthStatus = chOk == null ? "loading" : chOk ? "live" : "error";
@@ -91,6 +98,7 @@ export function ObservabilityTab() {
               </TabsList>
             </Tabs>
 
+            <AgentFilter value={agent} onChange={setAgent} />
             <DateRangePicker value={range} onChange={setRange} />
             <StatusDot status={healthStatus} label={healthLabel} />
           </>
@@ -99,7 +107,7 @@ export function ObservabilityTab() {
 
       {sub === "dashboard" ? (
         <div className="flex-1 min-h-0 overflow-auto">
-          <Dashboard from={range.from} to={range.to} />
+          <Dashboard agent={agent || undefined} from={range.from} to={range.to} />
         </div>
       ) : (
         <div className="flex-1 min-h-0 flex flex-col">

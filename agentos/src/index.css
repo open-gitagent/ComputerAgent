@@ -70,6 +70,10 @@
   }
   body {
     margin: 0;
+    /* Apply the theme tokens globally so any unstyled text inherits the
+     * foreground color instead of the browser default (black-on-dark). */
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
     font-family: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     font-feature-settings: "cv11", "ss01", "ss03";
     -webkit-font-smoothing: antialiased;

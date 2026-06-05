@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import { Search, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Agent } from "../api.ts";
+import { useAuth } from "../context/AuthContext.tsx";
 import { AgentCard } from "./AgentCard.tsx";
 import { RegisterAgentForm } from "./RegisterAgentForm.tsx";
 import { PageHeader } from "./composite/PageHeader.tsx";
@@ -49,9 +50,44 @@ export function RegistryPage({
   onOpenAgent: (agentId: string) => void;
   onReload: () => void;
 }) {
+  const { can } = useAuth();
+  const canDelete = can("agents:delete");
+  const canWrite = can("agents:write");
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [pendingArchive, setPendingArchive] = useState<Agent | null>(null);
+  const [archiving, setArchiving] = useState(false);
+
+  const confirmArchive = async () => {
+    if (!pendingArchive) return;
+    setArchiving(true);
+    try {
+      const res = await api.archiveAgent(pendingArchive.id);
+      toast.success(`Archived "${pendingArchive.name}"`, {
+        description: `${res.disposed} live sandbox(es) disposed, ${res.schedulesDisabled} schedule(s) disabled. History kept.`,
+      });
+      if (res.warnings?.length) {
+        toast.warning("Some cleanup was skipped", { description: res.warnings.slice(0, 3).join("; ") });
+      }
+      setPendingArchive(null);
+      onReload();
+    } catch (e) {
+      toast.error(`Archive failed: ${String(e)}`);
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const handleUnarchive = async (agent: Agent) => {
+    try {
+      await api.unarchiveAgent(agent.id);
+      toast.success(`Unarchived "${agent.name}"`, { description: "The agent can run again." });
+      onReload();
+    } catch (e) {
+      toast.error(`Unarchive failed: ${String(e)}`);
+    }
+  };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
@@ -87,9 +123,11 @@ export function RegistryPage({
   }, [agents, search]);
 
   const grouped = useMemo(() => {
-    const hosted = filtered.filter((a) => (a.origin ?? "in-memory") === "in-memory");
-    const library = filtered.filter((a) => a.origin === "registry");
-    return { hosted, library };
+    const active = filtered.filter((a) => !a.archived);
+    const archived = filtered.filter((a) => a.archived);
+    const hosted = active.filter((a) => (a.origin ?? "in-memory") === "in-memory");
+    const library = active.filter((a) => a.origin === "registry");
+    return { hosted, library, archived };
   }, [filtered]);
 
   return (
@@ -161,7 +199,8 @@ export function RegistryPage({
                     agent={a}
                     selected={selected === a.id}
                     onClick={() => onOpenAgent(a.id)}
-                    onDelete={() => setPendingDelete(a)}
+                    onDelete={canDelete ? () => setPendingDelete(a) : undefined}
+                    onArchive={canWrite ? () => setPendingArchive(a) : undefined}
                   />
                 ))}
               </div>
@@ -178,7 +217,26 @@ export function RegistryPage({
                     agent={a}
                     selected={selected === a.id}
                     onClick={() => onOpenAgent(a.id)}
-                    onDelete={() => setPendingDelete(a)}
+                    onDelete={canDelete ? () => setPendingDelete(a) : undefined}
+                    onArchive={canWrite ? () => setPendingArchive(a) : undefined}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {grouped.archived.length > 0 && (
+            <section className="space-y-3">
+              <SectionLabel name="Archived" count={grouped.archived.length} />
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                {grouped.archived.map((a) => (
+                  <AgentCard
+                    key={a.id}
+                    agent={a}
+                    selected={selected === a.id}
+                    onClick={() => onOpenAgent(a.id)}
+                    onDelete={canDelete ? () => setPendingDelete(a) : undefined}
+                    onUnarchive={canWrite ? () => handleUnarchive(a) : undefined}
                   />
                 ))}
               </div>
@@ -208,6 +266,31 @@ export function RegistryPage({
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {deleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!pendingArchive} onOpenChange={(o) => !o && setPendingArchive(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive agent?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="font-mono">{pendingArchive?.name}</span> will no longer run — one-shot runs,
+              live chat, and scheduled runs are all refused. Its live sandboxes are disposed and its schedules
+              disabled. All history (sessions, logs, snapshots) is kept, and you can unarchive it any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={archiving}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                confirmArchive();
+              }}
+              disabled={archiving}
+            >
+              {archiving ? "Archiving…" : "Archive"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -110,6 +110,13 @@ export const scheduleStore = {
     return r.deletedCount ?? 0;
   },
 
+  /** Archive helper — disable every schedule for an agent (kept, not deleted,
+   *  so the user can re-enable after unarchiving). Returns the count changed. */
+  async disableByAgent(agentName: string): Promise<number> {
+    const r = await (await coll()).updateMany({ agentName }, { $set: { enabled: false } });
+    return r.modifiedCount ?? 0;
+  },
+
   async due(now: Date = new Date()): Promise<Schedule[]> {
     return (await coll()).find({ enabled: true, nextRunAt: { $lte: now } }).toArray();
   },

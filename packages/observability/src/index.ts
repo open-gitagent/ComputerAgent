@@ -11,5 +11,6 @@ export { configure, shutdown, getConfig, getTracer, getMeter, getLogger } from "
 export { getConversationId, withConversationId, enterConversation } from "./context.js";
 
 export { OtelAuditSink } from "./audit-sink/otel-audit-sink.js";
+export type { InvocationIdentity, OtelAuditRecord } from "./audit-sink/otel-audit-sink.js";
 
 export * as Semantic from "./semantic/attributes.js";

@@ -33,6 +33,7 @@ export function ChatTab({
   initialMessage,
   onConsumedInitial,
   onSessionStarted,
+  disabled = false,
 }: {
   /** Registry ObjectId — used to address the agent in API calls. */
   agentId: string;
@@ -46,6 +47,9 @@ export function ChatTab({
   /** Fired once a sandbox boots and a sessionId is established (new or resumed),
    *  so the parent can refresh / highlight the session list. */
   onSessionStarted?: (sessionId: string) => void;
+  /** When true the composer is locked (e.g. the agent is archived). Sending is
+   *  refused server-side regardless; this just makes the UI state explicit. */
+  disabled?: boolean;
 }) {
   const [sandboxId, setSandboxId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -119,6 +123,7 @@ export function ChatTab({
   }
 
   async function send(textArg?: string) {
+    if (disabled) return;
     const text = (textArg ?? input).trim();
     if (!text || busy) return;
 
@@ -251,14 +256,15 @@ export function ChatTab({
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                send();
+                if (!disabled) send();
               }
             }}
-            placeholder={`Message ${agentName}…  (Enter to send, Shift+Enter for newline)`}
+            disabled={disabled}
+            placeholder={disabled ? "This agent is archived — unarchive it to chat." : `Message ${agentName}…  (Enter to send, Shift+Enter for newline)`}
             rows={2}
             className="flex-1 resize-none rounded-xl bg-card px-3.5 py-2.5"
           />
-          <Button onClick={() => send()} disabled={busy || !input.trim()} className="rounded-xl px-4">
+          <Button onClick={() => send()} disabled={disabled || busy || !input.trim()} className="rounded-xl px-4">
             {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             <span>Send</span>
           </Button>

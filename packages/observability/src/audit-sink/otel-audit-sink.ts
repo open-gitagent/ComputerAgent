@@ -11,7 +11,11 @@ import type { HarnessEvent } from "@open-gitagent/protocol";
 import { getTracer, getMeter, getLogger, getConfig } from "../provider.js";
 import type { TracerConfig } from "../config.js";
 import {
+  COMPUTERAGENT_ACTOR_ID,
+  COMPUTERAGENT_AGENT_ID,
   COMPUTERAGENT_ENGINE_NAME,
+  COMPUTERAGENT_GROUP_ID,
+  COMPUTERAGENT_OWNER_ID,
   GEN_AI_AGENT_ID,
   GEN_AI_AGENT_NAME,
   GEN_AI_AGENT_VERSION,
@@ -36,6 +40,33 @@ import {
   CLAUDE_SDK_PROVIDER_NAME,
   type ClaudeSdkParsed,
 } from "./mappers/claude-agent-sdk.js";
+
+/**
+ * RBAC / multi-tenancy identity carried alongside an invocation's events.
+ *
+ * Owned here (NOT on the harness-server `AuditRecord`) so the harness package
+ * stays untouched: a producer (e.g. the computeragent-server tap) sets this on
+ * the object it hands to `onEvent`, and the sink reads it via the
+ * `OtelAuditRecord` widening below. The fields land on every span as
+ * `computeragent.{agent,group,owner,actor}.id`.
+ */
+export interface InvocationIdentity {
+  /** AgentOS registry doc id (ObjectId hex). */
+  readonly agentId?: string;
+  /** Owning group — tenancy/visibility key. */
+  readonly groupId?: string | null;
+  /** Owning user — agent creator. */
+  readonly ownerId?: string | null;
+  /** Invoking principal id — who triggered the run. */
+  readonly actorId?: string | null;
+}
+
+/**
+ * `AuditRecord` widened with optional invocation identity. The harness-server
+ * `AuditRecord` is unchanged; producers that know the identity attach it and
+ * the sink reads it through this type.
+ */
+export type OtelAuditRecord = AuditRecord & { readonly identity?: InvocationIdentity };
 
 /**
  * Implements `@computeragent/harness-server`'s `AuditSink` to emit
@@ -128,7 +159,7 @@ export class OtelAuditSink implements AuditSink {
     const { sessionId, event } = record;
     switch (event.kind) {
       case "ca_session_started":
-        this.onSessionStarted(sessionId, event);
+        this.onSessionStarted(sessionId, event, record);
         return;
       case "ca_turn_started":
         this.onTurnStarted(sessionId, event);
@@ -159,6 +190,7 @@ export class OtelAuditSink implements AuditSink {
   private onSessionStarted(
     sessionId: string,
     event: Extract<HarnessEvent, { kind: "ca_session_started" }>,
+    record: AuditRecord,
   ): void {
     const meta: SessionMeta = {
       engineName: event.engine,
@@ -166,6 +198,10 @@ export class OtelAuditSink implements AuditSink {
       agentVersion: event.identity.version,
     };
     if (event.identity.sha) meta.agentSha = event.identity.sha;
+    // RBAC identity rides on the (widened) record, not the wire event — capture
+    // it once here so every span of every turn can be stamped + scoped.
+    const identity = (record as OtelAuditRecord).identity;
+    if (identity) meta.identity = identity;
     this.remember(this.sessionMeta, sessionId, meta);
     // No span opens here. `invoke_agent` is per turn (one trace per turn), so
     // the root is created on the first ca_turn_started. The session is tracked
@@ -220,12 +256,10 @@ export class OtelAuditSink implements AuditSink {
     const attrs: Attributes = {
       [GEN_AI_OPERATION_NAME]: GenAiOperationName.INVOKE_AGENT,
       [GEN_AI_PROVIDER_NAME]: providerName,
-      [GEN_AI_AGENT_NAME]: meta.agentName,
-      [GEN_AI_AGENT_VERSION]: meta.agentVersion,
       [GEN_AI_CONVERSATION_ID]: sessionId,
       [COMPUTERAGENT_ENGINE_NAME]: meta.engineName,
+      ...this.agentIdentityAttrs(sessionId),
     };
-    if (meta.agentSha) attrs[GEN_AI_AGENT_ID] = meta.agentSha;
     // Carry forward the model already learned from a previous turn so the
     // span's request model is populated even before the next system_init.
     const model = this.sessionModel.get(sessionId);
@@ -495,6 +529,36 @@ export class OtelAuditSink implements AuditSink {
   // Helpers
   // ---------------------------------------------------------------------
 
+  /**
+   * Agent-identity attributes (`gen_ai.agent.{name,version,id}`) for a session.
+   *
+   * Stamped on EVERY span of the session — the `invoke_agent` root AND its
+   * `chat` / `execute_tool` children — so a flat `WHERE gen_ai.agent.name = X`
+   * filter selects the whole trace, not just the root. Without this, agent name
+   * lives only on the root and any per-agent aggregate over all spans (span
+   * count, latency-by-operation, throughput, histogram) silently drops every
+   * child span. Returns `{}` when the session's metadata isn't known yet.
+   */
+  private agentIdentityAttrs(sessionId: string): Attributes {
+    const meta = this.sessionMeta.get(sessionId);
+    if (!meta) return {};
+    const attrs: Attributes = {
+      [GEN_AI_AGENT_NAME]: meta.agentName,
+      [GEN_AI_AGENT_VERSION]: meta.agentVersion,
+    };
+    if (meta.agentSha) attrs[GEN_AI_AGENT_ID] = meta.agentSha;
+    // RBAC / multi-tenancy identity — stamped on EVERY span so the read side
+    // can both aggregate and access-control by agent / group / owner / actor.
+    const id = meta.identity;
+    if (id) {
+      if (id.agentId) attrs[COMPUTERAGENT_AGENT_ID] = id.agentId;
+      if (id.groupId) attrs[COMPUTERAGENT_GROUP_ID] = id.groupId;
+      if (id.ownerId) attrs[COMPUTERAGENT_OWNER_ID] = id.ownerId;
+      if (id.actorId) attrs[COMPUTERAGENT_ACTOR_ID] = id.actorId;
+    }
+    return attrs;
+  }
+
   private ensureChatSpan(sessionId: string): void {
     if (this.spans.getCurrentChat(sessionId)) return;
     this.ensureInvokeAgent(sessionId);
@@ -505,6 +569,7 @@ export class OtelAuditSink implements AuditSink {
       [GEN_AI_OPERATION_NAME]: GenAiOperationName.CHAT,
       [GEN_AI_PROVIDER_NAME]: providerName,
       [GEN_AI_CONVERSATION_ID]: sessionId,
+      ...this.agentIdentityAttrs(sessionId),
     };
     if (model) attrs[GEN_AI_REQUEST_MODEL] = model;
 
@@ -567,6 +632,7 @@ export class OtelAuditSink implements AuditSink {
       [GEN_AI_TOOL_NAME]: toolName,
       [GEN_AI_TOOL_CALL_ID]: callId,
       [GEN_AI_CONVERSATION_ID]: sessionId,
+      ...this.agentIdentityAttrs(sessionId),
     };
     const ctx = parent ? trace.setSpan(otelContext.active(), parent) : otelContext.active();
     return getTracer().startSpan(
@@ -582,6 +648,8 @@ interface SessionMeta {
   agentName: string;
   agentVersion: string;
   agentSha?: string;
+  /** RBAC identity, when the producer supplied it on the AuditRecord. */
+  identity?: InvocationIdentity;
 }
 
 /**

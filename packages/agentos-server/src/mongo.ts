@@ -102,6 +102,17 @@ export interface RegistryDoc {
   registeredAt?: Date;
   updatedAt?: Date;
   lastSeen?: Date;
+  // Archive state — a reversible "off switch". An archived agent is kept in
+  // the registry (and all its history) but is refused by every execution path
+  // (one-shot /run, live /chat-sandbox, scheduler). Cleared on unarchive.
+  archived?: boolean;
+  archivedAt?: Date;
+  archivedBy?: string;
+  // Ownership — set at creation. `ownerGroup` (an Okta/Keycloak group the
+  // creator belongs to) governs visibility (hard isolation); `ownerUser` (the
+  // creator's principal id) governs mutate/delete. Legacy rows have neither.
+  ownerGroup?: string | null;
+  ownerUser?: string | null;
 }
 
 export interface ChatPinDoc {

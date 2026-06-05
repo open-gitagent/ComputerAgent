@@ -13,12 +13,17 @@ import {
   type JudgeDef,
 } from "../api.ts";
 import { useAgents } from "../context/AgentsContext.tsx";
+import { useAuth } from "../context/AuthContext.tsx";
 import { cn } from "../lib/cn.ts";
 import { SimDashboard } from "./SimDashboard.tsx";
 
 type RightView = { kind: "empty" } | { kind: "dashboard" } | { kind: "suite"; id: string } | { kind: "edit"; suite: EvalSuite | null } | { kind: "run"; id: string };
 
 export function EvalsPage() {
+  const { can } = useAuth();
+  // RBAC (UX gating; server authorize() is the boundary). Evals use a single
+  // write permission covering create / edit / run / delete of suites.
+  const canWrite = can("evals:write");
   const [suites, setSuites] = useState<EvalSuite[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -40,12 +45,14 @@ export function EvalsPage() {
             <FlaskConical className="h-4 w-4 text-primary" />
             <span className="text-sm font-semibold">Agent Simulation Engine</span>
           </div>
-          <button
-            onClick={() => setView({ kind: "edit", suite: null })}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            <Plus className="h-3 w-3" /> New
-          </button>
+          {canWrite && (
+            <button
+              onClick={() => setView({ kind: "edit", suite: null })}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <Plus className="h-3 w-3" /> New
+            </button>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           <button
@@ -98,6 +105,7 @@ export function EvalsPage() {
         {view.kind === "edit" && (
           <SuiteEditor
             initial={view.suite}
+            canWrite={canWrite}
             onCancel={() => setView(view.suite ? { kind: "suite", id: view.suite._id } : { kind: "empty" })}
             onSaved={(s) => {
               load();
@@ -108,6 +116,7 @@ export function EvalsPage() {
         {view.kind === "suite" && (
           <SuiteDetail
             id={view.id}
+            canWrite={canWrite}
             onEdit={(s) => setView({ kind: "edit", suite: s })}
             onDeleted={() => {
               load();
@@ -125,11 +134,13 @@ export function EvalsPage() {
 // ── Suite detail (read) — run + recent runs ─────────────────────────────────
 function SuiteDetail({
   id,
+  canWrite,
   onEdit,
   onDeleted,
   onOpenRun,
 }: {
   id: string;
+  canWrite: boolean;
   onEdit: (s: EvalSuite) => void;
   onDeleted: () => void;
   onOpenRun: (runId: string) => void;
@@ -182,18 +193,20 @@ function SuiteDetail({
             {suite.passThreshold !== undefined && ` · gate ≥ ${(suite.passThreshold * 100).toFixed(0)}%`}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => onEdit(suite)} className="px-3 py-1.5 rounded border border-border text-sm hover:bg-muted">
-            Edit
-          </button>
-          <button
-            onClick={run}
-            disabled={busy}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-50"
-          >
-            <Play className="h-3.5 w-3.5" /> {busy ? "Starting…" : "Run"}
-          </button>
-        </div>
+        {canWrite && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => onEdit(suite)} className="px-3 py-1.5 rounded border border-border text-sm hover:bg-muted">
+              Edit
+            </button>
+            <button
+              onClick={run}
+              disabled={busy}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-50"
+            >
+              <Play className="h-3.5 w-3.5" /> {busy ? "Starting…" : "Run"}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Cases preview */}
@@ -231,11 +244,13 @@ function SuiteDetail({
         </div>
       </div>
 
-      <div className="mt-6">
-        <button onClick={del} className="flex items-center gap-1.5 text-xs text-destructive hover:text-destructive/80">
-          <Trash2 className="h-3.5 w-3.5" /> Delete suite
-        </button>
-      </div>
+      {canWrite && (
+        <div className="mt-6">
+          <button onClick={del} className="flex items-center gap-1.5 text-xs text-destructive hover:text-destructive/80">
+            <Trash2 className="h-3.5 w-3.5" /> Delete suite
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -500,10 +515,12 @@ function initialJudges(s: EvalSuite | null | undefined): JudgeDef[] {
 
 function SuiteEditor({
   initial,
+  canWrite,
   onCancel,
   onSaved,
 }: {
   initial: EvalSuite | null;
+  canWrite: boolean;
   onCancel: () => void;
   onSaved: (s: EvalSuite) => void;
 }) {
@@ -714,10 +731,12 @@ function SuiteEditor({
       </Section>
 
       <div className="flex items-center gap-2 mt-5">
-        <button onClick={save} disabled={saving} className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-50">
-          {saving ? "Saving…" : initial ? "Save changes" : "Create suite"}
-        </button>
-        <button onClick={onCancel} className="px-4 py-1.5 rounded border border-border text-sm hover:bg-muted">Cancel</button>
+        {canWrite && (
+          <button onClick={save} disabled={saving} className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-50">
+            {saving ? "Saving…" : initial ? "Save changes" : "Create suite"}
+          </button>
+        )}
+        <button onClick={onCancel} className="px-4 py-1.5 rounded border border-border text-sm hover:bg-muted">{canWrite ? "Cancel" : "Close"}</button>
       </div>
     </div>
   );

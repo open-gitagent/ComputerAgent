@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Calendar, Play, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Schedule } from "../api.ts";
+import { useAuth } from "../context/AuthContext.tsx";
 import { Card } from "./ui/card.tsx";
 import { Button } from "./ui/button.tsx";
 import { Textarea } from "./ui/textarea.tsx";
@@ -36,6 +37,11 @@ const INTERVAL_OPTIONS = [5, 10, 15, 30, 60, 180, 360, 720, 1440];
 const fmtInterval = (m: number) => (m % 60 === 0 ? `${m / 60}h` : `${m}m`);
 
 export function SchedulesTab({ agentId, agentLabel }: { agentId: string; agentLabel: string }) {
+  const { can } = useAuth();
+  // RBAC (UX gating only; server authorize() enforces). Create/toggle/run-now
+  // are write actions; removing a schedule needs the delete permission.
+  const canWrite = can("schedules:write");
+  const canDelete = can("schedules:delete");
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -90,7 +96,8 @@ export function SchedulesTab({ agentId, agentLabel }: { agentId: string; agentLa
 
   return (
     <div className="h-full overflow-y-auto px-6 py-5 max-w-3xl">
-      {/* Create form */}
+      {/* Create form — only for users who can author schedules. */}
+      {canWrite && (
       <Card className="p-4">
         <div className="text-sm font-medium mb-3">
           Schedule a run · <span className="text-muted-foreground">{agentLabel}</span>
@@ -152,6 +159,7 @@ export function SchedulesTab({ agentId, agentLabel }: { agentId: string; agentLa
           </Button>
         </div>
       </Card>
+      )}
 
       {/* Schedules list */}
       <Separator className="my-6" />
@@ -177,6 +185,7 @@ export function SchedulesTab({ agentId, agentLabel }: { agentId: string; agentLa
               <Switch
                 checked={s.enabled}
                 onCheckedChange={() => toggle(s)}
+                disabled={!canWrite}
                 aria-label={s.enabled ? "Disable" : "Enable"}
                 className="mt-0.5 shrink-0"
               />
@@ -208,30 +217,34 @@ export function SchedulesTab({ agentId, agentLabel }: { agentId: string; agentLa
                 )}
               </div>
               <div className="flex flex-col gap-1.5 shrink-0">
-                <Button variant="ghost" size="sm" onClick={() => runNow(s)}>
-                  <Play className="h-3 w-3" />
-                  Run now
-                </Button>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive hover:bg-destructive/10">
-                      <Trash2 className="h-3 w-3" />
-                      Delete
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete schedule?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        This will stop the recurring run. Existing logs from prior runs are preserved.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => remove(s)}>Delete</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                {canWrite && (
+                  <Button variant="ghost" size="sm" onClick={() => runNow(s)}>
+                    <Play className="h-3 w-3" />
+                    Run now
+                  </Button>
+                )}
+                {canDelete && (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive hover:bg-destructive/10">
+                        <Trash2 className="h-3 w-3" />
+                        Delete
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Delete schedule?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This will stop the recurring run. Existing logs from prior runs are preserved.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => remove(s)}>Delete</AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                )}
               </div>
             </div>
           </Card>

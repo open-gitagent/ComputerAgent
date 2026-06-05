@@ -10,6 +10,7 @@ import { FIELDS } from "../fields.js";
 import { queryRows as chQueryRows } from "../clickhouse.js";
 import { queryRows as nrqlQueryRows } from "../new-relic.js";
 import { traceBackend } from "../trace-backend.js";
+import { ownerScopeFor, clickhouseScopeClause, nrqlScopeClause, type OwnerScope } from "../query.js";
 
 export const obsFieldsRouter: IRouter = Router();
 
@@ -42,12 +43,16 @@ obsFieldsRouter.get("/fields/:name/values", async (req, res, next) => {
       Math.min(500, parseInt(String(req.query["limit"] ?? "50"), 10) || 50),
     );
 
+    // RBAC: scope autocomplete values to what the caller may read, so the agent
+    // filter (and every other field dropdown) can't enumerate other groups' data.
+    const scope = ownerScopeFor(res.locals.principal);
+
     if (traceBackend() === "newrelic") {
-      const values = await fetchValuesNrql(name, def.nrqlAttr, limit);
+      const values = await fetchValuesNrql(name, def.nrqlAttr, limit, scope);
       return res.json({ values, source: "newrelic-uniques" as const });
     }
 
-    const values = await fetchValuesClickhouse(name, def.sqlExpr, limit);
+    const values = await fetchValuesClickhouse(name, def.sqlExpr, limit, scope);
     res.json(values);
   } catch (err) {
     next(err);
@@ -62,46 +67,54 @@ async function fetchValuesClickhouse(
   name: string,
   sqlExpr: string,
   limit: number,
+  scope?: OwnerScope,
 ): Promise<{
   values: ValueRow[];
   source: "materialized" | "distinct-scan";
 }> {
-  // Fast path — materialized view (created by migrations on boot).
-  try {
-    const rows = await chQueryRows<ClickhouseValueRow>(
-      `SELECT value,
-              countMerge(span_count)              AS count,
-              toString(maxMerge(last_seen))       AS last_seen
-       FROM otel_field_values
-       WHERE field = {field:String} AND value != ''
-       GROUP BY value
-       ORDER BY count DESC, value ASC
-       LIMIT {limit:UInt32}`,
-      { field: name, limit },
-    );
-    return {
-      values: rows.map((r) => ({
-        value: r.value,
-        count: Number(r.count),
-        lastSeenMs: r.last_seen ? new Date(r.last_seen).getTime() : 0,
-      })),
-      source: "materialized" as const,
-    };
-  } catch (err) {
-    console.warn(
-      `[agentos-server] otel_field_values MV unavailable, falling back to DISTINCT for "${name}":`,
-      (err as Error).message,
-    );
+  // Fast path — materialized view (created by migrations on boot). SKIPPED for
+  // scoped (non-superuser) reads: `otel_field_values` aggregates (field, value)
+  // with no owner/group dimension, so it can't be filtered by RBAC scope. Those
+  // callers fall straight through to the scoped DISTINCT scan below.
+  if (!scope) {
+    try {
+      const rows = await chQueryRows<ClickhouseValueRow>(
+        `SELECT value,
+                countMerge(span_count)              AS count,
+                toString(maxMerge(last_seen))       AS last_seen
+         FROM otel_field_values
+         WHERE field = {field:String} AND value != ''
+         GROUP BY value
+         ORDER BY count DESC, value ASC
+         LIMIT {limit:UInt32}`,
+        { field: name, limit },
+      );
+      return {
+        values: rows.map((r) => ({
+          value: r.value,
+          count: Number(r.count),
+          lastSeenMs: r.last_seen ? new Date(r.last_seen).getTime() : 0,
+        })),
+        source: "materialized" as const,
+      };
+    } catch (err) {
+      console.warn(
+        `[agentos-server] otel_field_values MV unavailable, falling back to DISTINCT for "${name}":`,
+        (err as Error).message,
+      );
+    }
   }
 
+  const params: Record<string, unknown> = { limit };
+  const scopeClause = clickhouseScopeClause(scope, params);
   const rows = await chQueryRows<{ v: string; c: number }>(
     `SELECT ${sqlExpr} AS v, count() AS c
      FROM otel_traces
-     WHERE ${sqlExpr} != ''
+     WHERE ${sqlExpr} != ''${scopeClause ? ` AND ${scopeClause}` : ""}
      GROUP BY v
      ORDER BY c DESC, v ASC
      LIMIT {limit:UInt32}`,
-    { limit },
+    params,
   );
   return {
     values: rows.map((r) => ({
@@ -130,8 +143,12 @@ async function fetchValuesNrql(
   fieldName: string,
   nrqlAttr: string,
   limit: number,
+  scope?: OwnerScope,
 ): Promise<ValueRow[]> {
-  const key = `${fieldName}:${limit}`;
+  // Cache key includes the scope so one caller's group-scoped values are never
+  // served to another. Superusers (no scope) share a single "all" entry.
+  const scopeKey = scope ? `${scope.ownerId}|${scope.groups.join(",")}` : "all";
+  const key = `${fieldName}:${limit}:${scopeKey}`;
   const now = Date.now();
   const cached = cache.get(key);
   if (cached && cached.expiresAtMs > now) return cached.values;
@@ -141,14 +158,16 @@ async function fetchValuesNrql(
   //
   // NRQL: single-dim FACET auto-names its result column `facet`; the
   // `AS <alias>` syntax is illegal here so we rely on the default.
+  const params: Record<string, unknown> = { limit };
+  const scopeClause = nrqlScopeClause(scope, params);
   const rows = await nrqlQueryRows<{ facet: string; count: number; last_seen?: number }>(
     `SELECT count(*) AS count, latest(timestamp) AS last_seen
      FROM Span
-     WHERE \`${nrqlAttr}\` IS NOT NULL AND \`${nrqlAttr}\` != ''
+     WHERE \`${nrqlAttr}\` IS NOT NULL AND \`${nrqlAttr}\` != ''${scopeClause ? ` AND ${scopeClause}` : ""}
      FACET \`${nrqlAttr}\`
      SINCE 24 hours ago
      LIMIT {limit:UInt32}`,
-    { limit },
+    params,
   );
 
   const values = rows.slice(0, limit).map((r) => ({

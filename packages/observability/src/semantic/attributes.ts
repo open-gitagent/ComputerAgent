@@ -253,6 +253,23 @@ export const EVENT_GEN_AI_EVALUATION_RESULT = "gen_ai.evaluation.result" as cons
 /** Engine name (e.g. "claude-agent-sdk", "gitagent"). NOT the LLM provider. */
 export const COMPUTERAGENT_ENGINE_NAME = "computeragent.engine.name" as const;
 
+// --- RBAC / multi-tenancy identity (per agent invocation) ------------------
+// Stamped on every span of an invocation so traces can be aggregated and
+// access-controlled by the AgentOS RBAC/groups model. Distinct from
+// `gen_ai.agent.id` (which is the GAP source SHA) — this is the registry id.
+
+/** AgentOS registry doc id (ObjectId hex) of the invoked agent. */
+export const COMPUTERAGENT_AGENT_ID = "computeragent.agent.id" as const;
+
+/** Owning group (Keycloak group) — the tenancy/visibility key. */
+export const COMPUTERAGENT_GROUP_ID = "computeragent.group.id" as const;
+
+/** Owning user (agent creator's principal id). */
+export const COMPUTERAGENT_OWNER_ID = "computeragent.owner.id" as const;
+
+/** Invoking principal id — who triggered this run. */
+export const COMPUTERAGENT_ACTOR_ID = "computeragent.actor.id" as const;
+
 /** USD cost as reported by the provider. The GenAI spec has no cost key. */
 export const COMPUTERAGENT_USAGE_COST_USD = "computeragent.usage.cost_usd" as const;
 

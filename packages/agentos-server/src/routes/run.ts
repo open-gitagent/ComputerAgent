@@ -4,19 +4,24 @@
 import { Router, type Router as IRouter } from "express";
 import { caAuthHeader } from "../auth.js";
 import { caBase, pipeUpstream } from "../upstream.js";
-import { resolveAgentById, runBodyFor, srsPolicyForAgent } from "../agent-defs.js";
+import { archivedError, resolveAgentById, runBodyFor, srsPolicyForAgent } from "../agent-defs.js";
+import { authorize } from "../auth/authorize.js";
+import { canRead } from "../auth/ownership.js";
 
 export const runRouter: IRouter = Router();
 
-runRouter.post("/agents/:id/run", async (req, res, next) => {
+runRouter.post("/agents/:id/run", authorize("agents:run"), async (req, res, next) => {
   try {
     const agent = await resolveAgentById(req.params["id"]!);
     if (!agent) return res.status(404).json({ error: { code: "UNKNOWN_AGENT" } });
+    if (!canRead(res.locals.principal, agent)) return res.status(403).json({ error: { code: "NOT_OWNER" } });
+    const blocked = archivedError(agent);
+    if (blocked) return res.status(blocked.status).json(blocked.body);
     const message = String((req.body as Record<string, unknown> | undefined)?.["message"] ?? "");
 
     let body: Record<string, unknown>;
     try {
-      body = runBodyFor(agent, message);
+      body = runBodyFor(agent, message, res.locals.principal);
     } catch (err) {
       const status = (err as any)?.status ?? 503;
       return res.status(status).json({ error: { code: "AGENT_CONFIG", message: (err as Error).message } });
