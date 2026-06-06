@@ -5,6 +5,8 @@ dist/
 .DS_Store
 .env
 .env.local
+# Env files holding secrets (e.g. keycloak.env — KC admin pass + client secret).
+*.env
 coverage/
 .vscode/
 .idea/

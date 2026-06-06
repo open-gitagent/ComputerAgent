@@ -113,6 +113,11 @@ export interface RegistryDoc {
   // creator's principal id) governs mutate/delete. Legacy rows have neither.
   ownerGroup?: string | null;
   ownerUser?: string | null;
+  // GAP source sync — the commit SHA the SDK actually loaded, reported on each
+  // `session_started` (payload.agent_sha). Keeps the registry view honest about
+  // which revision is running; a change between runs is logged.
+  sourceSha?: string | null;
+  sourceSyncedAt?: Date | null;
 }
 
 export interface ChatPinDoc {

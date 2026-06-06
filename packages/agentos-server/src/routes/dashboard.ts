@@ -18,6 +18,7 @@ import { logsRouter } from "./logs.js";
 import { sessionsRouter } from "./sessions.js";
 import { schedulesRouter } from "./schedules.js";
 import { apiKeysRouter } from "./api-keys.js";
+import { gitCredentialsRouter } from "./git-credentials.js";
 import { rolesRouter } from "./roles.js";
 import { groupsRouter } from "./groups.js";
 import { chatRouter } from "./chat.js";
@@ -51,6 +52,7 @@ export function mountDashboard(): IRouter {
   r.use(completionRouter); ///completion
   r.use(evalsRouter); //     /evals/*
   r.use(apiKeysRouter); //   /api-keys
+  r.use(gitCredentialsRouter); // /git-credentials, /git-credentials/resolve
   r.use(rolesRouter); //     /roles, /permissions
   r.use(groupsRouter); //    /groups, /groups/:id/members (read-only, from Keycloak)
 

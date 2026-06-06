@@ -35,6 +35,7 @@ const DEFAULT_ROLES: Array<Omit<RoleDoc, "updatedAt">> = [
       "evals:read", "evals:write",
       "obs:read",
       "keys:read",
+      "git-credentials:read", "git-credentials:manage",
     ],
     builtin: true,
   },

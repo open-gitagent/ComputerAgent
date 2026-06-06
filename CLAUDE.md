@@ -92,18 +92,62 @@ Optional GitHub repo **variables** (build-time baked into the SPA bundle):
 The Mongo cluster is the source of truth for AgentOS. **Only the `agentos-server` connects to Mongo.** As of the post-0.2.1 dev build, the Python SDK no longer writes Mongo directly — it POSTs telemetry to the server's ingest endpoint (`AgentOSHttpSink` → `POST /agentos/api/ingest/events`), and the server owns all writes. (The old `AgentRegistrySink` + `MongoMessageSink` and the `motor` dep were removed — see the Python SDK history below.)
 
 **Collections (database = the server's `MONGO_DATABASE`):**
-- `agent_registry` — one doc per registered agent (the server writes `source.type="library"` for harness-mode agents → AgentOS UI hides the chat-sandbox button for those, see commit `8d829b8`)
+- `agent_registry` — one doc per registered agent (the server writes `source.type="library"` for harness-mode agents → AgentOS UI hides the chat-sandbox button for those, see commit `8d829b8`). Also carries **ownership** (`ownerGroup`/`ownerUser`, see §2.6b) and **GAP source sync** (`sourceSha`/`sourceSyncedAt` — the commit SHA the SDK last loaded; the `session_started` projection updates it and logs drift, see §2.6c).
 - `agent_logs` — one doc per conversation (one `ComputerAgent` instance = one log row, multi-turn collapses correctly since the 0.2.0 session-id refactor)
 - `sessions` — ordered chat transcript (one doc per session_id, entries appended in order; **`session_started` is the sole creator** of the doc, so a dropped/reordered start can't stub it)
 - `chat_sessions` — the session-index row (`{_id, agent, createdAt, lastMessageAt}`) the dashboard's session list + per-agent `sessionCount`/`lastActivity` read. The server projection writes this so library-mode sessions show up (the old Python sink omitted it).
 - `agent_messages` — per-event audit trail (every assistant_message / tool_use / tool_result lands here)
 - `slack_threads` — Slack-bot chat-channel state only; **not** written by the ingest projection (it was dead/legacy for library agents).
+- `roles` — the DB-backed RBAC map (`{_id: <Keycloak role name>, permissions[], builtin}`), editable in Settings→Roles; seeded with `agentos-admin`/`-editor`/`-viewer` (§2.6b).
+- `api_keys` — AgentOS-issued service keys (`cak_…`), stored hashed; each carries `roleIds` (capability) + `group` (tenancy). Validated by the harness via introspection; permissions resolve from the same `roles` map (§2.6b).
+- `git_credentials` — group-scoped git PATs (encrypted at rest), one per `(ownerGroup, host)`, used by the SDK to clone private GAP repos (§2.6c).
+
+Resources stamped with `ownerGroup`/`ownerUser` are **hard-isolated**: a non-admin sees only their own or their group's; admins (`*`) see all (§2.6b).
 
 **Credentials required:**
 - On the **SDK** side: `AGENTOS_INGEST_URL` (e.g. `https://<host>/agentos/api/ingest/events`) + optional `AGENTOS_INGEST_TOKEN` (sent as `Authorization: Bearer …`). No Mongo creds.
 - On the **server** side: `MONGO_URL` + `MONGO_DATABASE` (this is the DB the collections above live in).
 
 **Behaviour:** when `AGENTOS_INGEST_URL` is set, the SDK's default telemetry pipeline auto-attaches `AgentOSHttpSink` (gated on the `[agentos]` extra, which is now `httpx`-based). Each event carries a stable `event_id` so the server's writes are idempotent on retry. ⚠️ When the server's `AGENTOS_INGEST_TOKEN` is unset the ingest route is **open** (anonymous writes) — set it on any network-exposed deployment.
+
+---
+
+### 2.6b AgentOS authentication + RBAC (Okta → Keycloak → BFF)
+
+> The shared-password gate is gone. AgentOS now does real SSO + DB-backed RBAC + group ownership. Code lives under `packages/agentos-server/src/auth/`.
+
+**Authentication — Okta federated by Keycloak, BFF session.** The app speaks only OIDC to Keycloak (which brokers Okta). `agentos-server` is the confidential `agent-os-server-client`: it runs Authorization Code + PKCE server-side (`auth/oidc.ts`, `routes/auth.ts`), verifies tokens via JWKS (`jose`), and sets an **httpOnly `agentos_session` cookie** carrying a signed principal snapshot — no token ever reaches the browser. The SPA is SSO-only (`LoginPage`).
+
+**Token refresh (reactive).** The session cookie tracks the (short) access-token expiry; the server also holds a rotating refresh token in `agentos_refresh`. On a `401`, the SPA silently `POST /auth/refresh` (single-flight) and replays; a dead refresh token → SSO sign-in. So you stay logged in while active and only re-auth after Keycloak's SSO idle/max timeout.
+
+**Authorization — DB-backed roles.** Keycloak emits role *names* (`realm_access.roles`) + `groups`; AgentOS owns what each role *can do* via the `roles` collection (editable in Settings→Roles). `authenticate → resolvePermissions → authorize(perm)` gates every dashboard route. Permission catalog is code-defined (`auth/permissions.ts`).
+
+**Three guards / trust boundaries** (`app.ts`): SERVICE `/agentos/api/ingest/*` (`requireIngestAuth`, fails open) + `/agentos/api/keys/*` (`requireIntrospectionAuth`, fails closed); DASHBOARD `/agentos/api/v1/*` (`authenticate`); OBS `/v1/*`. `cak_` API keys authenticate at the dashboard boundary too (→ service principal with `groups=[key.group]`).
+
+**Groups = read-only from Keycloak Admin API** (Settings→Groups). If a user's token lacks the `groups` claim, the server backfills groups from the Admin API at login/refresh (`auth/keycloak-admin.ts:listUserGroups`).
+
+**Required env (server):**
+- `KEYCLOAK_ISSUER_URL` = `https://<kc-host>/realms/<realm>` (e.g. realm `computer-agent`)
+- `OIDC_CLIENT_ID` + `OIDC_CLIENT_SECRET` (confidential client); optional `OIDC_AUDIENCE`, `OIDC_REDIRECT_URI`, `OIDC_POST_LOGOUT_URI`, `OIDC_ROLES_CLAIM`/`OIDC_GROUPS_CLAIM`
+- `AGENTOS_SESSION_SECRET` (HMAC for the signed cookies — **stable in prod**)
+- `AGENTOS_DEFAULT_ROLE` (e.g. `agentos-viewer`) — fallback when the token has no AgentOS role
+- `AGENTOS_BOOTSTRAP_ADMINS` (comma-sep emails granted `*` before role lookup — first-admin bring-up; remove after)
+- `AGENTOS_DEV_AUTH=1` — **local only** dev bypass injecting an admin principal; never in deployed envs
+- `KEYCLOAK_ADMIN_CLIENT_ID`/`SECRET` (defaults to the OIDC client) — service account needs `view-realm`/`view-users` for the Groups view + group backfill
+
+> **Provisioning:** `pnpm --filter @computeragent/agentos-server provision:keycloak` (`scripts/provision-keycloak.mjs`) idempotently creates the realm, the three realm roles, the OIDC client (+ secret), the **Group Membership** mapper, and the service-account roles. Run with `DRY_RUN=1` first. Needs a Keycloak master-admin user/pass (used once, never stored).
+
+### 2.6c Git credentials (private GAP repos) + SHA sync
+
+> So the SDK can clone **private** GAP repos. Code: `auth/.../crypto/secret-box.ts`, `stores/git-credential-store.ts`, `routes/git-credentials.ts`; SDK side in `computeragent-py` (`harness/git_credential_client.py`, `substrates/local.py`).
+
+- **Store.** A PAT is owned by a **group** and scoped to one **host** — one per `(ownerGroup, host)` in `git_credentials`, **AES-256-GCM encrypted at rest**. Managed in Settings→Git Credentials (perms `git-credentials:read`/`:manage`). The secret is write-only (never returned).
+- **Resolve.** The SDK calls `POST /agentos/api/v1/git-credentials/resolve` with its `cak_` key; the server returns the decrypted PAT for the key's group + the repo host (strictly group-scoped, no admin bypass). The SDK injects it via `GIT_CONFIG_*`/`http.<host>.extraHeader` so the token never lands in `argv`/URL; SSH URLs pass through. Miss/401 → unauthenticated clone fallback (public repos unaffected).
+- **SHA sync.** After cloning, the SDK runs `git rev-parse HEAD` and reports it as `agent_sha` on `session_started`; the projection writes `sourceSha`/`sourceSyncedAt` on the registry doc and logs any change. (Reactive — recorded on each run; the SDK already re-clones fresh, so the running agent is never stale.)
+
+**Required env:**
+- Server: `AGENTOS_CREDENTIALS_KEY` (base64 of 32 random bytes; **fail-closed** — credentials CRUD/resolve 503 without it). Optional `AGENTOS_CREDENTIALS_KEY_OLD` for rotation.
+- SDK: `AGENTOS_API_URL` (e.g. `https://<host>/agentos/api/v1`) + the same `cak_` key it already uses (`COMPUTERAGENT_HARNESS_TOKEN` / `AGENTOS_INGEST_TOKEN`). The key's role must include `git-credentials:read`.
 
 ---
 
@@ -276,9 +320,21 @@ OPENAI_API_KEY=sk-...
 # On the SDK (library/worker) side:
 AGENTOS_INGEST_URL=https://<agentos-host>/agentos/api/ingest/events
 AGENTOS_INGEST_TOKEN=<shared-secret>          # optional; must match the server's
+AGENTOS_API_URL=https://<agentos-host>/agentos/api/v1   # for private-GAP credential resolve (§2.6c)
+COMPUTERAGENT_HARNESS_TOKEN=cak_...           # the AgentOS API key the SDK presents (role needs git-credentials:read)
 # On the agentos-server side (NOT the SDK):
 MONGO_URL=mongodb+srv://user:pass@cluster.mongodb.net
 MONGO_DATABASE=computeragent
+# AgentOS auth / RBAC (§2.6b) — SSO via Keycloak (Okta brokered), DB-backed roles:
+KEYCLOAK_ISSUER_URL=https://<kc-host>/realms/computer-agent
+OIDC_CLIENT_ID=agent-os-server-client
+OIDC_CLIENT_SECRET=<confidential-client-secret>
+AGENTOS_SESSION_SECRET=<stable-hmac-secret>
+AGENTOS_DEFAULT_ROLE=agentos-viewer
+# AGENTOS_BOOTSTRAP_ADMINS=you@org.com        # first-admin bring-up; remove after
+# AGENTOS_DEV_AUTH=1                           # LOCAL ONLY — admin bypass, never deployed
+# Git credentials at rest (§2.6c):
+AGENTOS_CREDENTIALS_KEY=<base64 of 32 random bytes>
 
 # OTel → New Relic
 OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net
@@ -359,9 +415,12 @@ pnpm build && pnpm start                  # node dist/index.js
 | `CORS_ORIGIN` | empty | Comma-separated origins allowed to call the API (set to your SPA origin) |
 | `NODE_ENV` | — | `production` enables secure cookies + tightens defaults |
 | `COOKIE_SECURE` | derived from `NODE_ENV` | Force `true` / `false` explicitly |
-| `AGENTOS_SESSION_SECRET` | random per boot | Cookie-session secret. **Set to a stable value in prod** or sessions are invalidated on restart |
-| `API_AUTH_USER` + `API_AUTH_PASS` | unset | Basic-auth gate on the API. When unset the API is open (relies on network policy) |
+| `AGENTOS_SESSION_SECRET` | random per boot | HMAC secret for the signed BFF cookies (`agentos_session`/`agentos_refresh`). **Set to a stable value in prod** or every session is invalidated on restart |
+| `API_AUTH_USER` + `API_AUTH_PASS` | unset | **Legacy** — no longer gates the dashboard (SSO does, §2.6b). Now only used to build the Basic header for outbound loopback calls to the harness (`caAuthHeader`) |
 | `AGENTOS_INGEST_TOKEN` | unset | Bearer token guarding `POST /agentos/api/ingest/events` (the Python SDK's telemetry ingest). When unset the route is **open** (anonymous writes to registry/logs/sessions) — set it on any network-exposed pod. The SDK must send the same value as `AGENTOS_INGEST_TOKEN`. |
+| **Auth / RBAC** (§2.6b) | — | `KEYCLOAK_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (+ optional `OIDC_AUDIENCE`/`OIDC_REDIRECT_URI`/`OIDC_POST_LOGOUT_URI`/`OIDC_ROLES_CLAIM`/`OIDC_GROUPS_CLAIM`); `AGENTOS_DEFAULT_ROLE`, `AGENTOS_BOOTSTRAP_ADMINS`, `AGENTOS_DEV_AUTH=1` (local only); `KEYCLOAK_ADMIN_CLIENT_ID`/`SECRET` for the Groups view + group backfill. Provision with `pnpm provision:keycloak`. |
+| **Git credentials** (§2.6c) | unset | `AGENTOS_CREDENTIALS_KEY` (base64 32B; **fail-closed** for credentials CRUD/resolve) + optional `AGENTOS_CREDENTIALS_KEY_OLD` for rotation. |
+| `AGENTOS_API_KEY_PEPPER` / `AGENTOS_INTROSPECTION_SECRET` | unset | HMAC pepper for `api_keys` hashing; shared secret guarding `/agentos/api/keys/introspect` (harness↔server) |
 | `AGENTOS_RUNTIME` | unset | Default substrate name used by the "Register agent" form (`local` / `bwrap` / `e2b` / `vzvm`) |
 | `AGENTOS_SEED_DEFAULT` | unset | Set to `1` to auto-seed a default agent into the registry on first boot |
 | `AGENTOS_DEFAULT_SOURCE` | `github.com/shreyas-lyzr/general-agent` | Used by the seed agent |
@@ -433,6 +492,10 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export TRACE_BACKEND=newrelic
 export NEW_RELIC_USER_API_KEY=NRAK-...
 export NEW_RELIC_ACCOUNT_ID=1234567
+export AGENTOS_DEV_AUTH=1                  # local only — admin principal, no Keycloak needed (§2.6b)
+# To exercise real SSO/RBAC locally instead, drop AGENTOS_DEV_AUTH and set the
+# KEYCLOAK_ISSUER_URL / OIDC_* vars (run `pnpm provision:keycloak` first).
+# For git-credentials locally: export AGENTOS_CREDENTIALS_KEY=$(openssl rand -base64 32)
 cd packages/agentos-server && pnpm dev
 
 # Terminal 3 — SPA
@@ -470,6 +533,8 @@ Chronological from earliest to latest. Each entry has the commit ref where relev
 | `2756b9a` | `agentos-server`: dashboard API extracted into its own Express service; whole stack dockerized. |
 | `af47a08` | `engine-claude-agent-sdk`: set `IS_SANDBOX=1` for the spawned Claude CLI (skips first-run telemetry prompts and treats the host as a sandbox). |
 | `8d829b8` | `agentos`: introduced derived `liveChatCapable` field. SDK writes `source.type="library"` to `agent_registry` for harness-mode agents; UI checks `liveChatCapable` and hides the chat-sandbox button for those. Also strips model prefixes at every Mongo write site. |
+| `feat/agentos-auth-rbac-refresh` (pushed) | **AgentOS auth + RBAC overhaul (§2.6b).** Replaced the shared password with Okta→Keycloak OIDC (BFF, httpOnly cookie, `jose` JWKS), DB-backed roles (`roles` collection, Settings→Roles), `ownerGroup`/`ownerUser` hard isolation, reactive token refresh (`/auth/refresh`, rotating refresh cookie), read-only Groups view + Admin-API group backfill, `buildApp()` route restructure into versioned `/agentos/api/v1/*` + trust-boundary groups. SPA: AuthContext + `can()`-gated controls, SSO LoginPage, personalized-workspace home, refined agent cards (3/row). Added `scripts/provision-keycloak.mjs` (`pnpm provision:keycloak`). |
+| (same branch) | **Private-GAP git credentials + SHA sync (§2.6c).** `git_credentials` collection (AES-256-GCM at rest, one per `(ownerGroup,host)`), `POST /git-credentials/resolve` for the SDK's `cak_` key, `git-credentials:read`/`:manage` perms. SDK (`computeragent-py`): resolve client + `GIT_CONFIG_*` header injection (token never in argv) + `git rev-parse HEAD` capture → `agent_sha` → registry `sourceSha`/`sourceSyncedAt`. |
 
 ### Cross-cutting fixes worth knowing
 
@@ -518,6 +583,13 @@ kustomize edit set image \
 | PyPI publish pipeline | `computer-agent-python-sdk/.github/workflows/publish.yml` |
 | SPA build args | `agentos/Dockerfile` + workflow `VITE_*` vars |
 | Mongo collections written by SDK | `computeragent-py/src/computeragent/telemetry/sinks/agentos.py` |
+| AgentOS auth / OIDC / BFF + refresh | `packages/agentos-server/src/auth/{oidc,authenticate,authorize,ownership,keycloak-admin}.ts`, `routes/auth.ts` |
+| Permission catalog + role seeds | `packages/agentos-server/src/auth/permissions.ts`, `stores/role-store.ts` |
+| Route composition / trust boundaries | `packages/agentos-server/src/app.ts`, `routes/dashboard.ts` |
+| Git-credential store + resolve endpoint | `packages/agentos-server/src/crypto/secret-box.ts`, `stores/git-credential-store.ts`, `routes/git-credentials.ts` |
+| SDK private-repo clone (PAT + SHA) | `computeragent-py/src/computeragent/harness/git_credential_client.py`, `substrates/local.py` |
+| Keycloak provisioning script | `packages/agentos-server/scripts/provision-keycloak.mjs` (`pnpm provision:keycloak`) |
 | Migration recipe (NordAssist QA) | `lyzr-experiments/NORDASSIST_MIGRATION.md` |
 | In-progress 0.2.1 plan | `~/.claude/plans/hey-i-need-the-idempotent-pretzel.md` |
+| GAP-auth + SHA-sync plan | `~/.claude/plans/reflective-mapping-lovelace.md` |
 

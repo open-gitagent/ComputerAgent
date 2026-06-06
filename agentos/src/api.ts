@@ -249,6 +249,23 @@ export interface ApiKey {
   revokedAt?: string | null;
 }
 
+/** A group-scoped git credential (PAT). The secret is never returned — only
+ *  metadata. One credential per (ownerGroup, host). */
+export interface GitCredential {
+  _id: string;
+  host: string;
+  ownerGroup: string;
+  ownerUser: string;
+  label: string;
+  username?: string | null;
+  last4: string;
+  hasSecret: true;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  rotatedAt?: string | null;
+}
+
 // Current principal, from GET /me. Drives the SPA's permission gating.
 export interface Me {
   id: string; // principal id (Keycloak sub) — compare to resource ownerUser
@@ -556,6 +573,13 @@ export const api = {
         ...(opts?.roleIds?.length ? { roleIds: opts.roleIds } : {}),
       }),
     revoke: (id: string) => reqJSON<{ ok: boolean }>("DELETE", `/api-keys/${encodeURIComponent(id)}`),
+  },
+
+  gitCredentials: {
+    list: () => getJSON<{ credentials: GitCredential[] }>("/git-credentials").then((d) => d.credentials),
+    create: (body: { host: string; group?: string; label: string; token: string; username?: string }) =>
+      postJSON<{ credential: GitCredential }>("/git-credentials", body),
+    remove: (id: string) => reqJSON<{ ok: boolean }>("DELETE", `/git-credentials/${encodeURIComponent(id)}`),
   },
 
   // Evals — suite CRUD + run trigger + run readback.
