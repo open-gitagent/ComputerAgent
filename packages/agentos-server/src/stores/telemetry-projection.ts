@@ -138,6 +138,18 @@ async function onSessionStarted(ev: IngestEvent): Promise<void> {
     ? librarySourceFor(name, payload, description)
     : inlineSourceFor(name, payload, description);
 
+  // GAP source sync — the SDK reports the cloned commit SHA in payload.agent_sha.
+  // Record it on the registry doc so the dashboard reflects the running revision;
+  // a change since the last run is logged (the SDK already re-clones each run, so
+  // nothing to re-materialize server-side).
+  const observedSha = typeof payload["agent_sha"] === "string" && payload["agent_sha"] ? (payload["agent_sha"] as string) : null;
+  if (observedSha) {
+    const prior = await (await registryColl()).findOne({ name }, { projection: { sourceSha: 1 } });
+    if (prior?.sourceSha && prior.sourceSha !== observedSha) {
+      console.log(`[agentos-server] GAP source changed for "${name}": ${prior.sourceSha.slice(0, 8)} → ${observedSha.slice(0, 8)}`);
+    }
+  }
+
   // agent_registry upsert (idempotent on agent name). Mongo mints the
   // surrogate ObjectId `_id` on first insert; `name` is the unique key the
   // Python/library ingest addresses agents by.
@@ -152,6 +164,7 @@ async function onSessionStarted(ev: IngestEvent): Promise<void> {
         registeredBy: ev.host ?? undefined,
         updatedAt: now,
         lastSeen: now,
+        ...(observedSha ? { sourceSha: observedSha, sourceSyncedAt: now } : {}),
       },
     },
     { upsert: true },

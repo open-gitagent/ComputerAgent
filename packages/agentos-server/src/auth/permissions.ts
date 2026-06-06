@@ -32,6 +32,8 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "obs:read", description: "View observability traces and dashboards" },
   { key: "keys:read", description: "View API keys" },
   { key: "keys:manage", description: "Mint and revoke API keys" },
+  { key: "git-credentials:read", description: "View git credentials (metadata only) and resolve them for cloning" },
+  { key: "git-credentials:manage", description: "Create, rotate, and delete git credentials (PATs)" },
   { key: "roles:manage", description: "View and edit roles and permissions" },
   { key: "groups:read", description: "View groups + members (read-only, from Keycloak)" },
 ];

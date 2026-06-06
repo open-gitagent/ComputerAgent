@@ -25,6 +25,7 @@ import { pingClickHouse } from "./clickhouse.js";
 import { pingNewRelic } from "./new-relic.js";
 import { pingMongo, migrateLegacyWebSessions, migrateRegistryObjectIds, ensureRegistryIndexes } from "./mongo.js";
 import { apiKeyStore } from "./stores/api-key-store.js";
+import { gitCredentialStore } from "./stores/git-credential-store.js";
 import { roleStore } from "./stores/role-store.js";
 import { ensureFieldValueMVs } from "./migrations.js";
 import { startScheduler } from "./scheduler.js";
@@ -105,6 +106,7 @@ app.listen(PORT, async () => {
       }
       await ensureRegistryIndexes();
       await apiKeyStore.ensureIndexes();
+      await gitCredentialStore.ensureIndexes();
       await roleStore.seedDefaults(); // idempotent: agentos-admin/editor/viewer
     } catch (err) {
       console.warn("[agentos-server] registry id migration/index failed:", (err as Error).message);
