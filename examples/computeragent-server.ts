@@ -40,7 +40,12 @@ import { streamSSE } from "hono/streaming";
 import { serve, type ServerType } from "@hono/node-server";
 import { ComputerAgent, LocalSubstrate } from "computeragent";
 import type { IdentitySource, Substrate } from "computeragent";
-import { makeApiKeyVerifier, type ApiKeyVerifier } from "./introspection-auth.ts";
+import {
+  makeApiKeyVerifier,
+  requiredPermissionFor,
+  principalHasPermission,
+  type ApiKeyVerifier,
+} from "./introspection-auth.ts";
 import type {
   HarnessEvent,
   PersistedEvent,
@@ -826,6 +831,10 @@ export class ComputerAgentServer {
     const verifier: ApiKeyVerifier | null = apiKeyEnabled
       ? makeApiKeyVerifier({ url: introspectUrl!, serviceSecret: introspectSecret!, logger: console })
       : null;
+    // One-shot warning when introspection returns no `permissions` (an AgentOS
+    // that predates capability resolution): capability checks are then disabled
+    // for back-compat. Logged once so a rolling upgrade is visible, not silent.
+    let warnedNoPerms = false;
 
     if (basicEnabled || apiKeyEnabled) {
       const expected = basicEnabled
@@ -845,12 +854,34 @@ export class ComputerAgentServer {
           } catch { /* length mismatch — fall through */ }
         }
 
-        // (b) API key — Authorization: Bearer cak_…  validated via introspection.
+        // (b) API key — Authorization: Bearer cak_…  validated via introspection,
+        //     THEN a per-route capability check. AgentOS resolves the key's roles
+        //     to effective permissions; the CAS gates each route on one of them
+        //     (GET → agents:read, execute/mutate → agents:run). A valid-but-
+        //     under-privileged key (e.g. a viewer key) gets 403, not 401.
+        //     NB: the Basic branch above is the agentos-server loopback path
+        //     (caAuthHeader sends Basic) — it already enforced full RBAC +
+        //     ownership, so it intentionally bypasses this capability check.
         if (verifier) {
           const m = /^Bearer\s+(.+)$/i.exec(got);
           if (m) {
             const principal = await verifier(m[1]!);
-            if (principal) return next();
+            if (principal) {
+              if (principal.permissions === undefined && !warnedNoPerms) {
+                warnedNoPerms = true;
+                console.warn(
+                  "[auth] introspection returned no `permissions` field — capability " +
+                    "checks DISABLED (back-compat). Upgrade AgentOS so it resolves API-key " +
+                    "roles to permissions, then the CAS enforces agents:run / agents:read.",
+                );
+              }
+              const required = requiredPermissionFor(c.req.method, path);
+              if (principalHasPermission(principal, required)) return next();
+              return c.json(
+                { error: { code: "INSUFFICIENT_PERMISSION", message: `requires ${required}` } },
+                403,
+              );
+            }
           }
         }
 

@@ -44,6 +44,10 @@ export const FIELDS: FieldDef[] = [
   { key: "provider",        label: "Provider",       type: "string", ops: ["eq", "neq", "in", "not_in", "exists"] },
   { key: "tool",            label: "Tool",           type: "string", ops: ["eq", "neq", "in", "contains", "exists"] },
   { key: "conversation_id", label: "Conversation",   type: "string", ops: ["eq", "contains"] },
+  // RBAC / multi-tenancy identity (stamped by the computeragent-server flow).
+  { key: "group_id",        label: "Group",          type: "string", ops: ["eq", "neq", "in", "not_in", "exists"] },
+  { key: "owner_id",        label: "Owner",          type: "string", ops: ["eq", "neq", "in", "not_in", "exists"] },
+  { key: "actor_id",        label: "Actor",          type: "string", ops: ["eq", "neq", "in", "not_in", "exists"] },
   { key: "service",         label: "Service",        type: "string", ops: ["eq", "neq", "in"] },
   { key: "span_name",       label: "Span Name",      type: "string", ops: ["eq", "neq", "contains"] },
   { key: "duration_ms",     label: "Duration (ms)",  type: "number", ops: ["gt", "gte", "lt", "lte", "eq"] },

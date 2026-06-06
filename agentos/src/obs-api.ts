@@ -122,9 +122,11 @@ export const obsApi = {
     postJSON<{ traces: TraceSummary[] }>(`/v1/traces/search`, q).then((d) => d.traces),
   trace: (traceId: string) =>
     getJSON<TraceDetail>(`/v1/traces/${encodeURIComponent(traceId)}`),
-  dashboard: (opts: { agent?: string; from?: string; to?: string } = {}) => {
+  dashboard: (opts: { agent?: string; group?: string; actor?: string; from?: string; to?: string } = {}) => {
     const params = new URLSearchParams();
     if (opts.agent) params.set("agent", opts.agent);
+    if (opts.group) params.set("group", opts.group);
+    if (opts.actor) params.set("actor", opts.actor);
     if (opts.from) params.set("from", opts.from);
     if (opts.to) params.set("to", opts.to);
     const qs = params.toString();

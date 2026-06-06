@@ -23,6 +23,7 @@ import {
 import { authenticate } from "../auth/authenticate.js";
 import { resolvePermissions } from "../auth/authorize.js";
 import type { Principal } from "../auth/principal.js";
+import { keycloakAdminConfigured, listUserGroups } from "../auth/keycloak-admin.js";
 import {
   oidcConfigured,
   makeState,
@@ -57,6 +58,21 @@ interface OidcTx {
 // Refresh-cookie default lifetime when Keycloak omits `refresh_expires_in`
 // (seconds). Caps how long an idle tab can silently refresh before re-login.
 const REFRESH_FALLBACK_SEC = parseInt(process.env["AGENTOS_REFRESH_MAX_AGE_SEC"] ?? "1800", 10);
+
+// Tenancy depends on the principal's groups, which come from the token's
+// `groups` claim. If that claim is absent (no Group Membership mapper on the
+// client), fall back to the Keycloak Admin API so group-scoped visibility still
+// works. Best-effort: any failure leaves groups as-is.
+async function withGroups(principal: Principal): Promise<Principal> {
+  if (principal.groups.length > 0 || !principal.id || !keycloakAdminConfigured()) return principal;
+  try {
+    const groups = await listUserGroups(principal.id);
+    if (groups.length) return { ...principal, groups };
+  } catch {
+    /* admin API unavailable / insufficient role — leave groups empty */
+  }
+  return principal;
+}
 
 function accessTokenExpMs(accessToken: string): number {
   try {
@@ -154,7 +170,7 @@ authRouter.get("/auth/callback", async (req, res, next) => {
     }
 
     const tokens = await exchangeCode(code, tx.verifier);
-    const principal = claimsToPrincipal(await verifyAccessToken(tokens.access_token));
+    const principal = await withGroups(claimsToPrincipal(await verifyAccessToken(tokens.access_token)));
     setSessionCookies(res, tokens, principal);
     res.redirect("/");
   } catch (err) {
@@ -200,7 +216,7 @@ authRouter.post("/auth/refresh", async (req, res, next) => {
       res.clearCookie(ID_TOKEN_COOKIE, { path: "/" });
       return res.status(401).json({ error: { code: "REFRESH_FAILED" } });
     }
-    const principal = claimsToPrincipal(await verifyAccessToken(tokens.access_token));
+    const principal = await withGroups(claimsToPrincipal(await verifyAccessToken(tokens.access_token)));
     setSessionCookies(res, tokens, principal);
     res.json({ ok: true });
   } catch (err) {

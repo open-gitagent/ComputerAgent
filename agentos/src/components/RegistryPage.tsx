@@ -167,7 +167,7 @@ export function RegistryPage({
           {err && <div className="text-xs text-destructive">{err}</div>}
 
           {!loaded && !err && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {Array.from({ length: 8 }).map((_, i) => (
                 <Skeleton key={i} className="h-32 w-full" />
               ))}
@@ -192,7 +192,7 @@ export function RegistryPage({
           {grouped.hosted.length > 0 && (
             <section className="space-y-3">
               <SectionLabel name="Hosted" count={grouped.hosted.length} />
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {grouped.hosted.map((a) => (
                   <AgentCard
                     key={a.id}
@@ -210,7 +210,7 @@ export function RegistryPage({
           {grouped.library.length > 0 && (
             <section className="space-y-3">
               <SectionLabel name="Library" count={grouped.library.length} />
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {grouped.library.map((a) => (
                   <AgentCard
                     key={a.id}
@@ -228,7 +228,7 @@ export function RegistryPage({
           {grouped.archived.length > 0 && (
             <section className="space-y-3">
               <SectionLabel name="Archived" count={grouped.archived.length} />
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {grouped.archived.map((a) => (
                   <AgentCard
                     key={a.id}

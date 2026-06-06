@@ -6,7 +6,7 @@ import { TraceList } from "./TraceList.tsx";
 import { TraceDetail } from "./TraceDetail.tsx";
 import { Dashboard } from "./Dashboard.tsx";
 import { DateRangePicker, type Range } from "./DateRangePicker.tsx";
-import { AgentFilter } from "./AgentFilter.tsx";
+import { FieldValueFilter } from "./FieldValueFilter.tsx";
 import { PageHeader } from "../composite/PageHeader.tsx";
 import { StatusDot } from "../composite/StatusDot.tsx";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs.tsx";
@@ -22,6 +22,8 @@ export function ObservabilityTab() {
   const [sub, setSub] = useState<SubTab>("dashboard");
   const [range, setRange] = useState<Range>({ from: "now-15m", to: "now" });
   const [agent, setAgent] = useState<string>("");
+  const [group, setGroup] = useState<string>("");
+  const [actor, setActor] = useState<string>("");
   const [filters, setFilters] = useState<Filter[]>([]);
   const [traces, setTraces] = useState<TraceSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -37,10 +39,16 @@ export function ObservabilityTab() {
       .catch(() => setChOk(false));
   }, []);
 
-  // Merge the agent selector into the explicit filter list — the agent acts as
-  // an implicit `agent eq <name>` AND-filter on top of whatever the QueryBuilder holds.
-  const effectiveFilters = (): Filter[] =>
-    agent ? [{ field: "agent", op: "eq", value: agent }, ...filters] : filters;
+  // Merge the header selectors into the explicit filter list — agent / group /
+  // actor each act as an implicit `<field> eq <value>` AND-filter on top of
+  // whatever the QueryBuilder holds. All are RBAC-scoped server-side.
+  const effectiveFilters = (): Filter[] => {
+    const implicit: Filter[] = [];
+    if (agent) implicit.push({ field: "agent", op: "eq", value: agent });
+    if (group) implicit.push({ field: "group_id", op: "eq", value: group });
+    if (actor) implicit.push({ field: "actor_id", op: "eq", value: actor });
+    return [...implicit, ...filters];
+  };
 
   // Fetch the first (newest) page, replacing any existing rows.
   const run = () => {
@@ -79,7 +87,7 @@ export function ObservabilityTab() {
   useEffect(() => {
     if (sub === "explorer") run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range.from, range.to, sub, agent]);
+  }, [range.from, range.to, sub, agent, group, actor]);
 
   const healthLabel = chOk == null ? "checking…" : chOk ? "ClickHouse up" : "ClickHouse down";
   const healthStatus = chOk == null ? "loading" : chOk ? "live" : "error";
@@ -98,7 +106,29 @@ export function ObservabilityTab() {
               </TabsList>
             </Tabs>
 
-            <AgentFilter value={agent} onChange={setAgent} />
+            <FieldValueFilter
+              field="agent"
+              value={agent}
+              onChange={setAgent}
+              placeholder="All agents"
+              emptyMessage="No agents seen yet."
+            />
+            <FieldValueFilter
+              field="group_id"
+              value={group}
+              onChange={setGroup}
+              placeholder="All groups"
+              emptyMessage="No groups seen yet."
+              width="w-[150px]"
+            />
+            <FieldValueFilter
+              field="actor_id"
+              value={actor}
+              onChange={setActor}
+              placeholder="All actors"
+              emptyMessage="No actors seen yet."
+              width="w-[150px]"
+            />
             <DateRangePicker value={range} onChange={setRange} />
             <StatusDot status={healthStatus} label={healthLabel} />
           </>
@@ -107,7 +137,13 @@ export function ObservabilityTab() {
 
       {sub === "dashboard" ? (
         <div className="flex-1 min-h-0 overflow-auto">
-          <Dashboard agent={agent || undefined} from={range.from} to={range.to} />
+          <Dashboard
+            agent={agent || undefined}
+            group={group || undefined}
+            actor={actor || undefined}
+            from={range.from}
+            to={range.to}
+          />
         </div>
       ) : (
         <div className="flex-1 min-h-0 flex flex-col">

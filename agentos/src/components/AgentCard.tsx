@@ -1,4 +1,4 @@
-import { GitBranch, FolderTree, Code2, MessageSquare, Activity, Clock, ExternalLink, Trash2, Archive, ArchiveRestore } from "lucide-react";
+import { GitBranch, FolderTree, Code2, MessageSquare, Activity, Clock, ExternalLink, Trash2, Archive, ArchiveRestore, Users2, Cpu, ArrowUpRight } from "lucide-react";
 import { type Agent, displaySource } from "../api.ts";
 import { Badge } from "./ui/badge.tsx";
 import { cn } from "../lib/cn.ts";
@@ -19,17 +19,28 @@ function timeAgo(iso: string | null): string {
   return `${Math.floor(s / 86400)}d`;
 }
 
+/** Compact, human model label: drop a provider prefix ("anthropic:…") and the
+ *  "claude-" vendor prefix so "claude-haiku-4-5" → "haiku-4-5". */
+function shortModel(model: string | null): string | null {
+  if (!model) return null;
+  const afterProvider = model.includes(":") ? model.slice(model.lastIndexOf(":") + 1) : model;
+  return afterProvider.replace(/^claude-/, "");
+}
+
 /**
- * Single agent card for the rail.
+ * Single agent card for the registry grid (Refined layout).
  *
- * Two zones with a hairline divider between them:
- *   Top:    avatar (harness logo on white) + name + status pill + LIB/1-shot chip
- *           source line: owner/repo with kind glyph + clickable external icon
- *   Bottom: stat row — sessions / logs / lastActivity, each with icon
+ *   Top:    avatar (harness logo / gradient initial) + live status dot
+ *           name + quiet badges (lib / 1-shot / archived)
+ *           status pill (Live ×N / Idle) · harness
+ *           chips: model · owner group
+ *   Source: owner/repo with kind glyph + external-link icon
+ *   Footer: sessions / logs / last activity
  *
- * Click anywhere on the card opens the agent's workspace (chat). The
- * external-link icon is the only nested clickable; stopPropagation
- * prevents card-click bubbling.
+ * The whole card is a button that opens the agent's workspace. Nested
+ * affordances (hover actions, source link) stopPropagation. Hover actions are
+ * passed in by the parent only when the caller is permitted (RBAC), so absence
+ * of a handler hides the control.
  */
 export function AgentCard({
   agent: a,
@@ -57,6 +68,7 @@ export function AgentCard({
   const initial = displayName.charAt(0).toUpperCase();
   const isLive = a.activeSandboxes > 0;
   const sd = displaySource(a.source);
+  const model = shortModel(a.model);
 
   return (
     <button
@@ -64,12 +76,14 @@ export function AgentCard({
       className={cn(
         "group relative w-full text-left rounded-xl border bg-background transition overflow-hidden shadow-sm",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        a.archived && "opacity-60 saturate-50",
+        a.archived && "opacity-70 saturate-[0.6]",
         selected
           ? "border-primary/50 ring-1 ring-primary/30 shadow-md shadow-primary/10"
           : "border-border/60 hover:border-border hover:bg-muted/30 hover:shadow-md",
       )}
     >
+      {/* Hover affordances — top-right. Each is rendered only when the parent
+          supplies a handler (RBAC-gated). */}
       {(onDelete || onArchive || onUnarchive) && (
         <span className="absolute right-2 top-2 z-10 flex items-center gap-1">
           {onArchive && (
@@ -135,7 +149,7 @@ export function AgentCard({
               </span>
             )}
             <span
-              title={isLive ? `${a.activeSandboxes} live` : "idle"}
+              title={isLive ? `${a.activeSandboxes} live sandbox(es)` : "idle"}
               className={cn(
                 "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-card",
                 isLive ? "bg-emerald-400" : "bg-muted-foreground/40",
@@ -143,9 +157,9 @@ export function AgentCard({
             />
           </div>
 
-          {/* Name + badges */}
+          {/* Name + badges + meta */}
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0 pr-6">
               <span className="font-semibold text-[13.5px] text-foreground truncate" title={displayName}>
                 {displayName}
               </span>
@@ -159,15 +173,46 @@ export function AgentCard({
                   1-shot
                 </Badge>
               )}
-              {a.archived && (
-                <Badge variant="outline" className="shrink-0 h-4 text-[9px] uppercase tracking-wider px-1.5 border-muted-foreground/40 text-muted-foreground" title="archived — cannot run until unarchived">
-                  archived
-                </Badge>
-              )}
             </div>
-            <div className="mt-0.5 text-[10.5px] text-muted-foreground/80 font-mono truncate" title={a.harness}>
-              {a.harness}
+
+            {/* Status line: live/idle pill · harness */}
+            <div className="mt-1 flex items-center gap-1.5 min-w-0 text-[11px]">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium",
+                  a.archived
+                    ? "bg-muted text-muted-foreground"
+                    : isLive
+                      ? "bg-emerald-500/15 text-emerald-400"
+                      : "bg-muted text-muted-foreground",
+                )}
+              >
+                {!a.archived && isLive && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />}
+                {a.archived ? "Archived" : isLive ? `Live${a.activeSandboxes > 1 ? ` ×${a.activeSandboxes}` : ""}` : "Idle"}
+              </span>
+              <span className="text-muted-foreground/50">·</span>
+              <span className="font-mono text-muted-foreground/80 truncate" title={a.harness}>
+                {a.harness}
+              </span>
             </div>
+
+            {/* Chips: model · owner group */}
+            {(model || a.ownerGroup) && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                {model && (
+                  <Badge variant="outline" className="h-4 gap-1 px-1.5 text-[10px] font-mono text-muted-foreground" title={a.model ?? undefined}>
+                    <Cpu className="h-2.5 w-2.5" />
+                    {model}
+                  </Badge>
+                )}
+                {a.ownerGroup && (
+                  <Badge variant="outline" className="h-4 gap-1 px-1.5 text-[10px] border-primary/30 text-primary/90" title={`Owner group: ${a.ownerGroup}`}>
+                    <Users2 className="h-2.5 w-2.5" />
+                    {a.ownerGroup}
+                  </Badge>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -199,15 +244,19 @@ export function AgentCard({
       <div className="h-px bg-border/60 mx-3" />
 
       {/* FOOTER */}
-      <div className="px-3 py-1.5 flex items-center gap-2.5 text-[10.5px] text-muted-foreground">
+      <div className="px-3 py-1.5 flex items-center gap-3 text-[10.5px] text-muted-foreground">
         <span className="inline-flex items-center gap-1" title={`${a.sessionCount} session${a.sessionCount === 1 ? "" : "s"}`}>
-          <MessageSquare className="h-3 w-3" /> <span className="font-mono">{a.sessionCount}</span>
+          <MessageSquare className="h-3 w-3" /> <span className="font-mono tabular-nums">{a.sessionCount}</span> sessions
         </span>
         <span className="inline-flex items-center gap-1" title={`${a.logCount} log${a.logCount === 1 ? "" : "s"}`}>
-          <Activity className="h-3 w-3" /> <span className="font-mono">{a.logCount}</span>
+          <Activity className="h-3 w-3" /> <span className="font-mono tabular-nums">{a.logCount}</span>
         </span>
         <span className="ml-auto inline-flex items-center gap-1" title={a.lastActivity ?? a.lastSeen ?? "no activity"}>
           <Clock className="h-3 w-3" /> {timeAgo(a.lastActivity ?? a.lastSeen ?? null)}
+        </span>
+        {/* "Open" cue — appears on hover so the click target reads as actionable. */}
+        <span className="inline-flex items-center gap-0.5 text-primary opacity-0 group-hover:opacity-100 transition-opacity" aria-hidden>
+          <ArrowUpRight className="h-3 w-3" />
         </span>
       </div>
     </button>

@@ -24,7 +24,19 @@ import {
 // reference even when ChartContainer (which uses it internally) is the only call site.
 void _RC;
 
-export function Dashboard({ agent, from, to }: { agent?: string; from: string; to: string }) {
+export function Dashboard({
+  agent,
+  group,
+  actor,
+  from,
+  to,
+}: {
+  agent?: string;
+  group?: string;
+  actor?: string;
+  from: string;
+  to: string;
+}) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -32,14 +44,14 @@ export function Dashboard({ agent, from, to }: { agent?: string; from: string; t
   useEffect(() => {
     setLoading(true);
     obsApi
-      .dashboard({ agent, from, to })
+      .dashboard({ agent, group, actor, from, to })
       .then((d) => {
         setData(d);
         setErr(null);
       })
       .catch((e) => setErr(String(e)))
       .finally(() => setLoading(false));
-  }, [agent, from, to]);
+  }, [agent, group, actor, from, to]);
 
   if (err) return <div className="p-6 text-sm text-destructive">{err}</div>;
   if (loading || !data) {
