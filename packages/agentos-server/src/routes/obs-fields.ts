@@ -28,6 +28,22 @@ obsFieldsRouter.get("/fields", (_req, res) => {
 
 type ValueRow = { value: string; count: number; lastSeenMs: number };
 
+// Fields the `otel_field_values` materialized view actually covers (see
+// migrations.ts FIELD_MVS). Any field NOT in this set — notably the RBAC
+// identity fields group_id/owner_id/actor_id — has no MV rows, so the fast path
+// would return empty. Those fall through to the DISTINCT scan instead.
+const MV_MATERIALIZED_FIELDS = new Set([
+  "agent",
+  "model",
+  "operation",
+  "provider",
+  "tool",
+  "conversation_id",
+  "service",
+  "span_name",
+  "status",
+]);
+
 obsFieldsRouter.get("/fields/:name/values", async (req, res, next) => {
   try {
     const name = req.params["name"] ?? "";
@@ -72,11 +88,13 @@ async function fetchValuesClickhouse(
   values: ValueRow[];
   source: "materialized" | "distinct-scan";
 }> {
-  // Fast path — materialized view (created by migrations on boot). SKIPPED for
-  // scoped (non-superuser) reads: `otel_field_values` aggregates (field, value)
-  // with no owner/group dimension, so it can't be filtered by RBAC scope. Those
-  // callers fall straight through to the scoped DISTINCT scan below.
-  if (!scope) {
+  // Fast path — materialized view (created by migrations on boot). SKIPPED when:
+  //  • the read is scoped (non-superuser): the MV aggregates (field, value) with
+  //    no owner/group dimension, so it can't be filtered by RBAC scope; and
+  //  • the field isn't materialized (e.g. the identity fields group_id/owner_id/
+  //    actor_id): the MV has no rows for it, so the fast path would return empty.
+  // Both cases fall through to the DISTINCT scan below (scoped when `scope` set).
+  if (!scope && MV_MATERIALIZED_FIELDS.has(name)) {
     try {
       const rows = await chQueryRows<ClickhouseValueRow>(
         `SELECT value,

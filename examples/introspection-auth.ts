@@ -33,7 +33,48 @@ export interface ApiKeyVerifierOptions {
 
 export interface ApiKeyPrincipal {
   principal: string;
+  /**
+   * Effective permission keys resolved from the key's roles by AgentOS (e.g.
+   * `["agents:run", "agents:read", ...]` or `["*"]` for admin). Gated per route
+   * by {@link requiredPermissionFor} + {@link principalHasPermission}.
+   *
+   * `undefined` means the introspection response carried NO `permissions` field
+   * — an AgentOS that predates capability resolution. The gate treats that as a
+   * back-compat "active ⇒ allow" to avoid breaking a rolling upgrade; as soon as
+   * AgentOS returns `permissions` (even `[]`), enforcement kicks in.
+   */
+  permissions?: string[];
+  /** The key's bound group (tenancy), if any. Captured for audit/identity. */
+  group?: string | null;
+  /** @deprecated Always `["*"]` from AgentOS; retained for back-compat only. */
   scopes?: string[];
+}
+
+/** Permission catalog keys the CAS gates on (subset of AgentOS's catalog). */
+const PERM_AGENTS_RUN = "agents:run";
+const PERM_AGENTS_READ = "agents:read";
+const WILDCARD = "*";
+
+/**
+ * Map an inbound CAS request to the permission it requires. The CAS surface is
+ * small and uniform: reads (GET) need `agents:read`; everything that executes or
+ * mutates an agent/sandbox/task (POST/DELETE on /run, /sandboxes, /tasks, …)
+ * needs `agents:run`. `/health` + `/slack/*` are unauthenticated and never reach
+ * here. Returns null when no permission is required.
+ */
+export function requiredPermissionFor(method: string, _path: string): string | null {
+  return method.toUpperCase() === "GET" ? PERM_AGENTS_READ : PERM_AGENTS_RUN;
+}
+
+/**
+ * Capability check for a verified key. `["*"]` satisfies anything. A principal
+ * with NO `permissions` field (old AgentOS) is allowed for back-compat (see
+ * {@link ApiKeyPrincipal.permissions}); the caller logs that case once.
+ */
+export function principalHasPermission(p: ApiKeyPrincipal, perm: string | null): boolean {
+  if (perm === null) return true;
+  if (p.permissions === undefined) return true; // back-compat: pre-capability AgentOS
+  return p.permissions.includes(WILDCARD) || p.permissions.includes(perm);
 }
 
 export type ApiKeyVerifier = (token: string) => Promise<ApiKeyPrincipal | null>;
@@ -100,13 +141,23 @@ export function makeApiKeyVerifier(opts: ApiKeyVerifierOptions): ApiKeyVerifier 
         cacheSet(cacheKey, null); // fail-closed
         return null;
       }
-      const data = (await resp.json()) as { active?: boolean; principal?: string; scopes?: string[] };
+      const data = (await resp.json()) as {
+        active?: boolean;
+        principal?: string;
+        permissions?: string[];
+        group?: string | null;
+        scopes?: string[];
+      };
       if (!data?.active || !data.principal) {
         cacheSet(cacheKey, null);
         return null;
       }
       const value: ApiKeyPrincipal = {
         principal: data.principal,
+        // Preserve `undefined` (field absent) vs `[]` (present, no perms) — the
+        // gate distinguishes them for the rolling-upgrade back-compat path.
+        ...(Array.isArray(data.permissions) ? { permissions: data.permissions } : {}),
+        ...(typeof data.group === "string" ? { group: data.group } : {}),
         ...(Array.isArray(data.scopes) ? { scopes: data.scopes } : {}),
       };
       cacheSet(cacheKey, value);

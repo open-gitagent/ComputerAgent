@@ -1,16 +1,8 @@
-// Agent selector for the Observability views. Sources its options from the
-// live `/v1/fields/agent/values` endpoint (FACET on gen_ai.agent.name), so it
-// lists exactly the agents that have emitted telemetry. Empty value = all agents.
+// Agent selector for the Observability views. Thin wrapper over the generic
+// FieldValueFilter, bound to the `agent` field (FACET on gen_ai.agent.name,
+// RBAC-scoped server-side). Empty value = all agents.
 
-import { X } from "lucide-react";
-import { obsApi } from "../../obs-api.ts";
-import { Combobox, type ComboOption } from "../ui/combobox.tsx";
-import { Button } from "../ui/button.tsx";
-
-const loadAgents = (): Promise<ComboOption[]> =>
-  obsApi
-    .fieldValues("agent", 100)
-    .then((rows) => rows.map((r) => ({ value: r.value, count: r.count })));
+import { FieldValueFilter } from "./FieldValueFilter.tsx";
 
 export function AgentFilter({
   value,
@@ -20,27 +12,13 @@ export function AgentFilter({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="flex items-center gap-1">
-      <Combobox
-        value={value}
-        onValueChange={onChange}
-        loadOptions={loadAgents}
-        loadOptionsKey="agent"
-        placeholder="All agents"
-        emptyMessage="No agents seen yet."
-        className="w-[180px]"
-      />
-      {value && (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 text-muted-foreground hover:text-foreground"
-          onClick={() => onChange("")}
-          aria-label="Clear agent filter"
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
-      )}
-    </div>
+    <FieldValueFilter
+      field="agent"
+      value={value}
+      onChange={onChange}
+      placeholder="All agents"
+      emptyMessage="No agents seen yet."
+      clearLabel="Clear agent filter"
+    />
   );
 }

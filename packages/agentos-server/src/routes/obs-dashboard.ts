@@ -47,6 +47,8 @@ obsDashboardRouter.get("/dashboard", async (req, res, next) => {
     const from = typeof req.query["from"] === "string" ? req.query["from"] : "now-24h";
     const to = typeof req.query["to"] === "string" ? req.query["to"] : "now";
     const agent = typeof req.query["agent"] === "string" ? req.query["agent"] : undefined;
+    const group = typeof req.query["group"] === "string" ? req.query["group"] : undefined;
+    const actor = typeof req.query["actor"] === "string" ? req.query["actor"] : undefined;
 
     const fromDate = parseTime(from);
     const toDate = parseTime(to);
@@ -63,8 +65,8 @@ obsDashboardRouter.get("/dashboard", async (req, res, next) => {
     const scope = ownerScopeFor(res.locals.principal);
 
     const payload = traceBackend() === "newrelic"
-      ? await dashboardFromNrql({ fromDate, toDate, intervalSec, agent, scope })
-      : await dashboardFromClickhouse({ fromDate, toDate, intervalSec, agent, scope });
+      ? await dashboardFromNrql({ fromDate, toDate, intervalSec, agent, group, actor, scope })
+      : await dashboardFromClickhouse({ fromDate, toDate, intervalSec, agent, group, actor, scope });
 
     res.json({ intervalSec, window: { from, to }, ...payload });
   } catch (err) {
@@ -79,6 +81,8 @@ async function dashboardFromClickhouse(opts: {
   toDate: Date;
   intervalSec: number;
   agent?: string;
+  group?: string;
+  actor?: string;
   scope?: OwnerScope;
 }): Promise<Omit<DashboardResponse, "intervalSec" | "window">> {
   const params: Record<string, unknown> = {
@@ -90,11 +94,23 @@ async function dashboardFromClickhouse(opts: {
     params["agent"] = opts.agent;
     agentClause = "AND SpanAttributes['gen_ai.agent.name'] = {agent:String}";
   }
+  let groupClause = "";
+  if (opts.group) {
+    params["group"] = opts.group;
+    groupClause = "AND SpanAttributes['computeragent.group.id'] = {group:String}";
+  }
+  let actorClause = "";
+  if (opts.actor) {
+    params["actor"] = opts.actor;
+    actorClause = "AND SpanAttributes['computeragent.actor.id'] = {actor:String}";
+  }
   const scope = clickhouseScopeClause(opts.scope, params);
   const scopeClause = scope ? `AND ${scope}` : "";
   const whereBase = `Timestamp >= parseDateTime64BestEffort({t_from:String}, 9)
     AND Timestamp < parseDateTime64BestEffort({t_to:String}, 9)
     ${agentClause}
+    ${groupClause}
+    ${actorClause}
     ${scopeClause}`;
 
   const [
@@ -273,6 +289,8 @@ async function dashboardFromNrql(opts: {
   toDate: Date;
   intervalSec: number;
   agent?: string;
+  group?: string;
+  actor?: string;
   scope?: OwnerScope;
 }): Promise<Omit<DashboardResponse, "intervalSec" | "window">> {
   const params: Record<string, unknown> = {
@@ -284,9 +302,19 @@ async function dashboardFromNrql(opts: {
     params["agent"] = opts.agent;
     agentClause = " AND `gen_ai.agent.name` = {agent:String}";
   }
+  let groupClause = "";
+  if (opts.group) {
+    params["group"] = opts.group;
+    groupClause = " AND `computeragent.group.id` = {group:String}";
+  }
+  let actorClause = "";
+  if (opts.actor) {
+    params["actor"] = opts.actor;
+    actorClause = " AND `computeragent.actor.id` = {actor:String}";
+  }
   const scope = nrqlScopeClause(opts.scope, params);
   const scopeClause = scope ? ` AND ${scope}` : "";
-  const baseWhere = `WHERE 1=1${agentClause}${scopeClause}`;
+  const baseWhere = `WHERE 1=1${agentClause}${groupClause}${actorClause}${scopeClause}`;
   const sinceUntil = `SINCE {t_from:Timestamp} UNTIL {t_to:Timestamp}`;
 
   const [

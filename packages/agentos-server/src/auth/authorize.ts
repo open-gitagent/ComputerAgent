@@ -70,8 +70,12 @@ export const resolvePermissions: RequestHandler = (_req, res, next) => {
  * empty (the token carried no role that maps to an AgentOS role) and
  * AGENTOS_DEFAULT_ROLE is set, fall back to that role's permissions so any
  * authenticated user has a baseline (e.g. agentos-viewer). Unset → deny-by-default.
+ *
+ * Exported so the key-introspection endpoint resolves an API key's `roleIds`
+ * to the SAME effective permission set the dashboard uses — keeping the role map
+ * server-side (the CAS receives resolved permissions, never the raw role map).
  */
-async function resolveEffectivePermissions(roles: string[]): Promise<string[]> {
+export async function resolveEffectivePermissions(roles: string[]): Promise<string[]> {
   const perms = await roleStore.permissionsFor(roles);
   if (perms.length > 0) return perms;
   const fallback = process.env["AGENTOS_DEFAULT_ROLE"];

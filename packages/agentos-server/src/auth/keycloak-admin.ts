@@ -92,6 +92,15 @@ export function listGroupMembers(groupId: string, max = 100): Promise<KcMember[]
   return adminGet<KcMember[]>(`/groups/${encodeURIComponent(groupId)}/members?max=${max}`);
 }
 
+/** Group names a user belongs to, normalized the same way the token's `groups`
+ *  claim is (leading "/" stripped from the path) so they compare equal to a
+ *  resource's stored `ownerGroup`. Used as a fallback when the access token
+ *  carries no `groups` claim (missing Group Membership mapper). */
+export async function listUserGroups(userId: string): Promise<string[]> {
+  const groups = await adminGet<KcGroup[]>(`/users/${encodeURIComponent(userId)}/groups?max=200`);
+  return groups.map((g) => (g.path ?? g.name ?? "").replace(/^\//, "")).filter(Boolean);
+}
+
 /** Directly-assigned realm role names for a user (the per-user capability). */
 export async function listUserRealmRoles(userId: string): Promise<string[]> {
   const roles = await adminGet<Array<{ name: string }>>(
