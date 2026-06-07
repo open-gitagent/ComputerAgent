@@ -24,6 +24,7 @@ import { groupsRouter } from "./groups.js";
 import { chatRouter } from "./chat.js";
 import { runRouter } from "./run.js";
 import { completionRouter } from "./completion.js";
+import { messagesRouter } from "./messages.js";
 import { policiesRouter } from "./policies.js";
 import { evalsRouter } from "./evals.js";
 
@@ -50,6 +51,7 @@ export function mountDashboard(): IRouter {
   r.use(schedulesRouter); // /schedules
   r.use(logsRouter); //      /logs
   r.use(completionRouter); ///completion
+  r.use(messagesRouter); //  /messages — Anthropic-compat model gateway (cak_-authed)
   r.use(evalsRouter); //     /evals/*
   r.use(apiKeysRouter); //   /api-keys
   r.use(gitCredentialsRouter); // /git-credentials, /git-credentials/resolve

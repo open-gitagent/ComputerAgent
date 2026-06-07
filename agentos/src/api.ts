@@ -2,6 +2,12 @@
 // and handles auth (the subdomain is gated by Caddy basic_auth). In dev, Vite
 // proxies /api with an injected Basic Auth header. So the bundle never holds creds.
 
+// Reactive token refresh (single-flight + replay) lives in lib/auth-fetch, shared
+// with obs-api + sse so every surface refreshes. Re-export setAuthLostHandler so
+// AuthContext keeps its existing import path.
+import { authedFetch, setAuthLostHandler } from "./lib/auth-fetch.ts";
+export { setAuthLostHandler };
+
 /** Mirrors the protocol's IdentitySource zod schema. The server narrows on
  *  read; the dashboard renders the structured form when present. */
 export type IdentitySource =
@@ -305,64 +311,13 @@ export interface GroupMember {
   roles: string[];
 }
 
-// ── Auth: reactive token refresh ─────────────────────────────────────────────
-// The BFF session cookie is short-lived (it tracks the Keycloak access-token
-// expiry, ~5 min). When a dashboard request 401s we silently POST /auth/refresh
-// (which rotates the server-held refresh token and re-signs the cookie) and
-// replay the original request once. All concurrent 401s share ONE in-flight
-// refresh — refresh tokens rotate and can be spent only once, so a stampede
-// would invalidate itself. On a hard refresh failure the session is truly gone:
-// we notify AuthContext (→ SSO sign-in screen).
-
-let refreshInFlight: Promise<boolean> | null = null;
-let onAuthLost: (() => void) | null = null;
-
-/** AuthContext registers a callback here to flip to the anonymous/login state
- *  when the refresh token is dead (idle timeout / revocation / logout). */
-export function setAuthLostHandler(fn: (() => void) | null): void {
-  onAuthLost = fn;
-}
-
-function tryRefresh(): Promise<boolean> {
-  if (!refreshInFlight) {
-    refreshInFlight = fetch(`/api/v1/auth/refresh`, {
-      method: "POST",
-      headers: { accept: "application/json" },
-      credentials: "include",
-    })
-      .then((r) => r.ok)
-      .catch(() => false)
-      .finally(() => {
-        refreshInFlight = null;
-      });
-  }
-  return refreshInFlight;
-}
-
-/** fetch against the dashboard API with credentials. On 401, refresh once and
- *  replay; if refresh fails, signal auth-lost and return the 401 response. */
-async function authedFetch(path: string, init: RequestInit): Promise<Response> {
-  const url = `/api/v1${path}`;
-  const opts: RequestInit = { credentials: "include", ...init };
-  let r = await fetch(url, opts);
-  if (r.status === 401) {
-    const ok = await tryRefresh();
-    if (ok) {
-      r = await fetch(url, opts);
-    } else {
-      onAuthLost?.();
-    }
-  }
-  return r;
-}
-
 async function getJSON<T>(path: string): Promise<T> {
-  const r = await authedFetch(path, { headers: { accept: "application/json" } });
+  const r = await authedFetch(`/api/v1${path}`, { headers: { accept: "application/json" } });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
   return r.json() as Promise<T>;
 }
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const r = await authedFetch(path, {
+  const r = await authedFetch(`/api/v1${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(body),
@@ -371,7 +326,7 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return r.json() as Promise<T>;
 }
 async function reqJSON<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const r = await authedFetch(path, {
+  const r = await authedFetch(`/api/v1${path}`, {
     method,
     headers: { "content-type": "application/json", accept: "application/json" },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),

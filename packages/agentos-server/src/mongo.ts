@@ -65,7 +65,8 @@ export async function pingMongo(): Promise<boolean> {
 
 export interface ChatSessionDoc {
   _id: string;             // sessionId
-  agent: string;           // owning agent name
+  agent: string;           // owning agent name (display label)
+  agentId?: string | null; // stable owning-agent id (when the SDK supplies one)
   createdAt?: Date;
   lastMessageAt?: Date;
 }
@@ -80,6 +81,7 @@ export interface SessionDoc {
   // reader normalizes both, and these extra fields are simply ignored there.
   createdAt?: Date;
   agentName?: string;
+  agentId?: string | null; // stable owning-agent id (when the SDK supplies one)
   source?: string;
   model?: string | null;
   // `meta.prompt` persists the opening prompt so session_ended can recover it
@@ -93,7 +95,9 @@ export interface SessionDoc {
 
 export interface RegistryDoc {
   _id: ObjectId;           // surrogate key (Mongo-minted)
-  name: string;            // the agent's human identifier (unique index)
+  name: string;            // the agent's human display name (unique index)
+  agentId?: string | null; // stable caller-supplied id; when present, the
+  // business key (sparse-unique). Renaming `name` keeps the same agentId/doc.
   label?: string;
   harness?: string;
   source?: unknown;        // string OR IdentitySource shape
@@ -264,6 +268,9 @@ export async function migrateRegistryObjectIds(): Promise<{ registry: number; pi
 export async function ensureRegistryIndexes(): Promise<void> {
   const db = await getDb();
   await db.collection("agent_registry").createIndex({ name: 1 }, { unique: true });
+  // Sparse-unique: the stable agent id is the business key when present; docs
+  // without one (legacy/UI-registered) are simply not indexed here.
+  await db.collection("agent_registry").createIndex({ agentId: 1 }, { unique: true, sparse: true });
   await db.collection("chat_pins").createIndex({ agentName: 1 }, { unique: true });
   await db.collection("agent_policies").createIndex({ agentName: 1 }, { unique: true });
 }

@@ -17,15 +17,30 @@ const h = vi.hoisted(() => {
     return v;
   }
 
+  let oidCounter = 0;
+
   class FakeCollection {
     docs = new Map<string, any>();
 
-    async findOne(filter: any) {
+    // Equality match with minimal operator support ($exists) — enough to model
+    // the registry's name/agentId-keyed upserts (incl. the adopt-by-name step).
+    _matches(d: any, filter: any): boolean {
+      return Object.entries(filter ?? {}).every(([k, val]) => {
+        if (val && typeof val === "object" && "$exists" in val) {
+          return (val as any).$exists ? d[k] !== undefined : d[k] === undefined;
+        }
+        return d[k] === val;
+      });
+    }
+
+    _find(filter: any): any {
       if (filter && filter._id != null) return this.docs.get(filter._id) ?? null;
-      for (const d of this.docs.values()) {
-        if (Object.entries(filter ?? {}).every(([k, val]) => d[k] === val)) return d;
-      }
+      for (const d of this.docs.values()) if (this._matches(d, filter)) return d;
       return null;
+    }
+
+    async findOne(filter: any) {
+      return this._find(filter);
     }
 
     async insertOne(doc: any) {
@@ -34,14 +49,15 @@ const h = vi.hoisted(() => {
     }
 
     async updateOne(filter: any, update: any, opts: any = {}) {
-      const id = filter._id;
-      let doc = this.docs.get(id);
+      let doc = this._find(filter);
       let upsertedCount = 0;
       if (!doc) {
         if (!opts.upsert) return { upsertedCount: 0, matchedCount: 0, modifiedCount: 0 };
         doc = {};
         if (update.$setOnInsert) Object.assign(doc, clone(update.$setOnInsert));
-        if (doc._id == null && id != null) doc._id = id;
+        // Derive _id from the filter (e.g. {_id: sessionId}) or mint a surrogate
+        // (mirrors Mongo minting an ObjectId for name/agentId-keyed registry docs).
+        if (doc._id == null) doc._id = filter._id != null ? filter._id : `_oid_${++oidCounter}`;
         this.docs.set(doc._id, doc);
         upsertedCount = 1;
       }
@@ -248,6 +264,58 @@ describe("projectEvent — idempotency", () => {
     await projectEvent(started); // replay — must not re-seed
     const s = docsOf("sessions")[0];
     expect(s.entries.filter((e: any) => e.type === "user")).toHaveLength(1);
+  });
+});
+
+describe("projectEvent — stable agent_id", () => {
+  it("keys the registry on agent_id and treats name as mutable across a rename", async () => {
+    // Run 1 — name "alpha", id "aid-1".
+    await projectEvent(
+      ev("session_started", { prompt: "p", model: "m" }, { agent_id: "aid-1", agent_name: "alpha", session_id: "s-a", event_id: "e-a" } as any),
+    );
+    // Run 2 — SAME id, renamed to "beta", different session.
+    await projectEvent(
+      ev("session_started", { prompt: "p", model: "m" }, { agent_id: "aid-1", agent_name: "beta", session_id: "s-b", event_id: "e-b" } as any),
+    );
+
+    const reg = docsOf("agent_registry");
+    expect(reg).toHaveLength(1); // one agent, not two
+    expect(reg[0].agentId).toBe("aid-1");
+    expect(reg[0].name).toBe("beta"); // name is the latest display label
+
+    // Both sessions + chat_sessions carry the stable id.
+    expect(docsOf("sessions").every((s: any) => s.agentId === "aid-1")).toBe(true);
+    expect(docsOf("chat_sessions").every((c: any) => c.agentId === "aid-1")).toBe(true);
+  });
+
+  it("adopts a legacy name-keyed registry doc instead of duplicating it", async () => {
+    // Legacy run — no agent_id (name-keyed).
+    await projectEvent(ev("session_started", { prompt: "p", model: "m" }, { agent_name: "gamma", session_id: "s-1", event_id: "e-1" } as any));
+    expect(docsOf("agent_registry")).toHaveLength(1);
+    expect(docsOf("agent_registry")[0].agentId).toBeUndefined();
+
+    // Same name now arrives WITH an id → the existing doc is adopted, not duped.
+    await projectEvent(ev("session_started", { prompt: "p", model: "m" }, { agent_id: "aid-g", agent_name: "gamma", session_id: "s-2", event_id: "e-2" } as any));
+    const reg = docsOf("agent_registry");
+    expect(reg).toHaveLength(1);
+    expect(reg[0].agentId).toBe("aid-g");
+  });
+
+  it("stamps agent_id on the agent_logs rollup (logs tab survives rename)", async () => {
+    await projectEvent(ev("session_started", { prompt: "p", model: "m" }, { agent_id: "aid-2", agent_name: "delta", session_id: "s-l", event_id: "e-ls" } as any));
+    await projectEvent(ev("session_ended", { is_error: false, result: "r", duration_ms: 3 }, { agent_id: "aid-2", agent_name: "delta", session_id: "s-l", event_id: "e-le" } as any));
+    const logs = docsOf("agent_logs");
+    expect(logs).toHaveLength(1);
+    expect(logs[0].agentId).toBe("aid-2");
+  });
+
+  it("absent agent_id → no agentId stamped anywhere (legacy behavior)", async () => {
+    await projectEvent(ev("session_started", { prompt: "p", model: "m" }, { agent_name: "epsilon", session_id: "s-x", event_id: "e-x" } as any));
+    await projectEvent(ev("session_ended", { is_error: false, result: "r", duration_ms: 1 }, { agent_name: "epsilon", session_id: "s-x", event_id: "e-xe" } as any));
+    expect(docsOf("agent_registry")[0].agentId).toBeUndefined();
+    expect(docsOf("sessions")[0].agentId).toBeUndefined();
+    expect(docsOf("chat_sessions")[0].agentId).toBeUndefined();
+    expect(docsOf("agent_logs")[0].agentId).toBeUndefined();
   });
 });
 

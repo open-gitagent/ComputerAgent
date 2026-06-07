@@ -40,6 +40,7 @@ function coerce(raw: unknown): IngestEvent | null {
     kind,
     session_id: sessionId,
     timestamp: typeof r["timestamp"] === "string" ? r["timestamp"] : "",
+    agent_id: typeof r["agent_id"] === "string" && r["agent_id"] ? r["agent_id"] : null,
     agent_name: typeof r["agent_name"] === "string" ? r["agent_name"] : null,
     agent_description: typeof r["agent_description"] === "string" ? r["agent_description"] : null,
     host: typeof r["host"] === "string" ? r["host"] : null,

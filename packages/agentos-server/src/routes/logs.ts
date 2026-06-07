@@ -15,11 +15,14 @@ logsRouter.get("/logs", authorize("logs:read"), async (req, res, next) => {
     // Scope by agent id → name (agent_logs key the per-agent `bot` field on name).
     const agentId = typeof req.query["agentId"] === "string" ? req.query["agentId"] : undefined;
     let bot: string | undefined;
+    let stableId: string | null | undefined;
     let bots: string[] | undefined;
     if (agentId) {
       const agent = await resolveAgentById(agentId);
       if (!agent || !canRead(res.locals.principal, agent)) return res.json({ logs: [] });
       bot = agent.name;
+      // Prefer the stable id join (survives renames); name remains the fallback.
+      stableId = agent.agentId;
     } else {
       // Hard isolation — only logs for agents the caller's groups own.
       const { all, names } = await listReadableAgentNames(res.locals.principal);
@@ -30,6 +33,7 @@ logsRouter.get("/logs", authorize("logs:read"), async (req, res, next) => {
     const before = beforeRaw ? new Date(beforeRaw) : undefined;
     const logs = await agentLogStore.list({
       ...(bot ? { bot } : {}),
+      ...(stableId ? { agentId: stableId } : {}),
       ...(bots ? { bots } : {}),
       limit,
       ...(before ? { before } : {}),

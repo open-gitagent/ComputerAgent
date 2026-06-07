@@ -51,6 +51,16 @@ describe("app routing + auth gate", () => {
     expect(j.error.code).toBe("UNAUTHENTICATED");
   });
 
+  it("401s on the agent-resolve gateway when unauthenticated (cak_-gated)", async () => {
+    delete process.env["AGENTOS_DEV_AUTH"];
+    const r = await fetch(`${base}/agentos/api/v1/agents/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agentId: "x" }),
+    });
+    expect(r.status).toBe(401);
+  });
+
   it("401s on /me when unauthenticated (the SPA's signal to show SSO sign-in)", async () => {
     delete process.env["AGENTOS_DEV_AUTH"];
     const r = await fetch(`${base}/agentos/api/v1/me`);
