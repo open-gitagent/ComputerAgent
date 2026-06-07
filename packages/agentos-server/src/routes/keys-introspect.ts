@@ -9,7 +9,9 @@ import { resolveEffectivePermissions } from "../auth/authorize.js";
 
 export const keysIntrospectRouter: IRouter = Router();
 
-keysIntrospectRouter.post("/keys/introspect", async (req, res, next) => {
+// Mounted at `/agentos/api/keys`, so this is `/agentos/api/keys/introspect`
+// (matches the CAS verifier URL + every doc/comment referencing the endpoint).
+keysIntrospectRouter.post("/introspect", async (req, res, next) => {
   try {
     const key = (req.body as { key?: unknown } | undefined)?.key;
     if (typeof key !== "string" || !key) {

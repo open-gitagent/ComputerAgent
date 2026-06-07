@@ -108,7 +108,7 @@ Resources stamped with `ownerGroup`/`ownerUser` are **hard-isolated**: a non-adm
 - On the **SDK** side: `AGENTOS_INGEST_URL` (e.g. `https://<host>/agentos/api/ingest/events`) + optional `AGENTOS_INGEST_TOKEN` (sent as `Authorization: Bearer …`). No Mongo creds.
 - On the **server** side: `MONGO_URL` + `MONGO_DATABASE` (this is the DB the collections above live in).
 
-**Behaviour:** when `AGENTOS_INGEST_URL` is set, the SDK's default telemetry pipeline auto-attaches `AgentOSHttpSink` (gated on the `[agentos]` extra, which is now `httpx`-based). Each event carries a stable `event_id` so the server's writes are idempotent on retry. ⚠️ When the server's `AGENTOS_INGEST_TOKEN` is unset the ingest route is **open** (anonymous writes) — set it on any network-exposed deployment.
+**Behaviour:** when `AGENTOS_INGEST_URL` is set, the SDK's default telemetry pipeline auto-attaches `AgentOSHttpSink` (gated on the `[agentos]` extra, which is now `httpx`-based). Each event carries a stable `event_id` so the server's writes are idempotent on retry. **Ingest auth** (`ingest-auth.ts`): the SDK presents the **same `cak_` API key it uses everywhere** as the ingest `Bearer`, and the server validates it via `apiKeyStore.verify` (the same path the CAS introspection uses). A legacy static `AGENTOS_INGEST_TOKEN` string is still accepted for back-compat. ⚠️ Only when **no `cak_` is presented AND `AGENTOS_INGEST_TOKEN` is unset** does the route fall **open** (anonymous writes) — present a key (or set the token) on any network-exposed deployment. A presented `cak_` is always validated (invalid → 401, Mongo-down → 503), never waved through.
 
 ---
 
@@ -122,7 +122,7 @@ Resources stamped with `ownerGroup`/`ownerUser` are **hard-isolated**: a non-adm
 
 **Authorization — DB-backed roles.** Keycloak emits role *names* (`realm_access.roles`) + `groups`; AgentOS owns what each role *can do* via the `roles` collection (editable in Settings→Roles). `authenticate → resolvePermissions → authorize(perm)` gates every dashboard route. Permission catalog is code-defined (`auth/permissions.ts`).
 
-**Three guards / trust boundaries** (`app.ts`): SERVICE `/agentos/api/ingest/*` (`requireIngestAuth`, fails open) + `/agentos/api/keys/*` (`requireIntrospectionAuth`, fails closed); DASHBOARD `/agentos/api/v1/*` (`authenticate`); OBS `/v1/*`. `cak_` API keys authenticate at the dashboard boundary too (→ service principal with `groups=[key.group]`).
+**Three guards / trust boundaries** (`app.ts`): SERVICE `/agentos/api/ingest/*` (`requireIngestAuth` — validates the presented `cak_` API key via `apiKeyStore`, legacy `AGENTOS_INGEST_TOKEN` as back-compat, open only when neither is present) + `/agentos/api/keys/*` (`requireIntrospectionAuth`, fails closed); DASHBOARD `/agentos/api/v1/*` (`authenticate`); OBS `/v1/*`. `cak_` API keys authenticate at the dashboard boundary too (→ service principal with `groups=[key.group]`).
 
 **Groups = read-only from Keycloak Admin API** (Settings→Groups). If a user's token lacks the `groups` claim, the server backfills groups from the Admin API at login/refresh (`auth/keycloak-admin.ts:listUserGroups`).
 
@@ -417,7 +417,7 @@ pnpm build && pnpm start                  # node dist/index.js
 | `COOKIE_SECURE` | derived from `NODE_ENV` | Force `true` / `false` explicitly |
 | `AGENTOS_SESSION_SECRET` | random per boot | HMAC secret for the signed BFF cookies (`agentos_session`/`agentos_refresh`). **Set to a stable value in prod** or every session is invalidated on restart |
 | `API_AUTH_USER` + `API_AUTH_PASS` | unset | **Legacy** — no longer gates the dashboard (SSO does, §2.6b). Now only used to build the Basic header for outbound loopback calls to the harness (`caAuthHeader`) |
-| `AGENTOS_INGEST_TOKEN` | unset | Bearer token guarding `POST /agentos/api/ingest/events` (the Python SDK's telemetry ingest). When unset the route is **open** (anonymous writes to registry/logs/sessions) — set it on any network-exposed pod. The SDK must send the same value as `AGENTOS_INGEST_TOKEN`. |
+| `AGENTOS_INGEST_TOKEN` | unset | **Legacy/back-compat** static Bearer for `POST /agentos/api/ingest/events`. Ingest now primarily validates the SDK's `cak_` **API key** (via `apiKeyStore`, the same key it presents to the CAS) — so the normal path needs no separate token: the SDK just sends its `cak_`. This static token is still accepted if presented verbatim. The route is **open** only when no `cak_` is presented *and* this is unset — set one or the other on any network-exposed pod. |
 | **Auth / RBAC** (§2.6b) | — | `KEYCLOAK_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (+ optional `OIDC_AUDIENCE`/`OIDC_REDIRECT_URI`/`OIDC_POST_LOGOUT_URI`/`OIDC_ROLES_CLAIM`/`OIDC_GROUPS_CLAIM`); `AGENTOS_DEFAULT_ROLE`, `AGENTOS_BOOTSTRAP_ADMINS`, `AGENTOS_DEV_AUTH=1` (local only); `KEYCLOAK_ADMIN_CLIENT_ID`/`SECRET` for the Groups view + group backfill. Provision with `pnpm provision:keycloak`. |
 | **Git credentials** (§2.6c) | unset | `AGENTOS_CREDENTIALS_KEY` (base64 32B; **fail-closed** for credentials CRUD/resolve) + optional `AGENTOS_CREDENTIALS_KEY_OLD` for rotation. |
 | `AGENTOS_API_KEY_PEPPER` / `AGENTOS_INTROSPECTION_SECRET` | unset | HMAC pepper for `api_keys` hashing; shared secret guarding `/agentos/api/keys/introspect` (harness↔server) |
