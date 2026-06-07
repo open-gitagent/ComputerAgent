@@ -22,6 +22,48 @@ const KNOWN_KINDS = new Set([
 
 const MAX_BATCH = 500;
 
+// SRS reverse-proxy for library-mode (Python) SDKs. The SDK authenticates with
+// the ingest bearer token and never sees the SRS key or endpoint — agentos
+// injects them server-side here, mirroring the dashboard proxy in policies.ts.
+const SRS_BASE = (process.env["SRS_BASE_URL"] ?? "").replace(/\/+$/, "");
+const SRS_KEY = process.env["SRS_API_KEY"] ?? "";
+
+async function forwardToSrs(
+  res: import("express").Response,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<void> {
+  if (!SRS_BASE) {
+    res.status(503).json({
+      error: { code: "SRS_NOT_CONFIGURED", message: "Policy service (SRS) is not configured." },
+    });
+    return;
+  }
+  try {
+    const r = await fetch(`${SRS_BASE}${path}`, {
+      method,
+      headers: {
+        "x-api-key": SRS_KEY,
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await r.text();
+    let parsed: unknown = {};
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = { raw: text };
+      }
+    }
+    res.status(r.status).json(parsed);
+  } catch (err) {
+    res.status(502).json({ error: { code: "SRS_UNREACHABLE", message: (err as Error).message } });
+  }
+}
+
 /** Validate + normalize one wire event. Returns null to skip (counted, not fatal). */
 function coerce(raw: unknown): IngestEvent | null {
   if (!raw || typeof raw !== "object") return null;
@@ -92,16 +134,29 @@ ingestRouter.post("/events", async (req, res, next) => {
   }
 });
 
-// Policy config for an agent — lets the library-mode Python SDK resolve which
-// SRS policy applies to an agent the same way the TS harness does, over the
-// same ingest channel (no Mongo creds / no SRS key in the Python process).
-// Returns the {kind:"srs", endpoint, apiKey, policyId, principalId} block from
-// the agent's agent_policies binding, or null when unbound.
+// Policy config for an agent — lets the library-mode Python SDK learn *which*
+// policy is bound to an agent, over the ingest channel. Returns ONLY the binding
+// (policyId + principalId), never the SRS endpoint/api key: the SDK reaches SRS
+// exclusively through the proxy routes below, so the key stays server-side.
 ingestRouter.get("/policy-config/:name", async (req, res, next) => {
   try {
     const policy = await srsPolicyForAgent(req.params["name"]!);
-    res.json({ policy: policy ?? null });
+    if (!policy || !policy["policyId"]) {
+      res.json({ policy: null });
+      return;
+    }
+    res.json({ policy: { policyId: policy["policyId"], principalId: policy["principalId"] } });
   } catch (err) {
     next(err);
   }
 });
+
+// SRS proxy (ingest-token auth, key injected server-side). The Python SDK
+// fetches a bound RAI policy's guardrail config and evaluates each tool call
+// without ever holding the SRS key or a network path to SRS.
+ingestRouter.get("/rai/policies/:id", (req, res) =>
+  forwardToSrs(res, "GET", `/v1/rai/policies/${encodeURIComponent(req.params["id"]!)}`),
+);
+ingestRouter.post("/guardrails/evaluate-tool-call", (req, res) =>
+  forwardToSrs(res, "POST", "/v1/guardrails/evaluate-tool-call", req.body ?? {}),
+);
