@@ -183,6 +183,7 @@ export interface OPAGuardrailConfig {
   managed_policies: OPAManagedBinding[];
   server_url?: string | null;
   policy_path?: string | null;
+  external_hooks?: string[];
   mode?: "audit" | "enforce" | "fail_open" | "fail_closed";
   timeout_seconds?: number;
 }
