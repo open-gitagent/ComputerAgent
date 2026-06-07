@@ -92,7 +92,7 @@ Optional GitHub repo **variables** (build-time baked into the SPA bundle):
 The Mongo cluster is the source of truth for AgentOS. **Only the `agentos-server` connects to Mongo.** As of the post-0.2.1 dev build, the Python SDK no longer writes Mongo directly — it POSTs telemetry to the server's ingest endpoint (`AgentOSHttpSink` → `POST /agentos/api/ingest/events`), and the server owns all writes. (The old `AgentRegistrySink` + `MongoMessageSink` and the `motor` dep were removed — see the Python SDK history below.)
 
 **Collections (database = the server's `MONGO_DATABASE`):**
-- `agent_registry` — one doc per registered agent (the server writes `source.type="library"` for harness-mode agents → AgentOS UI hides the chat-sandbox button for those, see commit `8d829b8`). Also carries **ownership** (`ownerGroup`/`ownerUser`, see §2.6b) and **GAP source sync** (`sourceSha`/`sourceSyncedAt` — the commit SHA the SDK last loaded; the `session_started` projection updates it and logs drift, see §2.6c).
+- `agent_registry` — one doc per registered agent (the server writes `source.type="library"` for harness-mode agents → AgentOS UI hides the chat-sandbox button for those, see commit `8d829b8`). Also carries **ownership** (`ownerGroup`/`ownerUser`, see §2.6b) and **GAP source sync** (`sourceSha`/`sourceSyncedAt` — the commit SHA the SDK last loaded; the `session_started` projection updates it and logs drift, see §2.6c). **Identity key:** when the SDK supplies a stable `agent_id` (sparse-unique `agentId` field) the registry + per-agent joins (`sessions`/`chat_sessions`/`agent_logs`) key on it and `name` becomes a mutable display label — so renaming an agent doesn't re-register it. A legacy name-keyed doc is *adopted* (not duplicated) on the first run that carries an id; absent → keyed on `name` as before. Dashboard reads join `{$or:[{agentId},{name}]}` for back-compat.
 - `agent_logs` — one doc per conversation (one `ComputerAgent` instance = one log row, multi-turn collapses correctly since the 0.2.0 session-id refactor)
 - `sessions` — ordered chat transcript (one doc per session_id, entries appended in order; **`session_started` is the sole creator** of the doc, so a dropped/reordered start can't stub it)
 - `chat_sessions` — the session-index row (`{_id, agent, createdAt, lastMessageAt}`) the dashboard's session list + per-agent `sessionCount`/`lastActivity` read. The server projection writes this so library-mode sessions show up (the old Python sink omitted it).
@@ -405,7 +405,7 @@ pnpm build && pnpm start                  # node dist/index.js
 | `MONGO_URL` | `mongodb+srv://user:pass@cluster/...` — required, server refuses to start without it |
 | `MONGO_DATABASE` | Default `computeragent-test`. Set to `computeragent` / `computeragent-prod` per env |
 | `CA_BASE` | URL of the harness-server. Default `http://127.0.0.1:8787`. In Docker, use `http://host.docker.internal:8787` (Mac/Win) or the harness container hostname (compose / k8s) |
-| `ANTHROPIC_API_KEY` | Powers the `/completion` route (the "agent-less" chat from the SPA home page) |
+| `ANTHROPIC_API_KEY` | Powers the `/completion` route (the "agent-less" chat from the SPA home page) **and** the `POST /agentos/api/v1/messages` **Anthropic gateway** (`routes/messages.ts`) — a cak_-authed (`completion:run`) transparent reverse proxy to Anthropic. Lets a local SDK consumer point `ANTHROPIC_BASE_URL=<host>/agentos/api` + `ANTHROPIC_AUTH_TOKEN=cak_…` so the upstream key lives only on the server (see smoke #07). |
 
 **Optional env**
 
@@ -586,6 +586,8 @@ kustomize edit set image \
 | AgentOS auth / OIDC / BFF + refresh | `packages/agentos-server/src/auth/{oidc,authenticate,authorize,ownership,keycloak-admin}.ts`, `routes/auth.ts` |
 | Permission catalog + role seeds | `packages/agentos-server/src/auth/permissions.ts`, `stores/role-store.ts` |
 | Route composition / trust boundaries | `packages/agentos-server/src/app.ts`, `routes/dashboard.ts` |
+| Anthropic model gateway (cak_-authed proxy) | `packages/agentos-server/src/routes/messages.ts` (`POST /agentos/api/v1/messages`); smoke `computeragent-smoke/scripts/07_local_via_agentos_gateway.py` |
+| Run-an-agent-by-id (resolve handle) | `packages/agentos-server/src/routes/agents.ts` (`POST /agentos/api/v1/agents/resolve`, by `agentId`, group-scoped); SDK `computeragent-py/src/computeragent/harness/agent_resolve_client.py`; smoke `…/scripts/08_*.py` |
 | Git-credential store + resolve endpoint | `packages/agentos-server/src/crypto/secret-box.ts`, `stores/git-credential-store.ts`, `routes/git-credentials.ts` |
 | SDK private-repo clone (PAT + SHA) | `computeragent-py/src/computeragent/harness/git_credential_client.py`, `substrates/local.py` |
 | Keycloak provisioning script | `packages/agentos-server/scripts/provision-keycloak.mjs` (`pnpm provision:keycloak`) |

@@ -19,6 +19,10 @@ export interface AgentDef {
   /** Surrogate key — the registry doc's ObjectId, stringified. The public
    *  API + frontend address agents by this. */
   id: string;
+  /** Stable caller-supplied agent id (when present). The per-agent join key
+   *  for sessions/logs that survives a `name` change. `null` for legacy/UI
+   *  agents that predate it. */
+  agentId?: string | null;
   name: string;
   label: string;
   harness: string;
@@ -177,6 +181,7 @@ export function registryDocToAgentDef(doc: RegistryDoc): AgentDef {
 
   return {
     id: doc._id.toString(),
+    agentId: doc.agentId ?? null,
     name: doc.name,
     label: doc.label ?? doc.name,
     harness: doc.harness ?? "claude-agent-sdk",

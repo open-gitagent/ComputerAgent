@@ -49,7 +49,11 @@ sessionsRouter.get("/sessions", authorize("sessions:read"), async (req, res, nex
       const agent = await resolveAgentById(agentId);
       // Unknown id OR not in the caller's groups → no sessions (no leak).
       if (!agent || !canRead(res.locals.principal, agent)) return res.json({ sessions: [] });
-      q = { agent: agent.name };
+      // Prefer the stable agentId join (survives renames); fall back to name so
+      // pre-agentId history still resolves.
+      q = agent.agentId
+        ? { $or: [{ agentId: agent.agentId }, { agent: agent.name }] }
+        : { agent: agent.name };
     } else {
       // Hard isolation — only sessions for agents the caller's groups own.
       const { all, names } = await listReadableAgentNames(res.locals.principal);

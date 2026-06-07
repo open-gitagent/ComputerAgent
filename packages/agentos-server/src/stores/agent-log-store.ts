@@ -14,6 +14,9 @@ export interface AgentLogEntry {
   // Parallel to `bot` — the Python ingest path stamps both so per-agent
   // `count()` (keyed on `bot`) and downstream `agentName` consumers both work.
   agentName?: string;
+  // Stable owning-agent id (when the SDK supplies one) — lets the logs tab join
+  // survive a rename. Absent on legacy/name-only rows.
+  agentId?: string | null;
   requester: string;
   channel: string | null;
   threadTs: string | null;
@@ -35,6 +38,9 @@ export type NewAgentLog = Omit<AgentLogEntry, "_id" | "ts"> & { _id?: string; ts
 
 export interface AgentLogFilter {
   bot?: string;
+  /** Stable agent id. When set alongside `bot`, rows match EITHER (so a renamed
+   *  agent's older name-tagged rows still surface). */
+  agentId?: string | null;
   /** Restrict to this set of bots (group-scoped reads). Ignored if empty. */
   bots?: string[];
   source?: "slack" | "web" | "schedule";
@@ -64,6 +70,7 @@ export const agentLogStore = {
     // Carry the optional rollup fields only when present so existing rows keep
     // their lean shape and we never write explicit `undefined`s.
     if (entry.agentName !== undefined) doc.agentName = entry.agentName;
+    if (entry.agentId != null) doc.agentId = entry.agentId;
     if (entry.error !== undefined) doc.error = entry.error;
     if (entry.durationMs !== undefined) doc.durationMs = entry.durationMs;
     if (entry.inputTokens !== undefined) doc.inputTokens = entry.inputTokens;
@@ -86,7 +93,8 @@ export const agentLogStore = {
   async list(filter: AgentLogFilter = {}): Promise<AgentLogEntry[]> {
     const limit = Math.min(Math.max(filter.limit ?? 50, 1), 500);
     const q: Record<string, unknown> = {};
-    if (filter.bot) q["bot"] = filter.bot;
+    if (filter.bot && filter.agentId) q["$or"] = [{ bot: filter.bot }, { agentId: filter.agentId }];
+    else if (filter.bot) q["bot"] = filter.bot;
     else if (filter.bots) q["bot"] = { $in: filter.bots };
     if (filter.source) q["source"] = filter.source;
     if (filter.before) q["ts"] = { $lt: filter.before };
@@ -105,9 +113,12 @@ export const agentLogStore = {
     return (await coll()).countDocuments({ bot });
   },
 
-  /** Cascade helper — drop every log for an agent. Returns the count. */
-  async deleteByBot(bot: string): Promise<number> {
-    const r = await (await coll()).deleteMany({ bot });
+  /** Cascade helper — drop every log for an agent. Matches the stable `agentId`
+   *  too (when given) so a renamed agent's older name-tagged rows are caught.
+   *  Returns the count. */
+  async deleteByBot(bot: string, agentId?: string | null): Promise<number> {
+    const filter = agentId ? { $or: [{ bot }, { agentId }] } : { bot };
+    const r = await (await coll()).deleteMany(filter);
     return r.deletedCount ?? 0;
   },
 

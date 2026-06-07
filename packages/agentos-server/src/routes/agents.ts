@@ -43,7 +43,10 @@ agentsRouter.get("/agents", authorize("agents:read"), async (_req, res, next) =>
       // see all; legacy/unowned rows stay visible during the transition).
       if (!canRead(res.locals.principal, r)) continue;
       const agent = registryDocToAgentDef(r);
-      const docs = await chatSessions.find({ agent: agent.name }).toArray();
+      // Prefer the stable agentId join (survives renames); name as fallback.
+      const docs = await chatSessions
+        .find(r.agentId ? { $or: [{ agentId: r.agentId }, { agent: agent.name }] } : { agent: agent.name })
+        .toArray();
       const sessionIds = new Set(docs.map((d) => d._id));
       let active = 0;
       for (const sid of sessionIds) {
@@ -102,6 +105,33 @@ agentsRouter.get("/agents/by-source", authorize("agents:read"), async (req, res,
       .map((r) => ({ id: r._id.toString(), name: r.name, ...normalizeSource(r.source) }))
       .filter((m) => m.sourceUrl === url);
     res.json({ url, matches });
+  } catch (err) { next(err); }
+});
+
+// Resolve a registered agent's run definition by its STABLE `agentId` — lets an
+// SDK consumer run an agent by reference (pass only `agent_id`) and fetch its
+// source/harness/model from AgentOS instead of repeating them. Strictly
+// group-scoped (the cak_ key's group must be able to read the agent); unknown
+// or unreadable → 404 (no existence leak). Mirrors git-credentials/resolve.
+agentsRouter.post("/agents/resolve", authorize("agents:read"), async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const agentId = typeof body["agentId"] === "string" ? body["agentId"].trim() : "";
+    if (!agentId) {
+      return res.status(400).json({ error: { code: "BAD_REQUEST", message: "`agentId` required" } });
+    }
+    const doc = await (await registryColl()).findOne({ agentId });
+    if (!doc || !canRead(res.locals.principal, doc)) {
+      return res.status(404).json({ error: { code: "NOT_FOUND", message: `no agent with agentId=${agentId}` } });
+    }
+    const def = registryDocToAgentDef(doc);
+    res.json({
+      agentId,
+      name: def.name,
+      source: def.source, // string URL/path OR a full inline IdentitySource object
+      harness: def.harness,
+      ...(def.model ? { model: def.model } : {}),
+    });
   } catch (err) { next(err); }
 });
 
@@ -189,7 +219,10 @@ agentsRouter.post("/agents/:id/archive", authorize("agents:write"), async (req, 
     await (await registryColl()).updateOne({ name }, { $set: set });
 
     // Tear down running sandboxes for this agent's sessions, then stop schedules.
-    const chatDocs = await (await chatSessionsColl()).find({ agent: name }).toArray();
+    const chatFilter = agent.agentId
+      ? { $or: [{ agentId: agent.agentId }, { agent: name }] }
+      : { agent: name };
+    const chatDocs = await (await chatSessionsColl()).find(chatFilter).toArray();
     const sessionIds = new Set(chatDocs.map((d) => d._id).filter(Boolean));
     const disp = await disposeLiveSandboxes(sessionIds);
     const schedulesDisabled = await scheduleStore.disableByAgent(name);
@@ -227,8 +260,10 @@ agentsRouter.delete("/agents/:id", authorize("agents:delete"), async (req, res, 
     const name = agent.name;
     const registry = await registryColl();
 
+    const agentId = agent.agentId ?? null;
+    const chatFilter = agentId ? { $or: [{ agentId }, { agent: name }] } : { agent: name };
     const chatSessions = await chatSessionsColl();
-    const chatDocs = await chatSessions.find({ agent: name }).toArray();
+    const chatDocs = await chatSessions.find(chatFilter).toArray();
     const sessionIds = new Set(chatDocs.map((d) => d._id).filter(Boolean));
 
     // Cross-process side-effects first (so a future auto-save can't outlive the
@@ -245,6 +280,7 @@ agentsRouter.delete("/agents/:id", authorize("agents:delete"), async (req, res, 
     const sessions = await sessionsColl();
     const sessionIdList = [...sessionIds];
     const sessionOr: Record<string, unknown>[] = [{ agentName: name } as Record<string, unknown>];
+    if (agentId) sessionOr.push({ agentId });
     if (sessionIdList.length > 0) {
       sessionOr.push({ _id: { $in: sessionIdList } });
       const escaped = sessionIdList.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
@@ -252,10 +288,13 @@ agentsRouter.delete("/agents/:id", authorize("agents:delete"), async (req, res, 
     }
     const sessionsDeleted = (await sessions.deleteMany({ $or: sessionOr })).deletedCount ?? 0;
 
-    await chatSessions.deleteMany({ agent: name });
+    await chatSessions.deleteMany(chatFilter);
     await (await chatPinsColl()).deleteOne({ agentName: name });
-    const logsDeleted = await agentLogStore.deleteByBot(name);
-    const messagesDeleted = (await (await messagesColl()).deleteMany({ agentName: name })).deletedCount ?? 0;
+    const logsDeleted = await agentLogStore.deleteByBot(name, agentId);
+    // Messages stay sessionId-linked; cover renamed-session rows via the id list.
+    const msgOr: Record<string, unknown>[] = [{ agentName: name }];
+    if (sessionIdList.length > 0) msgOr.push({ sessionId: { $in: sessionIdList } });
+    const messagesDeleted = (await (await messagesColl()).deleteMany({ $or: msgOr })).deletedCount ?? 0;
     await scheduleStore.deleteByAgent(name);
 
     await registry.deleteOne({ name });

@@ -2,6 +2,7 @@
 // hits the local Express service via Vite's /obs-api proxy.
 
 import type { Operator } from "./obs-fields.ts";
+import { authedFetch } from "./lib/auth-fetch.ts";
 
 // Per-trace aggregate — one row per TraceId in /v1/traces and /v1/traces/search.
 export interface TraceSummary {
@@ -93,12 +94,12 @@ export interface DashboardData {
 }
 
 async function getJSON<T>(path: string): Promise<T> {
-  const r = await fetch(`/obs-api${path}`, { headers: { accept: "application/json" } });
+  const r = await authedFetch(`/obs-api${path}`, { headers: { accept: "application/json" } });
   if (!r.ok) throw new Error(`${path} → ${r.status} ${await r.text().catch(() => "")}`);
   return r.json() as Promise<T>;
 }
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(`/obs-api${path}`, {
+  const r = await authedFetch(`/obs-api${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(body),

@@ -1,6 +1,12 @@
 // SSE chat streaming + multi-dialect event parser, ported from test.html.
 // Handles claude-agent-sdk (nested), gitagent (flat), and deepagents (LangGraph)
 // payload shapes. Surfaces tool-call progress + the final assistant text.
+//
+// Streams go through `authedFetch` (lib/auth-fetch): the session check happens
+// on the OPENING response, so a 401 there triggers the shared single-flight
+// refresh + one replay before the body stream is read.
+
+import { authedFetch } from "./lib/auth-fetch.ts";
 
 export interface ChatStreamHandlers {
   onTool?: (name: string, count: number) => void;
@@ -30,10 +36,9 @@ export async function streamCompletion(
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch("/api/completion", {
+  const res = await authedFetch("/api/completion", {
     method: "POST",
     headers: { "content-type": "application/json", accept: "text/event-stream" },
-    credentials: "include",
     body: JSON.stringify({ messages }),
     signal,
   });
@@ -84,7 +89,7 @@ export async function streamChat(
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(url, {
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "text/event-stream" },
     body: JSON.stringify({ message }),

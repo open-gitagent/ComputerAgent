@@ -38,6 +38,9 @@ export interface IngestEvent {
   kind: string;
   session_id: string;
   timestamp: string; // ISO-8601
+  agent_id?: string | null; // stable caller-supplied id; when present, the
+  // registry + per-agent joins key on it (name becomes a mutable display
+  // field). Absent → legacy name-keyed behavior.
   agent_name: string | null;
   agent_description: string | null;
   host?: string | null;
@@ -131,6 +134,10 @@ async function writeMessage(ev: IngestEvent): Promise<void> {
 async function onSessionStarted(ev: IngestEvent): Promise<void> {
   const now = tsFromEvent(ev);
   const name = ev.agent_name || anonymousName(ev);
+  // Stable id (when the SDK supplies one) — the registry + per-agent joins key
+  // on it so renaming `name` doesn't re-register the agent. Absent → legacy
+  // name-keyed behavior, byte-for-byte unchanged.
+  const agentId = ev.agent_id || null;
   const description = ev.agent_description ?? "";
   const payload = ev.payload ?? {};
   const model = bareModelName(payload["model"]);
@@ -138,37 +145,50 @@ async function onSessionStarted(ev: IngestEvent): Promise<void> {
     ? librarySourceFor(name, payload, description)
     : inlineSourceFor(name, payload, description);
 
+  const registry = await registryColl();
+  // The registry key: the stable id when present, else the name (legacy).
+  const regKey = agentId ? { agentId } : { name };
+
   // GAP source sync — the SDK reports the cloned commit SHA in payload.agent_sha.
   // Record it on the registry doc so the dashboard reflects the running revision;
   // a change since the last run is logged (the SDK already re-clones each run, so
   // nothing to re-materialize server-side).
   const observedSha = typeof payload["agent_sha"] === "string" && payload["agent_sha"] ? (payload["agent_sha"] as string) : null;
   if (observedSha) {
-    const prior = await (await registryColl()).findOne({ name }, { projection: { sourceSha: 1 } });
+    const prior = await registry.findOne(regKey, { projection: { sourceSha: 1 } });
     if (prior?.sourceSha && prior.sourceSha !== observedSha) {
       console.log(`[agentos-server] GAP source changed for "${name}": ${prior.sourceSha.slice(0, 8)} → ${observedSha.slice(0, 8)}`);
     }
   }
 
-  // agent_registry upsert (idempotent on agent name). Mongo mints the
-  // surrogate ObjectId `_id` on first insert; `name` is the unique key the
-  // Python/library ingest addresses agents by.
-  await (await registryColl()).updateOne(
-    { name },
-    {
-      $setOnInsert: { name, registeredAt: now },
-      $set: {
-        harness: "claude-agent-sdk",
-        source,
-        model: model ?? undefined,
-        registeredBy: ev.host ?? undefined,
-        updatedAt: now,
-        lastSeen: now,
-        ...(observedSha ? { sourceSha: observedSha, sourceSyncedAt: now } : {}),
-      },
-    },
-    { upsert: true },
-  );
+  const regSet = {
+    harness: "claude-agent-sdk",
+    source,
+    model: model ?? undefined,
+    registeredBy: ev.host ?? undefined,
+    updatedAt: now,
+    lastSeen: now,
+    ...(observedSha ? { sourceSha: observedSha, sourceSyncedAt: now } : {}),
+  };
+
+  if (agentId) {
+    // Back-compat adoption: if a legacy doc exists under this name with no
+    // agentId yet, claim it (set agentId) so we don't duplicate the agent.
+    await registry.updateOne({ name, agentId: { $exists: false } }, { $set: { agentId } });
+    // Key on the stable id; `name` is now a mutable display field ($set).
+    await registry.updateOne(
+      { agentId },
+      { $setOnInsert: { agentId, registeredAt: now }, $set: { name, ...regSet } },
+      { upsert: true },
+    );
+  } else {
+    // Legacy: keyed on the unique `name`; Mongo mints the ObjectId `_id`.
+    await registry.updateOne(
+      { name },
+      { $setOnInsert: { name, registeredAt: now }, $set: { ...regSet } },
+      { upsert: true },
+    );
+  }
 
   // sessions open upsert — `meta.prompt` lets session_ended recover the query.
   const prompt = typeof payload["prompt"] === "string" ? (payload["prompt"] as string) : "";
@@ -183,6 +203,7 @@ async function onSessionStarted(ev: IngestEvent): Promise<void> {
       },
       $set: {
         agentName: name,
+        ...(agentId ? { agentId } : {}),
         source: SOURCE,
         model,
         updatedAt: now,
@@ -196,7 +217,7 @@ async function onSessionStarted(ev: IngestEvent): Promise<void> {
     { _id: ev.session_id },
     {
       $setOnInsert: { _id: ev.session_id, createdAt: now },
-      $set: { agent: name, lastMessageAt: now },
+      $set: { agent: name, ...(agentId ? { agentId } : {}), lastMessageAt: now },
     },
     { upsert: true },
   );
@@ -214,6 +235,9 @@ async function onSessionEnded(ev: IngestEvent): Promise<void> {
   const sessions = await sessionsColl();
   const sessionDoc = await sessions.findOne({ _id: ev.session_id });
   const name = ev.agent_name || sessionDoc?.agentName || anonymousName(ev);
+  // Stable id rides the event, else recover it from the session doc that
+  // session_started stamped. Lets the logs tab survive a rename.
+  const agentId = ev.agent_id || sessionDoc?.agentId || null;
   const usage = (payload["usage"] as Record<string, unknown> | undefined) ?? {};
   const isError = !!payload["is_error"];
 
@@ -224,6 +248,7 @@ async function onSessionEnded(ev: IngestEvent): Promise<void> {
     // `bot` is the per-agent count key; `agentName` is the parallel field.
     bot: name,
     agentName: name,
+    ...(agentId ? { agentId } : {}),
     requester: ev.host ?? "",
     channel: null,
     threadTs: null,
