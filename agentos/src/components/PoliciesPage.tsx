@@ -125,6 +125,7 @@ interface EditorState {
   opaManagedPolicyIds: string;     // comma-separated for the textarea
   opaServerUrl: string;
   opaPolicyPath: string;
+  opaHook: "llm_input" | "llm_output" | "tool_input";   // stage the OPA binding runs at
   opaMode: "audit" | "enforce" | "fail_open" | "fail_closed";
   opaTimeoutSeconds: number;
 }
@@ -161,6 +162,10 @@ function PolicyEditor({
     opaManagedPolicyIds: (initial?.opa_guardrail?.managed_policies ?? []).map((m) => m.policy_id).join(", "),
     opaServerUrl: initial?.opa_guardrail?.server_url ?? "",
     opaPolicyPath: initial?.opa_guardrail?.policy_path ?? "",
+    opaHook:
+      (initial?.opa_guardrail?.managed_policies?.[0]?.hooks?.[0] as EditorState["opaHook"]) ??
+      (initial?.opa_guardrail?.external_hooks?.[0] as EditorState["opaHook"]) ??
+      "tool_input",
     opaMode: initial?.opa_guardrail?.mode ?? "audit",
     opaTimeoutSeconds: initial?.opa_guardrail?.timeout_seconds ?? 5.0,
   }));
@@ -195,9 +200,10 @@ function PolicyEditor({
         source: s.opaSource,
         managed_policies: s.opaManagedPolicyIds
           .split(",").map((x) => x.trim()).filter(Boolean)
-          .map((policy_id) => ({ policy_id })),
+          .map((policy_id) => ({ policy_id, hooks: [s.opaHook] })),
         server_url: s.opaServerUrl || null,
         policy_path: s.opaPolicyPath || null,
+        external_hooks: [s.opaHook],
         mode: s.opaMode,
         timeout_seconds: s.opaTimeoutSeconds,
       },
@@ -331,6 +337,17 @@ function PolicyEditor({
             </Field>
           </>
         )}
+        <Field label="Hook (stage)">
+          <select
+            value={s.opaHook}
+            onChange={(e) => upd("opaHook", e.target.value as EditorState["opaHook"])}
+            className="bg-ink-700 border border-ink-600 rounded px-2 py-1 text-sm"
+          >
+            <option value="tool_input">tool_input (gate tool calls)</option>
+            <option value="llm_input">llm_input (evaluate on prompt)</option>
+            <option value="llm_output">llm_output (evaluate on model output)</option>
+          </select>
+        </Field>
         <Field label="Mode">
           <select
             value={s.opaMode}
