@@ -130,7 +130,8 @@ describe("projectEvent — full run", () => {
     // agent_registry — library source (harness_mode), prefix-stripped model.
     const reg = docsOf("agent_registry");
     expect(reg).toHaveLength(1);
-    expect(reg[0]._id).toBe("bot-A");
+    // Registry is ObjectId-keyed; `name` is the unique business key.
+    expect(reg[0].name).toBe("bot-A");
     expect(reg[0].harness).toBe("claude-agent-sdk");
     expect(reg[0].source.type).toBe("library");
     expect(reg[0].model).toBe("claude-x");
