@@ -66,14 +66,17 @@ interface SlackFile {
   url_private_download?: string;
 }
 interface SlackAppMentionEvent {
-  type: "app_mention";
-  user: string;
+  type: "app_mention" | "message";  // "message" = a direct message (channel_type "im")
+  user?: string;
   text: string;
   channel: string;
   ts: string;
   thread_ts?: string;   // when responding inside a thread
   event_ts: string;
   files?: SlackFile[];  // present when the user attached files to the message
+  channel_type?: string; // "im" for direct messages (vs "channel"/"group")
+  bot_id?: string;       // set on bot-authored messages — ignore to avoid reply loops
+  subtype?: string;      // set on edits/joins/etc — ignore those
 }
 
 interface ChatAttachment { path: string; content: string; encoding: "base64" | "utf8"; }
@@ -103,6 +106,7 @@ interface ThreadDoc {
   createdAt: Date;
   lastMessageAt: Date;
   ingestedFileIds?: string[];   // Slack file IDs already pulled into the sandbox
+  sourceSha?: string | null;    // commit SHA of the agent repo this sandbox cloned (for auto-refresh)
 }
 
 // ── Slack signature verification ─────────────────────────────────────────
@@ -421,6 +425,15 @@ export function sandboxBodyForBot(bot: AgentRuntimeSpec, sessionId: string): Rec
   };
   if (bot.model) body.model = bot.model;
   if (bot.gitToken) body.gitToken = bot.gitToken;
+  // gitagent bots: disable gitclaw's stateful built-in tools. The Lyzr model
+  // intermittently "fires" one of these (memory/task_tracker) and returns no
+  // prose → the bot shows "(no reply text)". Disabling them forces a text reply;
+  // cli/read/write stay available for real work.
+  if (bot.harness === "gitagent") {
+    (body.options as Record<string, unknown>).disallowedTools = [
+      "memory", "capture_photo", "task_tracker", "skill_learner",
+    ];
+  }
   return body;
 }
 
@@ -428,6 +441,36 @@ interface SandboxRef {
   sandboxId: string;
   fresh: boolean;       // true if just created (or restored), false if reusing live one
   fromSnapshot?: string;
+  refreshed?: boolean;  // true if we recreated because the agent repo had new commits
+}
+
+/**
+ * Best-effort lookup of the agent repo's current HEAD commit SHA (default branch)
+ * via the GitHub API. Used to auto-refresh a thread's sandbox when the agent repo
+ * gets new commits. Returns null on any failure / non-github source, so a turn is
+ * never blocked by this check — we just keep reusing the existing sandbox.
+ * Handles sources of the form "github.com/<owner>/<repo>" (optional .git / #ref).
+ */
+async function remoteHeadSha(source: string, gitToken?: string): Promise<string | null> {
+  try {
+    const m = source.match(/github\.com[/:]([^/]+)\/([^/#?]+?)(?:\.git)?(?:[#?].*)?$/i);
+    if (!m) return null;
+    const [, owner, repo] = m;
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "computeragent-slack-bot",
+    };
+    if (gitToken) headers["Authorization"] = `Bearer ${gitToken}`;
+    const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits?per_page=1`, {
+      headers,
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return null;
+    const j = (await r.json()) as Array<{ sha?: string }>;
+    return j?.[0]?.sha ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -444,8 +487,26 @@ async function ensureSandboxForThread(
   const doc = await store.load(bot.name, channel, threadTs);
   const sessionId = `slack-${channel}-${threadTs}`;
 
-  // ── Path A: existing live sandbox — verify it's actually still alive
-  if (doc?.sandboxId) {
+  // Auto-refresh on new agent-repo commits: if the repo's HEAD has moved past the
+  // SHA this thread cloned, the live sandbox AND any snapshot hold stale agent code
+  // (SOUL.md / skills are loaded at clone time). Drop them so we re-clone the
+  // latest. `latest === null` (lookup failed / non-github) means "can't tell" →
+  // keep the existing sandbox (fail open, never block a turn on this check).
+  const latest = await remoteHeadSha(bot.source, bot.gitToken);
+  const stale = !!(latest && doc?.sourceSha && latest !== doc.sourceSha);
+  if (stale && doc?.sandboxId) {
+    await fetch(`${caBase}/sandboxes/${encodeURIComponent(doc.sandboxId)}`, {
+      method: "DELETE",
+      headers: caAuthHeader(),
+    }).catch(() => {});
+  }
+  if (stale) {
+    // drop the snapshot too — it holds the OLD code; restoring it would re-stale.
+    await store.upsert(bot.name, channel, threadTs, { sandboxId: null, snapshotId: null });
+  }
+
+  // ── Path A: existing live sandbox — verify it's actually still alive (skip if stale)
+  if (!stale && doc?.sandboxId) {
     const r = await fetch(`${caBase}/sandboxes/${encodeURIComponent(doc.sandboxId)}`, {
       headers: caAuthHeader(),
     });
@@ -459,8 +520,8 @@ async function ensureSandboxForThread(
     await store.upsert(bot.name, channel, threadTs, { sandboxId: null });
   }
 
-  // ── Path B: stale sandbox + snapshot — restore from S3
-  if (doc?.snapshotId) {
+  // ── Path B: stale sandbox + snapshot — restore from S3 (skip if repo-stale)
+  if (!stale && doc?.snapshotId) {
     const r = await fetch(`${caBase}/sandboxes/restore`, {
       method: "POST",
       headers: { "content-type": "application/json", ...caAuthHeader() },
@@ -491,8 +552,12 @@ async function ensureSandboxForThread(
     throw new Error(`sandbox create failed: ${r.status} ${errText.slice(0, 300)}`);
   }
   const j = await r.json() as { sandboxId: string };
-  await store.upsert(bot.name, channel, threadTs, { sandboxId: j.sandboxId });
-  return { sandboxId: j.sandboxId, fresh: true };
+  // Record the SHA we just cloned so future turns can detect new commits.
+  await store.upsert(bot.name, channel, threadTs, {
+    sandboxId: j.sandboxId,
+    ...(latest ? { sourceSha: latest } : {}),
+  });
+  return { sandboxId: j.sandboxId, fresh: true, ...(stale ? { refreshed: true } : {}) };
 }
 
 /**
@@ -801,6 +866,10 @@ async function handleAppMention(
     // (empty) or carried over, because that decides whether previously-ingested
     // files still physically exist in the workdir.
     const sb = await ensureSandboxForThread(caBase, store, bot, ev.channel, threadTs);
+    if (sb.refreshed) {
+      await slackUpdate(bot.token, ev.channel, placeholder.ts,
+        `🔄 Loaded the latest agent version (the repo had new commits)…`);
+    }
     if (sb.fromSnapshot) {
       await slackUpdate(bot.token, ev.channel, placeholder.ts,
         `📦 Restoring previous context from snapshot \`${sb.fromSnapshot}\`…`);
@@ -929,12 +998,21 @@ export function createSlackBotsApp(opts: SlackBotsOptions): Hono {
       return c.json({ challenge: parsed.challenge });
     }
 
-    if (parsed.type === "event_callback" && parsed.event?.type === "app_mention") {
-      // ACK immediately so Slack doesn't retry. Real work happens detached.
+    if (parsed.type === "event_callback" && parsed.event) {
       const ev = parsed.event;
-      void handleAppMention(caBase, store, bot, ev, opts.logStore).catch((err) => {
-        console.error("[slack-bot]", bot.name, "handler crashed:", err);
-      });
+      // Handle two entry points the same way:
+      //   - app_mention: @-mentioned in a channel
+      //   - message in a DM (channel_type "im") — but NOT the bot's own posts
+      //     (bot_id set) and NOT edits/joins/etc (subtype set), to avoid loops.
+      const isMention = ev.type === "app_mention";
+      const isDirectMessage =
+        ev.type === "message" && ev.channel_type === "im" && !ev.bot_id && !ev.subtype;
+      if (isMention || isDirectMessage) {
+        // ACK immediately so Slack doesn't retry. Real work happens detached.
+        void handleAppMention(caBase, store, bot, ev, opts.logStore).catch((err) => {
+          console.error("[slack-bot]", bot.name, "handler crashed:", err);
+        });
+      }
       return c.json({ ok: true });
     }
 
@@ -954,7 +1032,7 @@ export function createSlackBotsApp(opts: SlackBotsOptions): Hono {
 export function botsFromEnv(): BotConfig[] {
   const bots: BotConfig[] = [];
   const buildOne = (
-    name: "claudebot" | "gitagent" | "agentosbuilder",
+    name: "claudebot" | "gitagent" | "agentosbuilder" | "lyra",
     harness: "claude-agent-sdk" | "gitagent",
   ): BotConfig | null => {
     const prefix = `SLACK_${name.toUpperCase()}_`;
@@ -1039,5 +1117,10 @@ export function botsFromEnv(): BotConfig[] {
   // AgentOS Builder — a claude-code meta-agent that builds AgenticOS products.
   const agentosbuilder = buildOne("agentosbuilder", "claude-agent-sdk");
   if (agentosbuilder) bots.push(agentosbuilder);
+  // lyra — an additional gitagent bot slot, configured entirely via SLACK_LYRA_*
+  // env (TOKEN + SIGNING_SECRET + SOURCE); skipped unless those are set. A private
+  // GAP source is cloned with the per-bot GIT_TOKEN (or the global GITHUB_TOKEN).
+  const lyra = buildOne("lyra", "gitagent");
+  if (lyra) bots.push(lyra);
   return bots;
 }
