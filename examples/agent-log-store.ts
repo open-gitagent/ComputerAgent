@@ -90,8 +90,26 @@ export class AgentLogStore {
     return (await this.coll()).findOne({ _id: id });
   }
 
+  /**
+   * Successful entries for a bot newer than `since`, oldest-first — the input
+   * for the knowledge distiller's daily batch. Only `ok` turns are returned
+   * (errored turns carry no learnable content). `max` caps the batch size.
+   */
+  async listSince(bot: string, since: Date, max = 5000): Promise<AgentLogEntry[]> {
+    return (await this.coll())
+      .find({ bot, ok: true, ts: { $gt: since } })
+      .sort({ ts: 1 })
+      .limit(Math.min(Math.max(max, 1), 20000))
+      .toArray();
+  }
+
   /** Count entries for an agent (used for the agents-list stats). */
   async count(bot: string): Promise<number> {
     return (await this.coll()).countDocuments({ bot });
+  }
+
+  /** Close the underlying Mongo connection (for one-shot CLIs). */
+  async close(): Promise<void> {
+    if (this.connected) await this.client.close();
   }
 }

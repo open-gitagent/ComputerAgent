@@ -31,6 +31,7 @@ import { Hono } from "hono";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { MongoClient, type Collection } from "mongodb";
 import { AgentLogStore } from "./agent-log-store.ts";
+import { KnowledgeDistiller } from "./knowledge-distiller.ts";
 
 // ── Loopback auth ────────────────────────────────────────────────────────
 //
@@ -962,6 +963,39 @@ export function createSlackBotsApp(opts: SlackBotsOptions): Hono {
   const store = new SlackThreadStore(opts.mongoUrl, opts.mongoDb);
   const byName = new Map<string, BotConfig>(opts.bots.map((b) => [b.name, b]));
 
+  // Opt-in daily company-knowledge distillation → PR (LYRA_LEARN=1). Reads the
+  // learn-bot's Slack conversations from agent_logs, distills generic company
+  // knowledge (no PII), and opens one PR/day to the bot's GAP repo.
+  if (process.env.LYRA_LEARN === "1") {
+    const learnBotName = process.env.LYRA_LEARN_BOT ?? "lyra";
+    const learnBot = byName.get(learnBotName);
+    const anthropicKey = process.env.GITAGENT_ANTHROPIC_API_KEY;
+    const repo = process.env.LYRA_LEARN_REPO ?? learnBot?.source;
+    const gitToken = learnBot?.gitToken;
+    if (!learnBot) {
+      console.error(`[knowledge] LYRA_LEARN=1 but bot "${learnBotName}" is not configured; skipping`);
+    } else if (!anthropicKey || !repo || !gitToken) {
+      const missing = [
+        !anthropicKey && "GITAGENT_ANTHROPIC_API_KEY",
+        !repo && "repo (LYRA_LEARN_REPO or bot source)",
+        !gitToken && "gitToken (SLACK_LYRA_GIT_TOKEN / GITHUB_TOKEN)",
+      ].filter(Boolean).join(", ");
+      console.error(`[knowledge] LYRA_LEARN=1 but missing ${missing}; skipping`);
+    } else {
+      const distiller = new KnowledgeDistiller({
+        mongoUrl: opts.mongoUrl,
+        mongoDb: opts.mongoDb,
+        bot: learnBotName,
+        repo,
+        gitToken,
+        anthropicKey,
+        model: process.env.LYRA_LEARN_MODEL,
+      });
+      const hour = Number(process.env.LYRA_LEARN_HOUR ?? "2");
+      distiller.startScheduler(Number.isFinite(hour) ? hour : 2);
+    }
+  }
+
   const app = new Hono();
 
   // Health check that exercises mongo connectivity.
@@ -1049,14 +1083,24 @@ export function botsFromEnv(): BotConfig[] {
     const extraEnvs: Record<string, string> = {};
     let model: string | undefined;
     if (harness === "gitagent") {
-      // Default to Lyzr-direct config when LYZR_UPSTREAM_* is set.
-      const lyzrBase = process.env.LYZR_UPSTREAM_BASE;
-      const lyzrToken = process.env.LYZR_UPSTREAM_TOKEN;
-      const lyzrModel = process.env.LYZR_UPSTREAM_MODEL;
-      if (lyzrBase && lyzrToken && lyzrModel) {
-        extraEnvs.GITCLAW_MODEL_BASE_URL = lyzrBase.replace(/\/+$/, "") + "/v4";
-        extraEnvs.OPENAI_API_KEY = lyzrToken;
-        model = `openai:${lyzrModel}`;
+      // Direct Anthropic takes precedence over the Lyzr proxy when
+      // GITAGENT_ANTHROPIC_API_KEY is set. gitclaw routes `anthropic:` models to
+      // ANTHROPIC_API_KEY; a real Claude model completes multi-step tool loops
+      // (PR review, edits) that the Lyzr dev agent stalls on.
+      const directAnthropicKey = process.env.GITAGENT_ANTHROPIC_API_KEY;
+      if (directAnthropicKey) {
+        extraEnvs.ANTHROPIC_API_KEY = directAnthropicKey;
+        model = process.env.GITAGENT_ANTHROPIC_MODEL ?? "anthropic:claude-sonnet-4-6";
+      } else {
+        // Fallback: Lyzr-direct config when LYZR_UPSTREAM_* is set.
+        const lyzrBase = process.env.LYZR_UPSTREAM_BASE;
+        const lyzrToken = process.env.LYZR_UPSTREAM_TOKEN;
+        const lyzrModel = process.env.LYZR_UPSTREAM_MODEL;
+        if (lyzrBase && lyzrToken && lyzrModel) {
+          extraEnvs.GITCLAW_MODEL_BASE_URL = lyzrBase.replace(/\/+$/, "") + "/v4";
+          extraEnvs.OPENAI_API_KEY = lyzrToken;
+          model = `openai:${lyzrModel}`;
+        }
       }
     } else if (harness === "claude-agent-sdk") {
       // Default to local proxy when LYZR_PROXY_ENABLED=1.
