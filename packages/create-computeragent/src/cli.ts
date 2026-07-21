@@ -52,7 +52,7 @@ await writeFile(
         start: "node --experimental-strip-types index.ts",
       },
       dependencies: {
-        computeragent: "^0.1.0",
+        computeragent: "^0.2.1",
       },
       engines: { node: ">=22.6.0" },
     },
